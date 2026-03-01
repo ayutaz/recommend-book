@@ -1,0 +1,16 @@
+# Data files (large, regeneratable from scripts)
+# Download from GitHub Releases instead
+data/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
