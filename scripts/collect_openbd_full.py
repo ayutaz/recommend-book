@@ -72,6 +72,11 @@ def extract_ndl_isbns(ndl_file: Path) -> list[str]:
     """ndl_books.jsonからISBNを抽出する。"""
     print(f"\n[Step 1] NDLデータからISBN抽出: {ndl_file}")
 
+    if not ndl_file.exists():
+        raise SystemExit(
+            f"{ndl_file} がありません。先に python3 scripts/collect_ndl.py を実行してください。"
+        )
+
     with open(ndl_file, "r", encoding="utf-8") as f:
         data = json.load(f)
 
