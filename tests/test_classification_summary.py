@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from recommend_book.classification.validation import input_hash, load_taxonomy, target_language
+from recommend_book.classification import validation as current_validation
 from recommend_book.jobs import canonical_json, job_key
 from recommend_book.models import Evidence, WorkInput
 
@@ -15,6 +16,123 @@ ROOT=Path(__file__).resolve().parents[1]
 SPEC=importlib.util.spec_from_file_location('classification_summary',ROOT/'scripts/summarize_classification_run.py')
 summary=importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(summary)
+
+
+def test_imports_only_scratch_validator_and_observer():
+    assert Path(current_validation.__file__).resolve().is_relative_to(ROOT)
+    assert current_validation.ROOT.resolve()==ROOT
+    assert Path(summary.__file__).resolve().is_relative_to(ROOT)
+
+
+def test_relevance_numeric_and_null_are_separate_from_presence_and_all_slots():
+    key=('fixture',None);other=('empty',None)
+    inputs={key:{'evidence':[]},other:{'evidence':[]}}
+    labels=[{'label_id':'genre.mystery','decision':'present','relevance':None,'raw_confidence':.9,'evidence':[]},
+        {'label_id':'genre.romance','decision':'absent','relevance':.25,'raw_confidence':.8,'evidence':[]},
+        {'label_id':'genre.horror','decision':'unknown','relevance':None,'raw_confidence':None,'evidence':[]}]
+    results={key:{'labels':labels,'missing_axes':[],'needs_human_review':True},other:{'labels':[],'missing_axes':[],'needs_human_review':True}}
+    stats=summary._stats([key,other],inputs,results,load_taxonomy())
+    assert stats['decided_label_slots']==2 and stats['taxonomy_label_slots']==144
+    assert stats['relevance']['n_known']==2
+    assert stats['relevance']['n_numeric']==1 and stats['relevance']['n_null']==1
+    assert stats['relevance']['numeric_rate_among_known']==.5
+    assert stats['relevance']['null_rate_among_known']==.5
+    assert stats['relevance']['numeric_rate_all_taxonomy_slots']==pytest.approx(1/144)
+    assert stats['relevance']['null_rate_all_taxonomy_slots']==pytest.approx(1/144)
+    assert stats['relevance']['mean']==.25
+    assert stats['relevance']['mean']!=.125
+
+
+def _retag_config(run, updates, remove=()):
+    path=run/'manifest.json';manifest=json.loads(path.read_text('utf-8'))
+    config=manifest['config'];config.update(updates)
+    for field in remove:
+        config.pop(field,None)
+    jobs={}
+    for job in manifest['jobs'].values():
+        job['config']=config;job['key']=job_key(job['input_hash'],config);jobs[job['key']]=job
+    manifest['jobs']=jobs
+    path.write_text(json.dumps(manifest),encoding='utf-8')
+
+
+@pytest.mark.parametrize('relevance',[None,0])
+def test_known_null_and_numeric_zero_relevance_preserve_presence_coverage(completed_run,tmp_path,relevance):
+    path,run=completed_run
+    rows=[json.loads(line) for line in (run/'results.jsonl').read_text('utf-8').splitlines()]
+    rows[0]['labels'][0]['relevance']=relevance
+    (run/'results.jsonl').write_text(''.join(json.dumps(row)+'\n' for row in rows),encoding='utf-8')
+    manifest=json.loads((run/'manifest.json').read_text('utf-8'))
+    job=next(job for job in manifest['jobs'].values() if job['work_id']=='a')
+    (run/job['result_path']).write_text(json.dumps(rows[0]),encoding='utf-8')
+    before={file:file.read_bytes() for file in (path,run/'results.jsonl',run/'manifest.json',run/job['result_path'])}
+    report=summary.summarize_run(path,run)
+    assert report['overall']['decided_work_coverage']==.5
+    assert report['overall']['decided_label_slots']==1
+    observed=report['overall']['relevance']
+    assert observed['n_known']==1 and observed['n_numeric']==int(relevance is not None)
+    assert observed['n_null']==int(relevance is None)
+    assert observed['mean']==relevance
+    axis=report['overall']['axes']['genre']['relevance']
+    assert (axis['n_known'],axis['n_numeric'],axis['n_null'],axis['mean'])==(observed['n_known'],observed['n_numeric'],observed['n_null'],observed['mean'])
+    assert axis['numeric_rate_all_taxonomy_slots']==pytest.approx(int(relevance is not None)/24)
+    assert report['by_original_language']['ja']['relevance']['n_known']==0
+    assert report['by_original_language']['ja']['relevance']['numeric_rate_among_known'] is None
+    assert report['quality']['relevance_accuracy'] is None and report['quality']['human_gold_count']==0
+    assert all(file.read_bytes()==data for file,data in before.items())
+    artifact=summary.write_summary(report,tmp_path/'relevance-observation')
+    page=Path(artifact['html']).read_text('utf-8')
+    assert '関連度数値あり / known' in page and '関連度null / known' in page
+
+
+def test_legacy_config_is_distinct_from_current_read_only_revalidation(completed_run):
+    path,run=completed_run
+    report=summary.summarize_run(path,run)
+    original=report['provenance']['original_run_validation']
+    actual=report['provenance']['observation_revalidation']
+    assert original['status']=='unrecorded_legacy_policy'
+    assert original['validation_hash'] is None and original['validation_version'] is None
+    assert original['original_execution_policy_independently_verified'] is False
+    assert actual['validation_version']==current_validation.VALIDATION_VERSION
+    assert actual['validation_hash']==hashlib.sha256(Path(current_validation.__file__).read_bytes()).hexdigest()
+    assert actual['validated_result_count']==2 and actual['status']=='validated_now_read_only'
+    assert 'validation_hash' not in report['provenance']['config']
+
+
+@pytest.mark.parametrize('freeze_field',['work_inputs_sha256','pilot_inputs_sha256','ordered_inputs_sha256'])
+def test_freeze_input_fields_accept_exact_bytes_and_reject_changed_bytes(completed_run,freeze_field):
+    path,run=completed_run
+    frozen={'work_count':2,freeze_field:hashlib.sha256(path.read_bytes()).hexdigest()}
+    (path.parent/'manifest.json').write_text(json.dumps(frozen),encoding='utf-8')
+    report=summary.summarize_run(path,run)
+    assert report['provenance']['frozen_manifest']['matched_hash_fields']==[freeze_field]
+    assert report['provenance']['original_run_validation']['status']=='unrecorded_legacy_policy'
+    assert report['provenance']['observation_revalidation']['validation_version']==current_validation.VALIDATION_VERSION
+    # A blank JSONL line preserves WorkInput values/job keys, but changes the
+    # exact frozen file bytes; rejection must therefore come from SHA matching.
+    path.write_bytes(path.read_bytes()+b'\n')
+    with pytest.raises(ValueError,match='Input file SHA does not match frozen manifest'):
+        summary.summarize_run(path,run)
+
+
+@pytest.mark.parametrize('policy',['matching','bad_hash','bad_version','partial'])
+def test_recorded_validation_policy_must_match_actual_scratch_artifact(completed_run,policy):
+    path,run=completed_run
+    fields={'validation_version':current_validation.VALIDATION_VERSION,
+        'validation_hash':hashlib.sha256(Path(current_validation.__file__).read_bytes()).hexdigest()}
+    if policy=='bad_hash':
+        fields['validation_hash']='0'*64
+    elif policy=='bad_version':
+        fields['validation_version']='1.0'
+    elif policy=='partial':
+        fields.pop('validation_hash')
+    _retag_config(run,fields)
+    if policy=='matching':
+        report=summary.summarize_run(path,run)
+        assert report['provenance']['original_run_validation']['status']=='recorded_artifacts_match_current'
+        assert report['provenance']['observation_revalidation']['validation_hash']==fields['validation_hash']
+    else:
+        with pytest.raises(ValueError,match='validation version/hash'):
+            summary.summarize_run(path,run)
 
 
 @pytest.fixture

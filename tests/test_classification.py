@@ -75,6 +75,88 @@ def test_valid_result_and_reference_verification(work):
             validate_result(invalid, work)
 
 
+@pytest.mark.parametrize("decision", ["present", "absent"])
+def test_supported_decision_keeps_unknown_relevance(work, decision):
+    result = result_for(work)
+    result["labels"][0].update(decision=decision, relevance=None)
+    if decision == "absent":
+        work.evidence[0].text = "There is explicitly no investigation or unresolved puzzle."
+        result["input_hash"] = input_hash(work)
+        result["labels"][0]["evidence"][0]["quote"] = work.evidence[0].text
+    assert validate_result(result, work) == result
+    assert result["labels"][0]["relevance"] is None
+    assert "genre" not in {m["axis"] for m in result["missing_axes"]}
+
+
+@pytest.mark.parametrize("invalid_field", ["evidence", "raw_confidence", "denied", "identity", "locator", "quote", "scope"])
+def test_nullable_relevance_keeps_known_decision_guards(work, invalid_field):
+    result = result_for(work)
+    label = result["labels"][0]
+    label["relevance"] = None
+    if invalid_field == "evidence": label["evidence"] = []
+    if invalid_field == "raw_confidence": label["raw_confidence"] = None
+    if invalid_field == "denied": work.evidence[0].llm_input_allowed = False; result["input_hash"] = input_hash(work)
+    if invalid_field == "identity": result["work_id"] = "different-work"
+    if invalid_field == "locator": label["evidence"][0]["locator"] = "invented"
+    if invalid_field == "quote": label["evidence"][0]["quote"] = "invented quotation"
+    if invalid_field == "scope": label.update(scope="translation", expression_id="missing-expression")
+    with pytest.raises(ValueError): validate_result(result, work)
+
+
+def test_unknown_still_needs_null_relevance_and_reason(work):
+    result = result_for(work)
+    label = result["labels"][0]
+    label.update(decision="unknown", relevance=None, missing_reason="Insufficient evidence")
+    result["missing_axes"].append({"axis": "genre", "decision": "unknown", "reason": "Insufficient evidence"})
+    assert validate_result(result, work) == result
+    for update in [{"relevance": 0.5}, {"missing_reason": None}]:
+        invalid = deepcopy(result)
+        invalid["labels"][0].update(update)
+        with pytest.raises(ValueError, match="Unknown needs null relevance and missing reason"):
+            validate_result(invalid, work)
+
+
+def test_public_run_config_is_offline_and_binds_validation_contract(monkeypatch, work):
+    import hashlib
+    import recommend_book.classification.runner as runner
+    from recommend_book.classification import validation
+    from recommend_book.jobs import job_key
+    def prohibited(*args, **kwargs): raise AssertionError("No CLI discovery, execution or version query")
+    monkeypatch.setattr(runner, "resolve_executable", prohibited)
+    monkeypatch.setattr(runner, "cli_version", prohibited)
+    monkeypatch.setattr(runner.subprocess, "run", prohibited)
+    taxonomy = load_taxonomy()
+    before = deepcopy(taxonomy)
+    config = runner.build_run_config("fixture-model", "saved-cli-version", taxonomy, 5)
+    assert taxonomy == before
+    assert config == runner.build_run_config(model="fixture-model", cli_version="saved-cli-version", taxonomy=taxonomy, batch_size=5)
+    assert config["validation_version"] == validation.VALIDATION_VERSION == "2.0"
+    assert config["validation_hash"] == hashlib.sha256((runner.ROOT / "src/recommend_book/classification/validation.py").read_bytes()).hexdigest()
+    assert config["prompt_version"] == "1.0"
+    assert config["model"] == "fixture-model" and config["cli_version"] == "saved-cli-version"
+    assert config["batch_size"] == 5
+    old = {k: v for k, v in config.items() if k not in {"validation_version", "validation_hash"}}
+    assert job_key(input_hash(work), old) != job_key(input_hash(work), config)
+
+
+def test_validation_artifact_change_is_a_new_job(monkeypatch, tmp_path, work):
+    import recommend_book.classification.runner as runner
+    from recommend_book.jobs import job_key
+    for relative in ["schemas/classification.schema.json", "src/recommend_book/classification/prompt.py", "src/recommend_book/classification/validation.py"]:
+        target = tmp_path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((runner.ROOT / relative).read_bytes())
+    monkeypatch.setattr(runner, "ROOT", tmp_path)
+    taxonomy = load_taxonomy()
+    first = runner.build_run_config("fixture-model", "saved-cli", taxonomy, 1)
+    path = tmp_path / "src/recommend_book/classification/validation.py"
+    path.write_bytes(path.read_bytes() + b"\n# Changed validation artifact\n")
+    second = runner.build_run_config("fixture-model", "saved-cli", taxonomy, 1)
+    assert first["validation_hash"] != second["validation_hash"]
+    assert {k: v for k, v in first.items() if k != "validation_hash"} == {k: v for k, v in second.items() if k != "validation_hash"}
+    assert job_key(input_hash(work), first) != job_key(input_hash(work), second)
+
+
 def test_original_style_rejects_translated_excerpt(work):
     work.evidence[0].kind = "excerpt"
     work.evidence[0].expression_ref = "translated-1"
@@ -107,6 +189,9 @@ def test_runner_resume_and_raw_events_separate(monkeypatch, tmp_path, work):
     assert first["completed"] == 1
     assert first["usage"]["input_tokens"] == 12
     assert second["reused"] == 1
+    from recommend_book.classification.runner import build_run_config
+    assert first["config"] == build_run_config("gpt-6.1-sol", "fake-1", load_taxonomy(), 1)
+    assert next(iter(first["jobs"].values()))["config"] == first["config"]
     assert len(calls) == 1
     assert len(read_results(tmp_path)) == 1
     assert len(list((tmp_path / "attempts").glob("*.stdout.jsonl"))) == 1

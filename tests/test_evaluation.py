@@ -1,11 +1,82 @@
 from recommend_book.evaluation import evaluate_results, create_split_manifest, create_review_pack, import_annotations
 import json
 import pytest
+from recommend_book.evaluation.metrics import validate_gold
 
 TAX = {'version':'1', 'labels':[{'label_id':'genre.mystery','axis':'genre','primary':True}]}
 
+INVALID_UNIT_VALUES=[pytest.param(value,id=name) for name,value in (
+    ('true',True),('false',False),('nan',float('nan')),('positive_infinity',float('inf')),
+    ('negative_infinity',float('-inf')),('string','0.5'),('below_zero',-.01),('above_one',1.01),('huge_integer',10**400))]
+
+
+@pytest.mark.parametrize('value',INVALID_UNIT_VALUES)
+def test_gold_relevance_rejects_bool_nonfinite_nonreal_and_out_of_range(value):
+    record=human('a','present');record['labels'][0]['relevance']=value
+    with pytest.raises(ValueError,match='relevance'):
+        validate_gold(record,{'genre.mystery'})
+
+
+@pytest.mark.parametrize('value',[0,1,None])
+def test_gold_relevance_accepts_closed_endpoints_and_null(value):
+    record=human('a','present');record['labels'][0]['relevance']=value
+    validate_gold(record,{'genre.mystery'})
+
+
+@pytest.mark.parametrize('value',INVALID_UNIT_VALUES)
+@pytest.mark.parametrize('field',['relevance','raw_confidence','confidence_uncalibrated','confidence'])
+@pytest.mark.parametrize('decision',['present','absent','unknown'])
+@pytest.mark.parametrize('scope',['empty_gold','unannotated_label'])
+def test_invalid_prediction_values_rejected_before_gold_join(value,field,decision,scope):
+    taxonomy={'version':'1','labels':TAX['labels']+[{'label_id':'genre.romance','axis':'genre'}]}
+    prediction=pred('a','present')
+    invalid={'label_id':'genre.romance','decision':decision,'relevance':None}
+    invalid[field]=value
+    prediction['labels'].append(invalid)
+    gold=[] if scope=='empty_gold' else [human('a','present')]
+    with pytest.raises(ValueError,match='relevance' if field=='relevance' else 'confidence'):
+        evaluate_results([prediction],gold,taxonomy)
+
+
+@pytest.mark.parametrize('value',[0,1,None])
+@pytest.mark.parametrize('field',['relevance','raw_confidence','confidence_uncalibrated','confidence'])
+@pytest.mark.parametrize('decision',['present','absent','unknown'])
+def test_prediction_unit_endpoints_and_null_accepted_without_gold(value,field,decision):
+    prediction={'work_id':'a','labels':[{'label_id':'genre.mystery','decision':decision,'relevance':None,field:value}]}
+    report=evaluate_results([prediction],[],TAX)
+    assert report['gold_work_count']==0 and report['human']=={}
+    assert report['validation_status']=='human_validation_pending'
+    assert report['calibration']['status']=='uncalibrated'
+    assert report['dataset_coverage']['decided_label_slots']==int(decision!='unknown')
+
+
+@pytest.mark.parametrize('fields,expected',[
+    ({'raw_confidence':.1,'confidence_uncalibrated':True,'confidence':'shadowed'},.1),
+    ({'raw_confidence':None,'confidence_uncalibrated':True,'confidence':'shadowed'},None),
+    ({'confidence_uncalibrated':.2,'confidence':True},.2),
+    ({'confidence_uncalibrated':None,'confidence':True},None),
+    ({'confidence':.3},.3)])
+def test_confidence_priority_and_explicit_null_do_not_fall_through(fields,expected):
+    prediction=pred('a','present');label=prediction['labels'][0]
+    label.pop('raw_confidence');label.update(fields)
+    report=evaluate_results([prediction],[human('a','present')],TAX)
+    diagnostics=report['human']['evidence']['holdout']['raw_confidence_diagnostics']
+    assert diagnostics['n']==int(expected is not None)
+    if expected is not None:
+        assert diagnostics['bins'][0]['confidence']==pytest.approx(expected)
+
+
+def test_known_null_relevance_remains_known_and_unscored_for_relevance():
+    prediction=pred('a','present');prediction['labels'][0]['relevance']=None
+    report=evaluate_results([prediction],[human('a','present')],TAX)
+    metric=report['human']['evidence']['holdout']
+    assert metric['micro']['tp']==1 and metric['coverage']['eligible']==1
+    assert metric['relevance']['n']==0 and metric['relevance']['mae'] is None
+
 def pred(work, decision, confidence=.9):
-    return {'work_id':work,'labels':[{'label_id':'genre.mystery','decision':decision,'raw_confidence':confidence,'relevance':.5}]}
+    return {'work_id':work,'model':'test-model','prompt_version':'test-prompt','taxonomy_version':'tax',
+        'cli_version':'test-cli','target_language':'en',
+        'labels':[{'label_id':'genre.mystery','decision':decision,'raw_confidence':confidence,'relevance':.5}]}
 
 def human(work, decision, **kwargs):
     return {'work_id':work, 'provenance':'human','reviewer_id':'r1','truth_level':'evidence','partition':'holdout','labels':[{'label_id':'genre.mystery','decision':decision,'relevance':.75}], **kwargs}
@@ -72,6 +143,72 @@ def test_calibration_fits_only_calibration_and_supported_scope():
     assert report['human']['evidence']['holdout']['calibrated_confidence_diagnostics']['brier'] == pytest.approx(.75**2)
     no_training=evaluate_results(predictions,[human(w['work_id'],'present',original_language='en',evidence_kind='synopsis') for w in predictions],TAX)
     assert no_training['calibration']['status'] == 'uncalibrated'
+
+
+@pytest.mark.parametrize('confidence,expected',[(.5,0),(.49999,1),(1.,0)])
+def test_calibration_half_boundary_matches_fit_bins(confidence,expected):
+    predictions=[];gold=[]
+    for index in range(40):
+        work=f'boundary-cal-{index}';low=index<20
+        predictions.append(pred(work,'present',.25 if low else .75))
+        gold.append(human(work,'present' if low else 'absent',partition='calibration',
+            original_language='en',evidence_kind='synopsis',authors=[f'cal-author-{index}']))
+    predictions.append(pred('boundary-held','present',confidence))
+    gold.append(human('boundary-held','present',original_language='en',evidence_kind='synopsis',authors=['held-author']))
+    report=evaluate_results(predictions,gold,TAX)
+    bands=report['calibration']['models']['evidence']['scopes']['genre.mystery|en|synopsis']
+    assert [(band['lower'],band['upper'],band['n'],band['probability']) for band in bands]==[(0,.5,20,1),(.5,1,20,0)]
+    diagnostic=report['human']['evidence']['holdout']['calibrated_confidence_diagnostics']
+    assert diagnostic['n']==1 and diagnostic['bins'][0]['confidence']==expected
+    assert diagnostic['brier']==(expected-1)**2
+
+
+@pytest.mark.parametrize('high_count,expected_status',[(20,'uncalibrated'),(21,'calibrated_scopes_available')])
+def test_boundary_fix_keeps_insufficient_scope_or_band_uncalibrated(high_count,expected_status):
+    predictions=[];gold=[]
+    for index in range(19+high_count):
+        work=f'insufficient-cal-{index}';low=index<19
+        predictions.append(pred(work,'present',.25 if low else .75))
+        gold.append(human(work,'present' if low else 'absent',partition='calibration',original_language='en',evidence_kind='synopsis'))
+    predictions.append(pred('insufficient-held','present',.49999))
+    gold.append(human('insufficient-held','present',original_language='en',evidence_kind='synopsis'))
+    report=evaluate_results(predictions,gold,TAX)
+    assert report['calibration']['status']==expected_status
+    diagnostic=report['human']['evidence']['holdout']['calibrated_confidence_diagnostics']
+    assert diagnostic['n']==0 and diagnostic['brier'] is None and diagnostic['ece'] is None
+
+
+@pytest.mark.parametrize('field',['model','prompt_version','taxonomy_version','cli_version','target_language'])
+@pytest.mark.parametrize('invalid',['missing','empty','none','whitespace','nonstring','list','mapping'])
+def test_incomplete_calibration_context_never_fits_even_with_human_support(field,invalid):
+    predictions=[];gold=[]
+    for index in range(40):
+        work=f'missing-context-{index}';prediction=pred(work,'present')
+        if invalid=='missing':
+            prediction.pop(field)
+        else:
+            prediction[field]={'empty':'','none':None,'whitespace':'   ','nonstring':0,'list':[],'mapping':{}}[invalid]
+        predictions.append(prediction)
+        gold.append(human(work,'present',partition='calibration',original_language='en',evidence_kind='synopsis'))
+    predictions.append(pred('complete-context-held','present'))
+    gold.append(human('complete-context-held','present',original_language='en',evidence_kind='synopsis'))
+    report=evaluate_results(predictions,gold,TAX)
+    assert report['calibration']['status']=='uncalibrated'
+    assert report['calibration']['models']['evidence']['scopes']=={}
+    assert report['human']['evidence']['calibration']['micro']['precision']==1
+    assert report['human']['evidence']['holdout']['micro']['precision']==1
+    assert report['human']['evidence']['holdout']['calibrated_confidence_diagnostics']['n']==0
+
+
+@pytest.mark.parametrize('field',['model','prompt_version','taxonomy_version','cli_version','target_language'])
+def test_context_mismatch_prevents_holdout_calibration_for_each_execution_field(field):
+    predictions=[pred(f'context-cal-{index}','present') for index in range(40)]
+    gold=[human(item['work_id'],'present',partition='calibration',original_language='en',evidence_kind='synopsis') for item in predictions]
+    held=pred('context-held','present');held[field]='different-complete-context'
+    predictions.append(held);gold.append(human('context-held','present',original_language='en',evidence_kind='synopsis'))
+    report=evaluate_results(predictions,gold,TAX)
+    assert report['calibration']['status']=='calibrated_scopes_available'
+    assert report['human']['evidence']['holdout']['calibrated_confidence_diagnostics']['n']==0
 
 def test_undecidable_absent_gold_no_f1_can_render(tmp_path):
     from recommend_book.evaluation import write_report

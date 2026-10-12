@@ -10,6 +10,7 @@ from recommend_book.models import WorkInput
 
 ROOT = Path(__file__).resolve().parents[3]
 PROMPT_VERSION = "1.0"
+VALIDATION_VERSION = "2.0"
 
 
 def load_taxonomy(path: Path | None=None) -> dict:
@@ -66,8 +67,11 @@ def validate_result(result: dict, work: WorkInput, taxonomy: dict | None=None) -
                 raise ValueError("Unknown needs null relevance and missing reason")
         else:
             known.add(label["axis"])
-            if not label["evidence"] or label["relevance"] is None or label["raw_confidence"] is None:
-                raise ValueError("Known decisions need evidence, relevance and raw confidence")
+            # Decision support and a measurable degree of centrality are
+            # separate facts. Keep unknown centrality null rather than forcing
+            # an unsupported score or discarding a supported decision.
+            if not label["evidence"] or label["raw_confidence"] is None:
+                raise ValueError("Known decisions need evidence and raw confidence")
         if label["scope"] in ("expression", "translation"):
             if not work.expression_id or label["expression_id"] != work.expression_id:
                 raise ValueError("Incorrect expression scope")

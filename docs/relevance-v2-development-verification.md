@@ -34,6 +34,16 @@
 
 本体の旧106ファイルも[変更前archive](../data/development/root-before-relevance-v2/manifest.json)にraw copyで保持した。SHAは`f724175cc1cf7e95d7740474120f188fe60d6aa60679dae32fe3c4ec20c283c4`。校正実行可能性監査時の旧metricsコードSHAもこのarchiveに一致する。これは変更前ファイルの保存であり、旧runの実行policyを独立証明したことにはしない。
 
-## 採用に残る条件
+## 本体への採用と実データ移行
 
-旧runの同じ実行handleがterminalになったことを確認し、停止理由と全1,000入力のmanifestを監査する。その後に本体へ修正を適用して再検証し、新しい実行contextを固定する。移行処理で旧結果を保護した新namespaceを準備し、古典20を含む固定2,020入力を同じSol・batch size・並列数で処理する。実際の移行件数・再利用件数・追加CLI量は、その実行後の成果物から確認する。
+旧1,000入力の同じ実行handleがterminal（exit 0）になったことを確認した。元manifestはcompleted 975 / held 25 / pending 0であり、旧policyでの成功率は97.5%のまま保持する。元runの結果やmanifestを新policyに合わせて書き換えていない。
+
+採用候補16ファイルを本体へ適用し、本体で`uv run --offline pytest tests -q`を実行して**655 passed**を確認した。上記の隔離開発・採用レビューmanifestと変更前archiveは、その時点の記録として保持する。
+
+固定2,020入力について、[新しい実行context](../data/execution-contexts/poc-combined-production-v2-v1/manifest.json)に入力bytes・10件のraw artifact・新config・実行上限を保存した。CLI versionを実測した結果は`codex-cli 0.162.1`で、旧実行と一致した。preparer自身の`prepared_not_started`と`supplied_unverified`は書き換えず、実測を別の`cli-verification.json`に記録した。
+
+旧1,000入力をv2で再検証して、[新namespaceの移行原本](../data/runs/poc-combined-production-v2/migration-manifest.json)へ**1,000件**をimportした。内訳は旧completed 975件と旧held 25件。元のJSON値・nullは全件保持し、旧completedのdurable結果はbytesも一致した。[独立した移行監査](../data/evaluation/poc-frozen-v2/production-v2-cache-migration-audit/audit.json)で、旧保護ファイル3,668件の不変、結果値1,000件の不変、移行中のnative CLI呼び出し0・新usage空を照合した。
+
+移行件数は、新しい分類実行でのcache再利用件数とは別に記録する。分類runnerが新namespaceを利用するまで、実再利用件数や追加CLI量は確定しない。移行manifestは分類完了manifestではないため、通常のcompleted-run observerへ直接渡さず、移行専用の監査記録を用いる。
+
+人手goldは0件。意味的精度・関連度の正しさ・信頼度校正は未評価であり、importの機械的再検証を人手品質の承認として扱わない。

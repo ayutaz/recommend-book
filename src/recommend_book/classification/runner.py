@@ -17,7 +17,7 @@ import uuid
 from recommend_book.jobs import JobStore, atomic_json, canonical_json, job_key
 from recommend_book.models import WorkInput
 from .prompt import build_prompt, build_batch_prompt
-from .validation import ROOT, PROMPT_VERSION, input_hash, load_taxonomy, validate_result
+from .validation import ROOT, PROMPT_VERSION, VALIDATION_VERSION, input_hash, load_taxonomy, validate_result
 
 
 def resolve_executable(executable: str | None=None) -> list[str]:
@@ -110,6 +110,24 @@ def validate_controls(*, concurrency=2,timeout=900,limit=None,batch_size=1,
         raise ValueError("max_observed_tokens must be a nonnegative integer")
 
 
+def build_run_config(model: str, cli_version: str, taxonomy: dict, batch_size: int) -> dict:
+    """Build an offline config from supplied identity and local artifact bytes.
+
+    This read-only helper performs no CLI discovery/version query, invocation,
+    network request or output write. Migration can pass the archived CLI
+    version and derive exactly the configuration used by a new run.
+    """
+    validate_controls(batch_size=batch_size)
+    return {"model": model, "taxonomy_version": taxonomy["version"], "prompt_version": PROMPT_VERSION,
+            "taxonomy_hash": hashlib.sha256(canonical_json(taxonomy).encode()).hexdigest(),
+            "schema_hash": hashlib.sha256((ROOT / "schemas/classification.schema.json").read_bytes()).hexdigest(),
+            "prompt_hash": hashlib.sha256((ROOT / "src/recommend_book/classification/prompt.py").read_bytes()).hexdigest(),
+            "validation_version": VALIDATION_VERSION,
+            "validation_hash": hashlib.sha256((ROOT / "src/recommend_book/classification/validation.py").read_bytes()).hexdigest(),
+            "cli_version": cli_version, "sandbox": "read-only", "reasoning_effort": "medium", "web_search": "disabled",
+            "batch_size": batch_size}
+
+
 def run_classification(inputs: list[WorkInput], output_dir: Path, *, concurrency: int=2,
         model: str="gpt-6.1-sol", executable: str | None=None, limit: int | None=None,
         timeout: float=900, max_run_seconds: float | None=None,
@@ -134,12 +152,7 @@ def run_classification(inputs: list[WorkInput], output_dir: Path, *, concurrency
     taxonomy = load_taxonomy()
     command = resolve_executable(executable) if selected else []
     version = cli_version(command) if selected else "not_invoked"
-    config = {"model":model, "taxonomy_version":taxonomy["version"], "prompt_version":PROMPT_VERSION,
-        "taxonomy_hash":hashlib.sha256(canonical_json(taxonomy).encode()).hexdigest(),
-        "schema_hash":hashlib.sha256((ROOT / "schemas/classification.schema.json").read_bytes()).hexdigest(),
-        "prompt_hash":hashlib.sha256((ROOT / "src/recommend_book/classification/prompt.py").read_bytes()).hexdigest(),
-        "cli_version":version, "sandbox":"read-only", "reasoning_effort":"medium", "web_search":"disabled",
-        "batch_size":batch_size}
+    config = build_run_config(model, version, taxonomy, batch_size)
     schema_path = ROOT / "schemas/classification.schema.json"
     batch_schema = {"type":"object", "additionalProperties":False, "required":["results"],
         "properties":{"results":{"type":"array", "items":json.loads(schema_path.read_text(encoding="utf-8"))}}}

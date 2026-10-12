@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections import defaultdict
 import json
 import math
+from numbers import Real
 from pathlib import Path
 import random
 from statistics import mean
@@ -25,6 +26,18 @@ def decision(label):
     if value not in ('present', 'absent', 'unknown'):
         raise ValueError(f'invalid decision: {value}')
     return value
+
+
+def _validate_unit_interval(value, field):
+    if value is not None and (
+        isinstance(value, bool) or not isinstance(value, Real) or
+        not 0 <= value <= 1 or not math.isfinite(value)
+    ):
+        raise ValueError(f'{field} must be null or finite non-bool real 0..1')
+
+
+def _prediction_confidence(label):
+    return label.get('raw_confidence',label.get('confidence_uncalibrated',label.get('confidence')))
 
 
 def validate_gold(record, label_ids=None):
@@ -54,9 +67,7 @@ def validate_gold(record, label_ids=None):
         if 'decision' not in label and 'verdict' not in label:
             raise ValueError('gold label requires explicit decision')
         decision(label)
-        value = label.get('relevance')
-        if value is not None and (not isinstance(value, (int, float)) or not math.isfinite(value) or not 0 <= value <= 1):
-            raise ValueError('relevance must be null or finite 0..1')
+        _validate_unit_interval(label.get('relevance'),'gold relevance')
 
 
 def _prf(tp, fp, fn):
@@ -180,6 +191,10 @@ def _scope(row):
     return '|'.join((row['label_id'],row['language'],row['evidence_kind']))
 
 
+def _in_calibration_band(confidence, lower, upper):
+    return lower <= confidence and (confidence < upper or (upper == 1 and confidence == 1))
+
+
 def _fit_calibrator(rows):
     scopes = defaultdict(list)
     for row in rows:
@@ -189,15 +204,19 @@ def _fit_calibrator(rows):
     for scope,values in scopes.items():
         if len(values) < 40 or any(part=='unknown' for part in scope.split('|')[1:]):
             continue
+        if any(len(row['calibration_context'])!=5 or
+               any(not isinstance(value,str) or not value.strip() for value in row['calibration_context'])
+               for row in values):
+            continue
         contexts={r['calibration_context'] for r in values}
         if len(contexts)!=1:
             continue
         bins=[]
         # Two bins, each at least 20. Small cells stay uncalibrated.
-        for lower,upper in ((0,.5),(.5,1.0000001)):
-            band=[r for r in values if lower <= r['confidence'] < upper]
+        for lower,upper in ((0,.5),(.5,1)):
+            band=[r for r in values if _in_calibration_band(r['confidence'],lower,upper)]
             if len(band)>=20:
-                bins.append({'lower':lower,'upper':min(upper,1),'n':len(band), 'probability':sum(r['truth']==r['prediction'] for r in band)/len(band),'context':list(next(iter(contexts)))})
+                bins.append({'lower':lower,'upper':upper,'n':len(band), 'probability':sum(r['truth']==r['prediction'] for r in band)/len(band),'context':list(next(iter(contexts)))})
         if bins:
             models[scope]=bins
     return {'status':'calibrated_scopes_available' if models else 'uncalibrated', 'version':'human-calibration-bins-v1',
@@ -221,6 +240,9 @@ def evaluate_results(results, gold, taxonomy):
         result_labels=[label['label_id'] for label in result.get('labels',[])]
         if len(result_labels)!=len(set(result_labels)) or not set(result_labels)<=set(labels):
             raise ValueError('duplicate or unknown prediction label')
+        for label in result.get('labels',[]):
+            _validate_unit_interval(label.get('relevance'),'prediction relevance')
+            _validate_unit_interval(_prediction_confidence(label),'confidence')
     truth=records(gold)
     seen=set()
     for item in truth:
@@ -246,9 +268,7 @@ def evaluate_results(results, gold, taxonomy):
         by_label={x['label_id']:x for x in prediction.get('labels',[])}
         for target in item.get('labels',[]):
             predicted=by_label.get(target['label_id'],{})
-            confidence=predicted.get('raw_confidence',predicted.get('confidence_uncalibrated',predicted.get('confidence')))
-            if confidence is not None and (not isinstance(confidence,(int,float)) or not math.isfinite(confidence) or not 0<=confidence<=1):
-                raise ValueError('confidence must be finite 0..1')
+            confidence=_prediction_confidence(predicted)
             row={'work_id':item['work_id'],'group_id':item.get('group_id',group_map[item['work_id']]),'label_id':target['label_id'],
                  'truth':decision(target),'prediction':decision(predicted),'confidence':confidence,
                  'pred_relevance':predicted.get('relevance'),'gold_relevance':target.get('relevance'),
@@ -293,7 +313,7 @@ def evaluate_results(results, gold, taxonomy):
         for row in holdout:
             row['calibrated']=None
             for band in model['scopes'].get(_scope(row),[]):
-                if list(row['calibration_context'])==band['context'] and row['confidence'] is not None and band['lower']<=row['confidence']<=band['upper']:
+                if list(row['calibration_context'])==band['context'] and row['confidence'] is not None and _in_calibration_band(row['confidence'],band['lower'],band['upper']):
                     row['calibrated']=band['probability']
                     break
         if holdout:

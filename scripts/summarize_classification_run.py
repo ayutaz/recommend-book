@@ -12,6 +12,7 @@ import re
 import statistics
 
 from recommend_book.classification.validation import ROOT, input_hash, load_taxonomy, validate_result
+from recommend_book.classification import validation as current_validation
 from recommend_book.jobs import canonical_json, job_key
 from recommend_book.models import WorkInput
 
@@ -43,6 +44,22 @@ def _confidence(labels):
         'p95':values[max(0,math.ceil(.95*len(values))-1)] if values else None,
         'counts_at_or_above':{str(level):sum(value>=level for value in values) for level in (.5,.7,.9,.95)},
         'meaning':'Self-reported raw confidence of emitted present/absent decisions; correctness and calibration are unmeasured.'}
+
+
+def _relevance(labels, slots):
+    known=[label for label in labels if label['decision'] in ('present','absent')]
+    numeric=sorted(label['relevance'] for label in known if label['relevance'] is not None)
+    n_known=len(known);n_numeric=len(numeric);n_null=n_known-n_numeric
+    return {'n_known':n_known,'n_numeric':n_numeric,'n_null':n_null,
+        'numeric_rate_among_known':n_numeric/n_known if n_known else None,
+        'null_rate_among_known':n_null/n_known if n_known else None,
+        'numeric_rate_all_taxonomy_slots':n_numeric/slots if slots else None,
+        'null_rate_all_taxonomy_slots':n_null/slots if slots else None,
+        'mean':statistics.mean(numeric) if numeric else None,
+        'min':min(numeric) if numeric else None,'max':max(numeric) if numeric else None,
+        'p50':statistics.median(numeric) if numeric else None,
+        'p95':numeric[max(0,math.ceil(.95*n_numeric)-1)] if numeric else None,
+        'meaning':'Relevance availability among emitted present/absent labels, separate from decision coverage. Numeric statistics exclude null; all-slot rates retain unknown/unreported slots in their denominator. No human accuracy is measured.'}
 
 
 def _normalize(value):
@@ -85,7 +102,8 @@ def _stats(keys, input_index, result_index, taxonomy, axis=None):
         'unreported_label_slots':slots-len(labels),'decided_label_slots':known,
         'label_decision_coverage':known/slots if slots else None,
         'unknown_or_unreported_slots':slots-known,
-        'raw_confidence':_confidence(labels),'evidence_references':_references(pairs,input_index)}
+        'raw_confidence':_confidence(labels),'relevance':_relevance(labels,slots),
+        'evidence_references':_references(pairs,input_index)}
     if axis is not None:
         result['unknown_axis_count']=sum(any(item['axis']==axis for item in result_index[key]['missing_axes']) for key in keys)
         result['unknown_axis_rate']=result['unknown_axis_count']/n if n else None
@@ -112,6 +130,14 @@ def summarize_run(inputs_path, run_dir, *, taxonomy_path=None, freeze_manifest_p
     if manifest.get('selected')!=len(inputs) or manifest.get('completed')!=len(rows) or len(rows)!=len(inputs):
         raise ValueError('Completed manifest, result index and fixed input counts differ')
     config=manifest['config'];taxonomy=load_taxonomy(Path(taxonomy_path) if taxonomy_path else None)
+    validation_path=Path(current_validation.__file__).resolve()
+    validation_hash=_sha(validation_path.read_bytes())
+    validation_version=current_validation.VALIDATION_VERSION
+    recorded_fields={field for field in ('validation_version','validation_hash') if field in config}
+    if recorded_fields and recorded_fields!={'validation_version','validation_hash'}:
+        raise ValueError('Run validation version/hash must be recorded together')
+    if recorded_fields and (config['validation_version']!=validation_version or config['validation_hash']!=validation_hash):
+        raise ValueError('Run validation version/hash differ from the current actual validator')
     expected={'taxonomy_hash':_sha(canonical_json(taxonomy).encode()),
         'schema_hash':_sha((ROOT/'schemas/classification.schema.json').read_bytes()),
         'prompt_hash':_sha((ROOT/'src/recommend_book/classification/prompt.py').read_bytes())}
@@ -146,7 +172,7 @@ def summarize_run(inputs_path, run_dir, *, taxonomy_path=None, freeze_manifest_p
     candidate=Path(freeze_manifest_path).resolve() if freeze_manifest_path else inputs_path.parent/'manifest.json'
     if candidate.exists():
         content=candidate.read_bytes();frozen=json.loads(content)
-        matches=[key for key in ('work_inputs_sha256','pilot_inputs_sha256') if frozen.get(key)==_sha(blobs['inputs'])]
+        matches=[key for key in ('work_inputs_sha256','pilot_inputs_sha256','ordered_inputs_sha256') if frozen.get(key)==_sha(blobs['inputs'])]
         if not matches:
             raise ValueError('Input file SHA does not match frozen manifest')
         freeze={'path':str(candidate),'manifest_sha256':_sha(content),'matched_hash_fields':matches,
@@ -183,13 +209,22 @@ def summarize_run(inputs_path, run_dir, *, taxonomy_path=None, freeze_manifest_p
         raise ValueError('Run/input snapshot changed while being observed')
     if any(_sha((run_dir/relative).read_bytes())!=digest for relative,digest in durable.items()):
         raise ValueError('Durable results changed while being observed')
+    if _sha(validation_path.read_bytes())!=validation_hash:
+        raise ValueError('Validation implementation changed while being observed')
     return {'schema_version':'1','observation_status':'completed_run_structurally_reconciled',
         'provenance':{'input_path':str(inputs_path),'input_file_sha256':_sha(blobs['inputs']),
             'result_index_path':str(paths['results']),'result_index_sha256':_sha(blobs['results']),
             'manifest_path':str(paths['manifest']),'manifest_file_sha256':_sha(blobs['manifest']),
             'run_id':manifest.get('run_id'),'config':config,'config_sha256':_sha(canonical_json(config).encode()),
             'frozen_manifest':freeze,'durable_result_count':len(durable),'durable_result_hashes_sha256':_sha(canonical_json(durable).encode()),
-            'validation_artifact_hashes':expected,'manifest_human_quality_verified':manifest.get('human_quality_verified'),
+            'validation_artifact_hashes':expected,
+            'original_run_validation':{'status':'recorded_artifacts_match_current' if recorded_fields else 'unrecorded_legacy_policy',
+                'validation_version':config.get('validation_version'),'validation_hash':config.get('validation_hash'),
+                'original_execution_policy_independently_verified':False},
+            'observation_revalidation':{'status':'validated_now_read_only','validation_version':validation_version,
+                'validation_hash':validation_hash,'validation_path':str(validation_path),'validated_result_count':len(result_index),
+                'meaning':'Current observer revalidation only; does not attest that this policy ran during the original classification or migrate its cache.'},
+            'manifest_human_quality_verified':manifest.get('human_quality_verified'),
             'declared_usage':manifest.get('usage'),'usage_source':manifest.get('usage_source'),
             'elapsed_seconds':manifest.get('elapsed_seconds'),'initial_concurrency':manifest.get('initial_concurrency'),'final_concurrency':manifest.get('final_concurrency')},
         'overall':_stats(keys,input_index,result_index,taxonomy),
@@ -201,6 +236,8 @@ def summarize_run(inputs_path, run_dir, *, taxonomy_path=None, freeze_manifest_p
             **{name:None for name in ('semantic_correctness','precision','recall','f1','summary_faithfulness','relevance_accuracy','calibration','ece','brier')}},
         'definitions':{'axis_coverage':'At least one emitted present/absent decision for an axis per work/expression input.',
             'label_coverage':'Emitted present/absent decisions divided by all fixed inputs times registered taxonomy labels; unreported labels are not absent.',
+            'relevance':'Numeric/null relevance uses emitted present/absent labels as its known denominator. Numeric summaries exclude null. Separate all-taxonomy-slot rates retain explicit unknown and unreported slots.',
+            'validation_policy':'Original config validation fields are separate from the actual current read-only revalidation version/hash. Unrecorded old run policy is not labeled as having executed the new policy.',
             'unknown':'Explicit unknown labels, entirely unknown axes, and unreported label slots are reported separately.',
             'strata':'Original language comes only from fixed original_language. Evidence kinds overlap; depth prefers excerpt, synopsis, note, then facts. Permission flags are declarations, not an independent rights audit.',
             'references':'Allowed evidence ID, locator and whitespace-normalized quote occurrence are structural checks. Summary faithfulness and label correctness require human review.'}}
@@ -222,9 +259,20 @@ def write_summary(report, output_dir):
                  value.get('unknown_axis_count',value.get('all_axes_unknown_input_count')),
                  value['decided_label_slots'],pct(value['label_decision_coverage']),value['explicit_unknown_labels'],
                  value['unreported_label_slots'],value['raw_confidence']['mean']) for name,value in groups.items()]
+    def relevance_table(groups):
+        rows=[]
+        for name,value in groups.items():
+            rel=value['relevance']
+            rows.append((name,rel['n_known'],rel['n_numeric'],rel['n_null'],
+                pct(rel['numeric_rate_among_known']),pct(rel['null_rate_among_known']),value['taxonomy_label_slots'],
+                pct(rel['numeric_rate_all_taxonomy_slots']),pct(rel['null_rate_all_taxonomy_slots']),rel['mean'],rel['p50']))
+        return table(['範囲','known数','関連度数値あり数','関連度null数','関連度数値あり / known','関連度null / known',
+            '全taxonomy枠数','数値あり / 全taxonomy枠','known-null / 全taxonomy枠','数値のみ平均','数値のみ中央値'],rows)
     sections=['<h2>軸別</h2>'+table(['軸','入力数','判断作品数','作品判断率','軸unknown作品数','判断ラベル数','全ラベル枠判断率','explicit unknownラベル','未出力ラベル枠','raw confidence平均'],metric_rows(report['overall']['axes']))]
+    sections.append('<h2>関連度の数値／null coverage（存在判定coverageと別集計）</h2><p>knownはpresent/absentのみ。nullを0へ置換しません。全taxonomy枠の分母にはexplicit unknownとunreportedも含めます。</p>'+relevance_table({'overall':report['overall'],**report['overall']['axes']}))
     for name in ('by_original_language','by_evidence_kind','by_evidence_depth'):
         sections.append('<h2>'+esc(name)+'</h2>'+table(['範囲','入力数','判断作品数','作品判断率','全軸unknown作品数','判断ラベル数','全ラベル枠判断率','explicit unknownラベル','未出力ラベル枠','raw confidence平均'],metric_rows(report[name])))
+        sections.append('<h3>'+esc(name)+'の関連度availability</h3>'+relevance_table(report[name]))
     sections.append('<h2>根拠参照</h2><pre>'+esc(json.dumps(report['overall']['evidence_references'],ensure_ascii=False,indent=2))+'</pre>')
     sections.append('<h2>quote / summaryの先頭50参照（各240文字まで）</h2>'+table(['作品','ラベル','資料','directness','quote','summary'],[(sample['title'],sample['label_id'],sample['evidence_id'],sample['directness'],sample['quote_excerpt'],sample['summary_excerpt']) for sample in report['evidence_reference_samples']]))
     sections.append('<h2>固定入力とrun provenance</h2><pre>'+esc(json.dumps(report['provenance'],ensure_ascii=False,indent=2))+'</pre>')
