@@ -38,6 +38,10 @@ policy-levelの `allowed/conditional/denied/unresolved` と、個別素材の条
 
 基準DBは2,020作品で96,210,944 bytes。分類とrawを含む全保存量の見積もりではない。`capacity-baseline.json`には入力サイズ・usage・計算式の適用除外を保存し、元runと入力のSHAは`preparation-source-audit.json`で結び付けた。APIの価格へ換算して請求額を断定していない。
 
+本文抜粋を使った別負荷も測定した。外部pilot20はSpanish本文3×6,000文字/作品、合計360,000文字、並列2/batch5、CLI4呼出しで20 completed・failed/pending0、599.270秒。usageはinput213,797/output41,467 tokensで、実terminal proofとinput/results/contextのSHAを照合した。
+
+この**同じ並列2・抜粋処理だけ**を線形外挿すると1万件83.23時間、3万件249.70時間、10万件832.32時間になる。書誌入力の8並列見積もりと条件が違い、8並列へ増やした速度は未測定である。スペイン語小説20件の実績で全世界へ一般化せず、取得・権利/版審査・他評価・利用枠・失敗時retry・保管を含まない。`capacity-long-input-pilot-v1.json` にsource SHA・usage・除外条件を保存した。価格、利用枠の保証、品質の保証には換算しない。
+
 2026-10-13の単回probeでは、旧推薦v3の2,020候補＋既存335参照の読み込み0.340秒、personal全候補の採点1.832秒、supported696、表示100だった。元3入力の前後SHA一致を確認し、個人の個別行はログへ出していない。新しい推薦方式や補充後の性能ではなく、10万件の実測でもない。`recommendation-runtime-probe.json`に保存した。
 
 1万〜3万件では、入力/結果の単位を作品ID＋入力SHA＋model/schema/prompt版に固定し、取得更新と分類を差分にする。原物とjobイベントは別保存し、DBを分類workerが同時書込みしない。言語別の根拠充足率とunknown率も件数に並べる。
