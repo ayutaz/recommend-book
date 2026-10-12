@@ -33,6 +33,10 @@ DB構築の初回は、元runの大きなmetadataを作品ごとに再parseし�
 
 scope隔離済みloaderへ納品経路を接続し、歴史poolが推薦に混入する反例REDから修正。納品7件＋推薦評価17件の24テスト成功。今後のWikidata取得でも、work指定に非deprecatedの版class/P629があれば原物付きholdとする再発防止を追加し、関連24テスト成功。既存のkind=edition取得は保持する。
 
+全体テストの同session観測はexit0、1,123 passed / 90.39秒。`data/autonomous-poc-v1/independent-audit/full-tests-observation-v1.json` に記録した。一部の別監査コードは並行作業中であり、実行前source snapshotを捕捉していないため、全実装固定後の最終チェックは別途行う。外部pilot20のraw4batchは再利用できるread-only監査CLIでも全件照合し、原物不変・新LLM0を確認した。
+
+79差分の新execution contextは10 core raw copy・入力・兄弟manifest・並列2/batch5等のcontrolsを実行前に固定した。新run namespaceが存在せずcache移行0であることを `delta-classification-preparation/migration-noop-v1.json` に保存した。これは準備であり、モデルを実行済みとはしない。
+
 元分類のcore10、旧入力・結果・人手packを保持している。CLIは最大8並列の予約を分担し、統合担当の差分分類は2枠が解放されてから起動する。CLI versionは実測の `codex-cli 0.162.1` をそのまま使用する。利用量はCLIイベントの観測で、請求額ではない。
 
 [商用化・拡張準備](autonomous-commercial-scale-preparation.md)は用途別条件と線形見積もりを示す。全素材の商用許諾、全世界の本文権利、実10万作品の収集・性能を確認済みとはしない。GitHub hosted CIは未実行。データ・個人評価はローカルprivate成果物として保存し、push・公開は行っていない。
