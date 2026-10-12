@@ -1,0 +1,25 @@
+[project]
+name = "recommend-book"
+version = "0.1.0"
+description = "Evidence-grounded worldwide fiction dataset pipeline"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.28.1",
+    "jsonschema>=4.26.0",
+    "pydantic>=2.14.1",
+]
+
+[project.scripts]
+recommend-book = "recommend_book.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
