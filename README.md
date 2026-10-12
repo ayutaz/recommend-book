@@ -6,6 +6,8 @@
 
 各要件の完了証拠と残る作業は [PoC完了監査](docs/poc-completion-audit.md)、Windows/Ubuntuのテスト設定は [CI検証ガイド](docs/ci-validation-guide.md) に記録しています。
 
+現在、2,020作品のSol分類と全件監査、[分類結果を含む派生DB](data/poc-combined-classified-v2-v1/dataset.sqlite)の作成まで実施済みです。3,194ラベルを保存していますが、何らかの判定がある作品は47.62%で、根拠不足はunknownです。人手goldは0件のため、意味的な分類精度・関連度精度・信頼度校正は未評価です。[実行記録](docs/production-v2-run-record.md)に件数・使用量・残る制約を記録しています。
+
 ## 開発環境
 
 Python 3.12以上とuvを使用します。Windows/Python 3.14で検証しています。
