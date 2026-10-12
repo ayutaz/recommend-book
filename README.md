@@ -2,11 +2,13 @@
 
 世界の小説を作品単位で管理し、出典付きの多ラベル分類を作成するデータ基盤です。書誌・原題・翻訳表現・刊行版を分け、元資料と利用条件、根拠、関連度、未校正の信頼度、保留理由を保持します。
 
-現在の対象は、データ収集・統合・分類・分類精度検証までです。実施計画は [世界の小説データセット計画](docs/world-novel-dataset-plan.md)、実取得・実分類の確認状況は [PoC実行記録](docs/poc-execution-report.md) に記録しています。
+データ収集・統合・分類・分類精度検証に加え、個人の既存評価を使う推薦PoCへ進めています。実施計画は [世界の小説データセット計画](docs/world-novel-dataset-plan.md)、実取得・実分類の確認状況は [PoC実行記録](docs/poc-execution-report.md) に記録しています。
 
 各要件の完了証拠と残る作業は [PoC完了監査](docs/poc-completion-audit.md)、Windows/Ubuntuのテスト設定は [CI検証ガイド](docs/ci-validation-guide.md) に記録しています。
 
 現在、2,020作品のSol分類と全件監査、[分類結果を含む派生DB](data/poc-combined-classified-v2-v1/dataset.sqlite)の作成まで実施済みです。3,194ラベルを保存していますが、何らかの判定がある作品は47.62%で、根拠不足はunknownです。人手goldは0件のため、意味的な分類精度・関連度精度・信頼度校正は未評価です。[実行記録](docs/production-v2-run-record.md)に件数・使用量・残る制約を記録しています。
+
+本人のなろう評価335作品を読み取り専用で接続し、世界の2,020作品に対する[推薦候補100件](data/recommendation-poc-v2/recommendations.html)と、作者名等のグループによる5分割評価を生成しました。今回の個人方式は人気順を上回っておらず、世界の小説の推薦品質・未読状態は未確認です。[実行手順](docs/recommendation-poc-guide.md)、[比較結果](docs/recommendation-poc-run-record.md)を参照してください。
 
 ## 開発環境
 
@@ -29,6 +31,8 @@ LLM分類には、認証済みのCodex CLIから `gpt-6.1-sol` を使用しま�
 | LLM分類 | 6軸72ラベル、根拠・関連度・raw confidence・unknownを保存。[1,000→2,000作品実行](docs/production-classification-guide.md)、[分類の観測](docs/classification-observation-guide.md)、[2,020入力のv2実行](docs/production-v2-run-record.md) |
 | 精度検証 | 独立レビュー・dev/calibration/holdout・根拠支持・校正。[評価手順](docs/evaluation-guide.md)、[固定品質条件](docs/poc-quality-gates-v1.md)、[分布調整した400作品](docs/evaluation-balanced-v1.md)、[校正標本の実行可能性](docs/calibration-feasibility-v1.md)、[実予測からの校正候補診断](docs/calibration-candidate-diagnostic.md) |
 | 人手判定 | [72ラベル日本語ガイド](docs/human-taxonomy-v1-guide.md)、[名寄せ400ペア](docs/resolution-review-guide.md) |
+| 書誌補充 | 完全ダンプの候補から264作品・192著者を新DBへ統合。[raw照合・保留・ID crosswalkの検証](docs/openlibrary-enrichment-validation.md) |
+| 個人推薦 | [推薦PoC手順](docs/recommendation-poc-guide.md)、[実行・評価結果](docs/recommendation-poc-run-record.md)、[嗜好の参照adapter](docs/narou-reference-adapter.md)、[世界DB adapter](docs/world-recommendation-adapter.md) |
 
 ## データと評価の扱い
 

@@ -1,0 +1,49 @@
+{
+  "version": "narou-world-feature-bridge-v1",
+  "status": "partial_manual_mapping_unvalidated_cross_domain",
+  "genre_codes": {
+    "101": "genre.romance",
+    "102": "genre.romance",
+    "201": "genre.fantasy",
+    "202": "genre.fantasy",
+    "303": "genre.historical",
+    "304": "genre.mystery",
+    "305": "genre.horror",
+    "401": "genre.science_fiction",
+    "402": "genre.science_fiction",
+    "403": "genre.science_fiction"
+  },
+  "theme_rules": [
+    {
+      "source_id": "growth",
+      "prominence": ["central", "secondary"],
+      "target_id": "theme.growth",
+      "relation": "narrower_training_growth_hint"
+    },
+    {
+      "source_id": "revenge",
+      "prominence": ["central"],
+      "target_id": "theme.revenge",
+      "relation": "central_retaliation_hint"
+    },
+    {
+      "source_id": "romance",
+      "prominence": ["central"],
+      "target_id": "genre.romance",
+      "relation": "central_romantic_plot_hint"
+    }
+  ],
+  "prominence_weights": {"central": 1.0, "secondary": 0.3},
+  "metadata_genre_weight": 1.0,
+  "unmapped_theme_ids": [
+    "power", "craft", "protection", "recognition", "autonomy",
+    "belonging", "parenting", "redo", "exploration", "comedy", "cozy"
+  ],
+  "limits": [
+    "Declared source genre is a recommendation feature, not verified target-taxonomy truth.",
+    "Mapped themes remain model-derived hints, not human gold or calibrated probabilities.",
+    "Unmapped themes, protagonist gender and synopsis tone are not inferred into target labels.",
+    "Absence of a feature is unknown and does not establish that a label is absent.",
+    "Cross-domain utility requires real evaluations of the target novels."
+  ]
+}

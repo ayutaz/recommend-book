@@ -1,4 +1,4 @@
-"""Explicit, resumable commands for the four dataset stages."""
+"""Explicit commands for dataset construction, evaluation and local recommendations."""
 from __future__ import annotations
 
 import argparse
@@ -60,6 +60,16 @@ def parser() -> argparse.ArgumentParser:
     annotations = commands.add_parser("import-annotations", help="Validate exported human review annotations")
     annotations.add_argument("--input", type=Path, required=True)
     annotations.add_argument("--review-pack", type=Path, required=True)
+    recommend = commands.add_parser("recommend", help="Build a local personal recommendation PoC from a classified world DB and saved ratings")
+    recommend.add_argument("--world-database", type=Path, required=True)
+    recommend.add_argument("--narou-database", type=Path, required=True)
+    recommend.add_argument("--narou-annotations", type=Path, required=True)
+    recommend.add_argument("--bridge", type=Path)
+    recommend.add_argument("--history", type=Path, help="Explicit work/external IDs and read states as a local JSON array")
+    recommend.add_argument("--output", type=Path, required=True)
+    recommend.add_argument("--limit", type=int, default=20)
+    recommend.add_argument("--require-confirmed-unread", action="store_true")
+    recommend.add_argument("--skip-source-evaluation", action="store_true", help="Only rank; do not rerun the source-domain grouped evaluation")
     return root
 
 
@@ -110,6 +120,13 @@ def main(argv: list[str] | None = None) -> int:
         elif arguments.command == "import-annotations":
             from .evaluation import import_annotations
             output(import_annotations(arguments.input, arguments.review_pack))
+        elif arguments.command == "recommend":
+            from .recommendation.pipeline import run_recommendation
+            output(run_recommendation(world_database=arguments.world_database,
+                narou_database=arguments.narou_database, annotations=arguments.narou_annotations,
+                output=arguments.output, history=arguments.history, bridge=arguments.bridge,
+                limit=arguments.limit, require_confirmed_unread=arguments.require_confirmed_unread,
+                evaluate=not arguments.skip_source_evaluation))
         return 0
     except (ValueError, OSError) as error:
         print(f"Error: {error}", file=sys.stderr)
