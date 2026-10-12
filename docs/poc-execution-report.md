@@ -23,10 +23,12 @@ Wikidata の bounded query は、創作形式 P7937 と従来の P31 を併用�
 | Wikidata | 3,154 候補、2,843 関連 entity のラベル・原物 | 古典、年代、原言語の偏り。出典は構造化データの CC0 に限定 |
 | NDL | 29 応答レコードから 26 版を採用、3 件を隔離 | 対応作品の未確定 26 件を作品数に加算しない。検索打切りを全件成功としない |
 | Wikipedia | 採用 2,000 候補に対し 595 記事レコード、792 使用可能 Evidence | 固定 revision の原物を保存し prose-v2 で除外処理。CC BY-SA の条件を継承。自動除外は人手の著作権審査ではない |
-| Open Library | 2026-09-30 authors dump 782,352,949 bytes の取得・SHA・gzip EOF 照合完了。works の固定 889,192,448 byte prefix と完全 authors から 91 work・867 author を抽出 | works は取得中の partial_sample。日付のみの author 名等を隔離し、次回用候補は 90 work・859 author。現 DB へ統合済みは先行抽出の 14 work・4 author のみ |
+| Open Library | 2026-09-30 works dump 4,073,320,823 bytes・authors dump 782,352,949 bytesを取得し、全体SHA・gzip EOF/CRCを照合。41,666,337 work行 / 15,446,415 author行を走査して437 work・959 authorを抽出 | 抽出1,396原物のSHA・出典行を照合。日付だけのauthor名等と関連workを自動保留し、次回候補435 work・951 author、保留2 work・8 author。現固定DBへ統合済みは先行14 work・4 authorで、新候補は分類済み入力へ混ぜていない |
 | Wikisource | 原文 20 作品、40 抜粋、64,000 Unicode 文字。保存した Wikidata 原物から 10 件の版または version と P629 対応を確認 | JP/US の原作・原版条件に限定。10 件は同定保留。実分類は固定した仮 `ws:en:` ID の結果を保持し、新 DB ID の分類結果へ付け替えない |
 
 NDL と Wikipedia の原物は内容 SHA で照合した。同一 Wikidata QID に複数の Open Library ID があって止まった Wikipedia 4 件は、固定 page/revision・pageprops・継承元 Wikidata 原物を照合する `source_mapping` で統合した。独立した同定や人手判断ではなく、依存する出典同士の対応である。一般の複数 work ID に対する保留条件は維持した。
+
+Open Library全体抽出の[監査](../data/openlibrary-complete-v1/candidate-audit.json)と[manifest](../data/openlibrary-complete-v1/manifest.json)も保存した。works SHAは`1e642ad9742e80f1b60f9125eb6a8fa17bafe42690a9236e0df86f86f28eaf1d`、authors SHAは`d374d84a48ddbec3d717c78e5f0b39705fdad728fbc66371a454fc87f23f7044`。works対象450 ID中437、authors対象1,032 ID中959がこのsnapshotに存在し、未検出13 / 73はredirect・削除・別名等の可能性を含むため、実体の不存在とは判定しない。全行の五列構造とgzip CRCを検査したが、JSONの内容検証は対象行だけである。自動保留ルールと相互IDは、人手同定・独立裏付けを代替しない。説明文の権利はmetadataと分け、新たなLLM入力には使っていない。
 
 2026-10-12T01:13:15Z の read-only 監査は source version 2,639、resolved canonical count 2,000、未解決 26、根拠 6,723、field assertion 53,364、入力 2,000。原物 SHA・必須参照は全件照合し、外部キーエラーは 0 件だった。`data/poc-frozen-v2/` に入力・著者/シリーズ ID・DB backup・分類用設定とコードの SHA を固定した。
 
@@ -72,6 +74,7 @@ Windows のジョブ lock は、空の lock file に初期化 byte を書いて�
 - `data/evaluation/poc-frozen-v2/`: read-only 監査、分布調整した 400/20 作品レビュー資料。
 - `data/poc-v1/resolution-review-20261012-v4/`: 正式な名寄せ 400 ペアレビュー資料。途中版は保持する。
 - `data/openlibrary-prefix-v3/`: works 固定 prefix と完全 authors の原物照合・隔離・次回統合候補。
+- `data/openlibrary-complete-v1/`: works/authors全ダンプの末尾検証・対象抽出・原物照合・候補/自動保留。prefix版は歴史的snapshotとして保持。
 - `data/prose-poc/`: 本文原物、原版・権利条件、固定抜粋、品質の機械チェック。
 - `data/runs/prose-style-v1/`: 原文抜粋の実分類。
 - `data/reference/`: 外部研究の固定 metadata と帰属・native annotation。本文・現taxonomyの人手正解とは区別。

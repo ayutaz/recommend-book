@@ -6,7 +6,7 @@
 
 | 要件 | 現在の証拠 | 判定・残る作業 |
 | --- | --- | --- |
-| Open Library・NDL・Wikidata等の収集 | `poc-v1`、`openlibrary-prefix-v3`、`prose-poc`の原物・SHA・ソース別出典。全authors dumpはEOF検証済み、worksは固定prefix抽出 | PoC用の取得を実施。works全ダンプは取得中。partialの未発見を全体の不在としない |
+| Open Library・NDL・Wikidata等の収集 | `poc-v1`、`openlibrary-complete-v1`、`prose-poc`の原物・SHA・ソース別出典。works/authorsの全ダンプを末尾・CRCまで検証 | PoC用の取得を実施。full dumpからwork437/author959を抽出し、1,396原物を照合。自動保留work2/author8、次回候補work435/author951。現在の固定DBへのOpen Library反映は先行14 work/4 authorで、新候補を分類済み入力へ混ぜていない |
 | 用途別利用条件 | `config/sources.json`、許可根拠、作品別原版条件、帰属・変更・条件の記録 | ソース・項目別に管理。一括商用許可や全世界の本文権利確認は未達。未解決資料は分類入力から除外 |
 | 世界・年代・ジャンル横断 | 固定2,000は原言語ja700/en700/その他600、古典原文20を追加 | 実際の便宜的フレーム。長編1,359/LN108/短編533はソースmetadataの分類であり、2,000長編や作品種別の人手確認を意味しない |
 | 作品単位のDB | `poc-combined-v1/dataset.sqlite`、`manifest.json`、`audit.json`、`verification.json` | 2,020 resolved canonical works、未解決26、FK0、integrity=ok。原2,000のID/input hash/source refs不変を確認 |
@@ -25,7 +25,9 @@
 
 ## 次の受け渡し
 
-旧1,000のterminal監査、本体へのv2採用、旧値を保持した新namespaceへの移行、[2,020実行](production-v2-run-record.md)の実終了確認・全件監査・派生DB保存・校正候補診断は実施済み。元入力・旧結果・移行原本を保持している。Open Library works全ダンプの取得と末尾検証、人手の名寄せ・分類精度・関連度・根拠支持・校正の評価が残る。
+旧1,000のterminal監査、本体へのv2採用、旧値を保持した新namespaceへの移行、[2,020実行](production-v2-run-record.md)の実終了確認・全件監査・派生DB保存・校正候補診断、Open Library works/authors全ダンプの取得・末尾検証・抽出原物照合は実施済み。元入力・旧結果・移行原本を保持している。人手の名寄せ・分類精度・関連度・根拠支持・校正の評価が残る。
+
+校正2ラベルの追加数量を、全400から独立したconnected groupを分割しない条件で試算した。[数量試算](../data/evaluation/poc-combined-v2/calibration-whole-group-capacity-v1.json)では、追加known scoredの最低71件を確保するwhole groupの最小費用は74作品 / 35 groups。既存calibrationの人手判定も未入力であり、新74作品がすべて判定可能なtruthを持つとは限らない。追加partitionやレビュー回答は作成せず、他ラベルの校正可能性へ一般化しない。
 
 人手の最初の作業は [pilot20 blind review](../data/evaluation/poc-frozen-v2/pilot20-review-balanced-v1/review.html)。[ラベルガイド](human-taxonomy-v1-guide.md) と [インポート・評価手順](evaluation-guide.md) を使用する。入力資料への忠実性と作品内容truthを分け、実施人数・時間・判定不能・裁定を記録する。LLM、synthetic UI操作、positive-only外部参照をこの人手goldへ混ぜない。
 

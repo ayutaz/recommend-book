@@ -78,3 +78,5 @@ uv run --offline recommend-book classify `
 [実予測の候補診断](../data/evaluation/poc-combined-v2/calibration-candidates-v1/diagnostic.json)はmain2,000と固定calibration100を対象とし、全400から分離したfresh poolは1,600作品 / 1,034 connected groups。既存calibrationの同一scope上限はmetadata 16、実known scored 10で、必要な40件に届かない。追加poolを含め、同一contextの40件・少なくとも1 binの20件という数量条件を満たし得るのは、英語SF（既存4＋pool75、追加known scored最低36）と日本語恋愛（既存5＋pool36、追加最低35）の2ラベルだけだった。evidence/work truth levelの両方に同じ候補が現れるが、4ラベルや倍の標本として数えない。
 
 この数量上限は、人手truthが判定可能であることやwhole groupでの追加配分を保証しない。[診断要約](../data/evaluation/poc-combined-v2/calibration-candidates-summary-v1.json)に保存し、calibratorのfit・追加partition割当・人手注釈の生成は0。閾値を下げず、実人手の正解と必要な追加校正資料を用意してから④の精度・校正を検証する。
+
+追加数量をwhole groupで補う条件も[試算](../data/evaluation/poc-combined-v2/calibration-whole-group-capacity-v1.json)した。全eligible fresh groupを対象とした0/1 covering DPでは、SF36件・恋愛35件の追加known scoredを同時に確保する最小費用は74作品 / 35 groups。これは人手truthが判定可能だと仮定した数量上限の設計で、追加partitionの割当や回答生成は行っていない。既存calibration100の実人手判定と、他ラベルの不足は別に残る。
