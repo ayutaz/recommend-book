@@ -41,4 +41,6 @@ uv run recommend-book classify --input data/production-inputs/poc-frozen-v2-v1/o
 
 完了結果は `summarize_classification_run.py` と固定DBのread-only監査でschema・ID・利用可能な根拠・raw SHA・引用所属・判定coverageを再照合する。人手gold、summaryの忠実さ、ラベルの意味的支持、作品全体の正しさ、信頼度校正は別途評価する。人手goldがない間はprecision/F1/ECE等をnullとし、raw confidenceを校正済み確率として使わない。
 
+実行中、関連度の契約に不整合を確認した。promptとSchemaは中心性不明の`relevance=null`を許容するが、固定validatorはknown判定で数値を必須にしている。完了済みの不正attempt6件・null関連度12項目を`data/evaluation/poc-frozen-v2/relevance-contract-observation-v1/observation.json`へSHA付きで保存した。同じ作品/ラベルの再試行を含むため、12を異なる作品数として扱わない。実行中の入力・検証コード・設定は変更していない。次段階の前に [契約レビュー](relevance-contract-review.md) の次版案を実施し、旧履歴を残して再検証する。支持されていないラベルや関連度の数値を補って成功にしない。
+
 人手レビューには [分布調整した400/20作品の設計](evaluation-balanced-v1.md) と [評価手順](evaluation-guide.md) を使用する。元のblind packはモデル結果の追加で上書きせず、注釈・partition・出典SHAへの対応を保持する。

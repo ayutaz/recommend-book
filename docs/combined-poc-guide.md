@@ -83,6 +83,8 @@ JP / US 個別原典条件と現代寄与の conditional CC-BY-SA は維持し�
 
 `protected-inputs-sha.json` は main DB、frozen tree、prose tree（原 raw・v1・v2を含む）と旧style results の絶対パス/SHA一覧。元 DB・入力・結果を含む314ファイルが実行直前・実行後・最終検査で一致した。外部rootレーンの別ファイル監査を再実行したと主張しない。
 
+その後、rootレーンでも2026-10-12T02:01Zに保護314ファイルのSHAを独立に照合し、旧2,000入力と新DB入力のinput hash/source refs全件一致、古典20IDの非重複、合計2,020の集合一致を確認した。直前のroot監査では永続出力13件のSHA、SQLite immutable read-only接続のintegrity=ok/FK0も照合した。分類の意味精度や人手同定はこの監査の対象ではない。
+
 | 最終成果物 | SHA-256 |
 | --- | --- |
 | SQLite | `1e50c2eabf4dd7afbb1b19a05f9b253439ae9523cf39ce84810bd90f45f7045f` |

@@ -36,7 +36,7 @@ Wikidata 版探索では、提供側の WDQS 障害と 429 を観測した。最
 
 ## 実装検証
 
-コミット `5e8c5c1` の全体テストは Windows / Python 3.14 で 173 passed、`07dd591` は 228 passed。その時点では作業中の独立原文 DB 統合スクリプトとそのテストをコミットから除外した。今回、その統合・単一DB snapshot・本番入力準備・分類観測・Wikidata題名の扱いの修正を含め、全体テストは 258 passed、依存 lock の照合も成功した。機械テストの成功を実分類精度の達成とは扱わない。
+コミット `5e8c5c1` の全体テストは Windows / Python 3.14 で 173 passed、`07dd591` は 228 passed。その時点では作業中の独立原文 DB 統合スクリプトとそのテストをコミットから除外した。`29e4f38` は統合・単一DB snapshot・本番入力準備・分類観測・Wikidata題名の扱いの修正を含めて258 passed。続くcombined分類入力・安定性比較を含む全体検証は271 passed、依存lockとGitHub Actionsのactionlintも成功した。Windows/Ubuntu向けCI設定は追加したが、hosted CIは未実行。機械テストの成功を実分類精度の達成とは扱わない。
 
 Migration 3 は evidence の work/scope/order と works の resolved/canonical index を追加した。実 DB の backup コピーで同じ 100 件の根拠検索が 11.895 秒から 0.00685 秒、全 2,004 件の入力生成が 3.710 秒、stats が 0.170 秒となった。これは特定 snapshot・Windows 環境の観測値であり、10 万作品の性能保証ではない。元資料 version/payload hash と undo の検証を保持した。
 
@@ -50,7 +50,11 @@ Windows のジョブ lock は、空の lock file に初期化 byte を書いて�
 
 2並列結果の何らかの判定は52/100作品で、全軸unknownは48。genre44、theme30、structure14、protagonist28、style0、atmosphere21作品に判定があった。全72ラベル枠では190/7,200のpresent/absent判定（present190・absent0）で、省略ラベルを負例に変換しない。引用160参照の入力内存在を確認したが、意味的支持・summary忠実性は人手未評価。原文のない本体pilotからstyleを断定していない。
 
+同じpilotの2/4/8結果をオフラインで比較し、片方以上がpresent/absentの枠における同じ判定の割合は86.70%/83.09%/84.39%だった。判定の報告有無が27/35/32枠で変わり、全3runで共通するknown状態は167/214=78.04%。これは安定性の観測で、人手正解率や並列度の因果効果ではない。詳細は [classification-stability-guide.md](classification-stability-guide.md)。
+
 固定2,000作品を内容変更なしで並べ替え、最初の1,000を日本語350・英語350・その他300、レビュー400とpilot100の和集合479作品を全件含む順序にした。`data/runs/poc-frozen-v2-production-v1` へ8並列・batch5で1,000作品の本番分類を開始した。詳細・再開条件は [production-classification-guide.md](production-classification-guide.md)。起動は完了件数を意味しない。
+
+実行中に、中心性不明のrelevance nullを許容するprompt/schemaとknownでnullを拒否するvalidatorの不整合を確認した。[契約レビュー](relevance-contract-review.md) に原因と次版でのvalidation/hash/cache再検証案を保存した。live/frozen設定は変更していない。新しいcanonical古典20件を元2,000行へ末尾追加した [2,020件の次段階入力](combined-production-inputs-guide.md) も準備済みだが、実行は未起動であり、旧contextは入力provenanceとしてのみ保持する。
 
 端末資源は scheduler と生存する子プロセスを別途サンプリングする。測定間隔内に終了したプロセスは記録できず、sample の最大値を厳密な peak と表示しない。
 

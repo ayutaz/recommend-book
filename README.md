@@ -4,6 +4,8 @@
 
 現在の対象は、データ収集・統合・分類・分類精度検証までです。実施計画は [世界の小説データセット計画](docs/world-novel-dataset-plan.md)、実取得・実分類の確認状況は [PoC実行記録](docs/poc-execution-report.md) に記録しています。
 
+各要件の完了証拠と残る作業は [PoC完了監査](docs/poc-completion-audit.md)、Windows/Ubuntuのテスト設定は [CI検証ガイド](docs/ci-validation-guide.md) に記録しています。
+
 ## 開発環境
 
 Python 3.12以上とuvを使用します。Windows/Python 3.14で検証しています。
