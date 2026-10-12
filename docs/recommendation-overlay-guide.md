@@ -2,7 +2,7 @@
 
 `apply_classification_overlay` は、旧分類済み SQLite の推薦行へ、更新した書誌 SQLite に対応する新分類結果を読み取り専用で適用する。返却値は `{'rows': [...], 'audit': {...}}`。SQLite は `mode=ro&immutable=1` で読み、DB・入力・分類結果を書き換えず、新 DB に分類テーブルを作らない。LLM の追加起動も行わない。
 
-この文書作成時点では実差分分類 session `25985` は進行中で、実結果は未完了、実 overlay 適用は **0 回**。以下の件数は準備済み差分の契約であり、成功した分類結果や人手品質確認を示さない。実行ディレクトリはこの文書作成のために読み取っていない。
+初版作成時は実差分分類 session `25985` が進行中で、実 overlay 適用は0回だった。2026-10-13に268件の実分類終了（exit0）とactual overlay独立照合、推薦v3生成を確認した。[実行記録](enrichment-classification-run-record.md)に実測件数・終了proof・CLI表記の事後訂正を記録する。以下は処理の契約であり、人手品質確認を示さない。
 
 ## API と CLI
 
@@ -67,7 +67,7 @@ run は `selected == completed == delta 件数`、`failed == pending == 0`、`st
 
 terminal proof は `schema_version='classification-terminal-proof-v1'`、UTC `observed_at`、非空 `session_id`、対応する `run_id`、`process_exit_observed=true`、非 bool 整数 **`exit_code=0`** が必須。実 handle の終了観測後に作る証拠であり、分類の人手正解を表さない。
 
-`manifest_sha256`、`results_sha256`、`ordered_inputs_sha256` は対応する raw artifact と一致する。`execution_context_manifest_sha256` と `cli_profile_sha256_before/after` はいずれも固定 delta manifest bytes の SHA と一致する。ここでいう CLI profile はユーザー設定や認証情報ではない。
+`manifest_sha256`、`results_sha256`、`ordered_inputs_sha256` は対応する raw artifact と一致する。`execution_context_manifest_sha256` と `cli_profile_sha256_before/after` はいずれも固定 delta manifest bytes の SHA と一致する。ここでいう CLI profile はユーザー設定や認証情報ではない。今回の実proofは `post_run_cli_observation_correction` と明記し、before/afterは訂正contextの終了監査前後を表す。v2を実起動前に記録した証拠ではなく、元v1とactual run configのCLI表記差を隠さない。
 
 proof の `artifact_sha256` に次の **4 source keys** が必須で、追加 keys は許容する。
 
@@ -100,6 +100,6 @@ root pipeline は overlay が SQL 検証した `old_to_new_canonical` だけを�
 
 synthetic fixture で overlay 29 件、world adapter 21 件、派生 DB importer 47 件の合計 **97 件が成功**した。exit code 1・17・-1 の拒否は RED を確認してから修正した。全入力差分、SQL crosswalk、immutable source 保持、raw copy、durable result、末尾変更、unknown による旧 feature 除去、world projection との一致を確認済み。これは実 268 分類の完了確認や推薦品質評価ではない。
 
-root の SQL overlay＋実 ranker の結合 fixture を含む pipeline 関連15件も成功した。旧IDだけの既読・未読・不明の履歴、旧新aliasの競合、異なる実評価の非合成、HTML出力中のsource変更検出と生成stagingだけの削除を検証した。native provenance保持の改善を含むローカル本体テストは **972 passed / 48.95秒**。GitHub hosted CIは未実行。
+root の SQL overlay＋実 ranker の結合 fixture を含む pipeline 関連15件も成功した。旧IDだけの既読・未読・不明の履歴、旧新aliasの競合、異なる実評価の非合成、HTML出力中のsource変更検出と生成stagingだけの削除を検証した。native provenance保持とCLI表記差fixtureを含む2026-10-13のローカル本体テストは **973 passed / 48.56秒**。GitHub hosted CIは未実行。
 
-次の実適用は、root が live run の終了コード 0 を観測し、完全な terminal proof を作成してから行う。新 namespace 公開後に履歴対応と推薦再評価を行い、旧 DB・prepared namespace・旧推薦出力を保存する。
+2026-10-13の実適用では、root がlive runの終了コード0を観測し、事後訂正scopeを明記したterminal proofを作成した後、実overlay独立照合と推薦v3生成を行った。実SQLの全97変更IDを使うsynthetic履歴対応、評価の順位・指標不変、全source/output SHAを確認した。旧DB・prepared namespace・旧推薦出力は保持する。実本人履歴と人手品質は未検証であり、[実行記録](enrichment-classification-run-record.md)へ引き継ぐ。

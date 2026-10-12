@@ -7,11 +7,13 @@
 ```python
 prepare_enrichment_classification(
     old_inputs, enriched_dir, output_dir,
-    expected_count=2020, model='gpt-6.1-sol', cli_version='0.162.1',
+    expected_count=2020, model='gpt-6.1-sol', cli_version='codex-cli 0.162.1',
     batch_size=5, concurrency=8, timeout=900,
     max_run_seconds=None, max_observed_tokens=None, stop_on_rate_limit=True,
 ) -> dict
 ```
+
+`cli_version` はnative `codex --version` のraw stdoutをstripした文字列を、そのまま明示指定する。prefixを削って短縮しない。scriptの既存default値に依存せず、実runnerが記録する文字列との完全一致を確認する。
 
 manifest の filenames を確認し、補強後入力は `bibliographic-work-inputs.jsonl`、対応資料は `canonical-crosswalk.json` を使用した。`work-inputs.jsonl` と両方が宣言されていれば入力の曖昧さとして拒否する。各 manifest の SHA、入力件数・work-level expression、ID 重複、durable outputs 全SHA、SQLite sidecar 不在、crosswalk の完全一対一対応を照合する。
 
@@ -27,12 +29,12 @@ manifest の filenames を確認し、補強後入力は `bibliographic-work-inp
 uv run python scripts/prepare_enrichment_classification.py `
   --old-inputs data/production-inputs/poc-combined-v1-v1/ordered-inputs.jsonl `
   --enriched data/poc-openlibrary-enriched-v1 `
-  --output data/production-inputs/poc-openlibrary-enriched-v1-delta-v1 `
-  --model gpt-6.1-sol --cli-version 0.162.1 `
+  --output data/production-inputs/poc-openlibrary-enriched-v1-delta-v2 `
+  --model gpt-6.1-sol --cli-version 'codex-cli 0.162.1' `
   --batch-size 5 --concurrency 8 --timeout 900
 ```
 
-exit0、`prepared_not_started`。全2020件は **変更268 / unchanged1752**、代表ID変更97。同一IDの変更171件と合わせて268件を固定した。accepted work264件という収集件数とdelta件数を同一視しない。
+exit0、`prepared_not_started`。初回v1はこのコマンドのoutputを `...-delta-v1`、versionを短縮文字列 `0.162.1` として実行した。これは後述のCLI観測記録の誤りであり、旧namespaceを上書きせず保持する。全2020件は **変更268 / unchanged1752**、代表ID変更97。同一IDの変更171件と合わせて268件を固定した。accepted work264件という収集件数とdelta件数を同一視しない。
 
 | 差分 | 件数 |
 | --- | ---: |
@@ -66,7 +68,7 @@ deltaごとの `prompts/<new-input-hash>.txt` を保存し、false Evidence除�
 
 `input-comparison.json` は全2020件を旧ordered順に保存する。overlay向け必須keysは old_work_id/new_work_id/expression_id/old_input_hash/new_input_hash/changed/identity_changed/source_refs_changed/evidence_changed。canonical crosswalkの原bytesは `canonical-crosswalk.source.json` に保持し、両path/SHAをmanifestへ保存する。`all-inputs.jsonl` はnamespace固定pathで、`all_inputs_sha256` で検証する。
 
-入力準備の「feature enrichment比較」は根拠のkind/source/rights/言語coverageまでである。新分類ラベルや推薦特徴の改善は未観測で、別の実Sol完了結果から評価する。旧分類をchanged hashに移植して改善件数を作らない。268件のchanged-only runなので、full2020 importを無理に流用しない。
+入力準備の「feature enrichment比較」は根拠のkind/source/rights/言語coverageまでである。準備時点では新分類ラベルや推薦特徴の増減は未観測で、別の実Sol完了結果から評価する。2026-10-13の完了結果と推薦snapshotの特徴件数は[差分実行記録](enrichment-classification-run-record.md)へ記録した。旧分類をchanged hashに移植して改善件数を作らない。268件のchanged-only runなので、full2020 importを無理に流用しない。
 
 ## SHAと検証
 
@@ -80,4 +82,27 @@ deltaごとの `prompts/<new-input-hash>.txt` を保存し、false Evidence除�
 | delta manifest | `a173570202eeed51ac5e36c1a5d86caf323d9eb08cda439ff05bf4de8a3c1a29` |
 | 別source audit | `6d5615032cec45d18bffb35f5ef9d112177271971dabc49473cf19cf989f7660` |
 
-TDDは未実装13failures→13passed、独立source audit未実装1failureとmanifest未記載SQLite sidecarの見逃し1failureを確認して修正。`uv run pytest tests/test_prepare_enrichment_classification.py tests/test_freeze_classification_execution.py tests/test_combined_production_inputs.py -q` は **41 passed**、専用15cases。入力tree/core10を変更せず、旧freeze・review・結果・runner/prompt/schema等への追加編集は行っていない。人手精度の確認ではない。
+TDDは未実装13failures→13passed、独立source audit未実装1failureとmanifest未記載SQLite sidecarの見逃し1failureを確認して修正。raw CLI version訂正時の入力・core bytes保持とmetadataのみのprompt差を試すfixtureを追加した。`uv run pytest tests/test_prepare_enrichment_classification.py tests/test_freeze_classification_execution.py tests/test_combined_production_inputs.py -q` は **42 passed**、専用16cases。入力tree/core10を変更せず、旧freeze・review・結果・runner/prompt/schema等への追加編集は行っていない。人手精度の確認ではない。
+
+## v1のCLI記録誤りとv2の事後訂正
+
+root報告による既存268件実runはsession25985 exit0、268completed、failed/pending0、54CLI calls、約17分で終了した。実runはv1のdelta入力SHA `5099df8a...` を用いている。結果・job keys・manifestを今回の訂正工程で修正せず、LLMの再実行も行わない。
+
+rootの2026-10-13 native prelaunch `codex --version` 観測raw stdoutは `codex-cli 0.162.1` だったが、v1準備時は短縮 `0.162.1` を指定した。このためv1 frozen run_configと実run configに文字列差が生じた。バージョン番号が同じでもconfig/job key上は異なり、元v1が実run configと一致したように扱ってはいけない。
+
+通常準備scriptにraw文字列を明示して新namespace `data/production-inputs/poc-openlibrary-enriched-v1-delta-v2` を生成した。既存default/API/scriptをこの訂正のために変更せず、core10も変更しない。実run manifestの小さなconfig objectだけをread-onlyで読み、v2 run_configとの値全体の完全一致を確認した。実job/result payloadは読み書きしていない。versionをこの訂正工程で再測定したわけではなく、rootのprelaunch観測とimmutable actual configに基づく。
+
+delta268のordered bytes、oldorderでunchanged保持したall-inputs bytes、全2020のold/new input_hash対、artifacts10 bytesはv1と完全一致した。v1全286 declared outputsとmanifestを含む全287filesのSHA・inventoryが前後不変である。v1 source auditも保持する。
+
+promptには `output_identity.cli_version` が埋め込まれるため、268単作品promptのbytesは新raw文字列によって変わる。各promptはCLI metadata文字列一箇所だけを置換したbytesと一致し、allowed evidence・rights・ID・input_hash・指示・taxonomyは完全一致する。前後SHAを一件ずつ監査へ残した。v1 promptを新contextと整合するように無変更で流用した表記にはしない。実runnerのimmutable prompt/batch recipeとの整合は確認するが、保存単作品promptを実batch stdinの捕捉証明と呼ばない。
+
+別 `...delta-v2-correction-audit.json` は `correction_type=post_run_cli_observation_correction` とし、v1/v2 manifest、actual config、prompt差、同一入力SHA、core bytes不変、再実行0を保持する。v2の `prepared_not_started` / `llm_started=false` は **v2生成工程自身がLLMを開始していない**意味であり、元268件runが未実行という意味ではない。既存結果との対応付けは同一input SHA・新configとactual config一致によるもので、actual result metadataの付替えではない。
+
+v2にも独立source auditを実行し、accepted record456、false description112、許可input/promptへの再付替え0を確認した。固定namespaceは生成後に編集していない。
+
+| 事後訂正artifact | SHA256 |
+| --- | --- |
+| v1 manifest（前後不変） | `a173570202eeed51ac5e36c1a5d86caf323d9eb08cda439ff05bf4de8a3c1a29` |
+| v2 manifest | `86dfc45be984bba4ddd4b07da735037d3b9fa2ce05f8da66dbd61c0428ae3ed4` |
+| v2 correction audit | `94d60919ba1763dc07858a1773617feebde59b5cf5740f5b217f86e577e70049` |
+| v2 source audit | `6d813e57f7f89d703d850edefa3a28c7d011b66258b09855000d573a0f928126` |

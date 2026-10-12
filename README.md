@@ -6,11 +6,11 @@
 
 各要件の完了証拠と残る作業は [PoC完了監査](docs/poc-completion-audit.md)、Windows/Ubuntuのテスト設定は [CI検証ガイド](docs/ci-validation-guide.md) に記録しています。
 
-現在、2,020作品のSol分類と全件監査、[分類結果を含む派生DB](data/poc-combined-classified-v2-v1/dataset.sqlite)の作成まで実施済みです。3,194ラベルを保存していますが、何らかの判定がある作品は47.62%で、根拠不足はunknownです。人手goldは0件のため、意味的な分類精度・関連度精度・信頼度校正は未評価です。[実行記録](docs/production-v2-run-record.md)に件数・使用量・残る制約を記録しています。
+2,020作品のSol分類と全件監査、[分類結果を含む派生DB](data/poc-combined-classified-v2-v1/dataset.sqlite)を作成しました。旧DBに3,194ラベルを保持し、書誌補充後の変更268作品は別途再分類しています。現在の推薦snapshotは分類特徴あり994作品・なし1,026作品です。人手goldは0件のため、意味的な分類精度・関連度精度・信頼度校正は未評価です。[初回実行](docs/production-v2-run-record.md)、[差分分類と推薦v3](docs/enrichment-classification-run-record.md)に件数・使用量・残る制約を記録しています。
 
-本人のなろう評価335作品を読み取り専用で接続し、世界の2,020作品に対する[推薦候補100件](data/recommendation-poc-v2/recommendations.html)と、作者名等のグループによる5分割評価を生成しました。今回の個人方式は人気順を上回っておらず、世界の小説の推薦品質・未読状態は未確認です。[実行手順](docs/recommendation-poc-guide.md)、[比較結果](docs/recommendation-poc-run-record.md)を参照してください。
+本人のなろう評価335作品を読み取り専用で接続し、世界の2,020作品に対する[更新後の推薦候補100件](data/recommendation-poc-v3/recommendations.html)と、作者名等のグループによる5分割評価を生成しました。嗜好との正の類似からスコアを算出できた作品は673→696件です。個人方式は人気順を上回っておらず、世界の小説の推薦品質・未読状態は未確認です。[実行手順](docs/recommendation-poc-guide.md)、[初回比較](docs/recommendation-poc-run-record.md)、[更新後の監査](docs/enrichment-classification-run-record.md)を参照してください。
 
-Open Library補充後の[変更268作品の固定入力](docs/enrichment-classification-preparation.md)と、[新分類の推薦への統合](docs/recommendation-overlay-guide.md)を用意しました。旧IDの既読履歴もSQLで検証した対応表から引き継ぎます。[推薦の誤差分析](docs/recommendation-error-analysis.md)では、特徴欠損と大きな同点群、対象分野の実評価不足を分けて記録しています。
+Open Library補充後の[変更268作品の固定入力](docs/enrichment-classification-preparation.md)を8並列で分類し、[新分類の推薦への統合](docs/recommendation-overlay-guide.md)と独立監査まで実施しました。旧IDの既読履歴もSQLで検証した対応表から引き継ぎます。[推薦の誤差分析](docs/recommendation-error-analysis.md)では、特徴欠損と大きな同点群、対象分野の実評価不足を分けて記録しています。
 
 ## 開発環境
 

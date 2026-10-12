@@ -122,3 +122,20 @@ def test_source_audit_proves_denied_retrieval_description_is_absent_without_muta
     assert report['denied_evidence_rebound_to_input']==0 and report['input_denied_count']==1
     assert report['llm_started'] is False and report['raw_retrieval_performed'] is False
     assert all(p.read_bytes()==raw for p,raw in before.items())
+
+
+def test_raw_cli_version_changes_config_and_prompt_metadata_only_without_rewriting_v1(tmp_path):
+    old,new,*_=fixture(tmp_path);module=script();v1=tmp_path/'v1';v2=tmp_path/'v2'
+    first=module.prepare_enrichment_classification(old,new,v1,expected_count=4,cli_version='0.162.1')
+    before={p.relative_to(v1):p.read_bytes() for p in v1.rglob('*') if p.is_file()}
+    second=module.prepare_enrichment_classification(old,new,v2,expected_count=4,cli_version='codex-cli 0.162.1')
+    for name in ('ordered-inputs.jsonl','all-inputs.jsonl',*('artifacts/'+n for n in module.ARTIFACTS)):
+        assert (v1/name).read_bytes()==(v2/name).read_bytes()
+    old_config=deepcopy(first['execution_context']['run_config']);new_config=deepcopy(second['execution_context']['run_config'])
+    assert old_config.pop('cli_version')=='0.162.1'
+    assert new_config.pop('cli_version')=='codex-cli 0.162.1'
+    assert old_config==new_config
+    for prompt in (v1/'prompts').glob('*.txt'):
+        expected=prompt.read_bytes().replace(b'"cli_version": "0.162.1"',b'"cli_version": "codex-cli 0.162.1"')
+        assert expected==(v2/'prompts'/prompt.name).read_bytes()
+    assert all((v1/name).read_bytes()==raw for name,raw in before.items())
