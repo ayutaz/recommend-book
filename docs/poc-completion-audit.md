@@ -18,7 +18,7 @@
 | 関連度・信頼度 | 生のモデル値、calibrated値null、scope・根拠・欠損 | 付与基盤あり。中心性不明のnullをvalidatorが拒否する不整合を実例で確認し、終了後の次版修正が必要。数値を捏造して埋めない |
 | 人手正解と分割 | balanced400のdev150/calibration100/holdout150、dev内pilot20、72ラベル日本語ガイド | blind pack作成済み、人手gold0。二名判定/裁定または人数制約を記録した実注釈が必要 |
 | 分類精度・関連度精度・根拠支持 | 評価器・構造/引用所属の機械照合・分布レポート | 人手precision/recall/F1、関連度MAE・順位相関、意味的支持は未評価。引用文字列の存在はラベル支持の証拠とは別 |
-| 信頼度校正 | calibration/holdout分離、実装テスト、最小標本条件 | 実データの校正未実施。人手calibrationだけで学習し、支持十分な範囲だけholdoutへ適用。範囲外はnullを維持 |
+| 信頼度校正 | calibration/holdout分離、実装テスト、[実行可能性監査](calibration-feasibility-v1.md)、最小標本条件 | 固定calibration100は同一scopeの最大が16件で、必要な40件へ構造的に届かない。元400を維持した別の追加calibrationが必要。実際のknown予測・人手truth・confidence帯・同一contextを確認して対象範囲を決める。範囲外はnullを維持 |
 | 固定品質gate・再現・復旧 | `poc-quality-gates-v1.md`、immutable入力、lease/cache/再開テスト | 条件は固定済み。全本番結果・人手評価・処理量を照合した最終品質レポートは未完了 |
 | fixtureによるCI | `.github/workflows/tests.yml`のWindows/Ubuntu設定、依存lock・workflow構文の検証、追加時点のローカル269テスト成功 | CI設定を追加済み。GitHub hosted実行は未実施。ローカル成功をCI実行成功として報告しない |
 

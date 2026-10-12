@@ -97,6 +97,8 @@ Bootstrapはmicro指標、関連度MAE、ECE、Brierの区間を記録する。�
 
 この小規模な帯別校正器は比較のための初期実装であり、全ラベル・全資料への校正を主張しない。最終評価では適用可能な帯だけを校正してECE/Brierを集計し、対象件数を併記する。未対応の範囲はnull/uncalibratedのまま残る。モデル、プロンプト、分類体系、入力資料が変わった場合は同じ校正器を流用せず、新版で評価する。
 
+2026-10-12の[実行可能性監査](calibration-feasibility-v1.md)では、固定balanced400のcalibration100は同じ原言語・資料種類集合の最大が16作品で、すべてのラベルのscopeが必要な40件に届かないことを確認した。人手注釈を100作品分用意しても、この固定セットだけでは校正器を作れない。元400と品質条件を維持し、追加calibrationを別packとして固定する必要がある。未選択poolから数量上の追加下限は算出したが、実際のknown予測・人手truth・confidence帯・実行contextは未検証で、件数だけでは校正の成立を保証しない。
+
 ## 名寄せペアの評価
 
 `evaluate_resolution_pairs(predictions, gold, candidates=None)` は `left_id / right_id / decision`（`same / different / uncertain`）のペアを受ける。人手・担当IDのある300〜500組を計画規模とし、same判定precision/recall/F1、precisionのWilson区間、候補探索の再現率、ペア種別の支持件数を報告する。人手のuncertainは正誤評価対象外、モデルのuncertainは人手sameの未検出になる。300〜500件に届かない場合は計画規模未達を明示する。
