@@ -46,6 +46,7 @@ annotation の prompt version は `content-v1`、review version は `content-rev
 | `popularity` | 成功 metadata の保存 `global_point` が 0 以上の整数なら保持、それ以外 null。評価・confidence から作らない |
 | `features` | 相談済み partial bridge の共通 label ID → 推薦用 feature strength |
 | `native_features` | `narou.theme.<native ID>` → central 1.0 / secondary 0.3。within-source 比較の別 field |
+| `native_feature_provenance` | 全検証済 native theme の元根拠。feature ごとに SHA / id / prominence / 元 source と完全一致 quote / prompt・review version を list で保持 |
 | `feature_provenance` | 各 target label の複数寄与を list で保持。SHA / source / mapping version / native evidence と重みを区別 |
 | `provenance` | 全 row に SQLite / annotation / source / bridge SHA、rating snapshot と日付、元読書状態、欠損を保持 |
 
@@ -75,9 +76,13 @@ metadata genre は宣言された推薦 feature、theme は LLM があらすじ�
 
 同じ target feature に複数寄与する場合は最大 weight を使い、provenance は全寄与を残す。未対応 native theme は audit と row の `unmapped_native_theme_ids` へ保存。power（強さの発揮・無双）を社会的権力の `theme.power` にしない。cozy を本文未取得の `atmosphere.tranquil` にしない。parenting / belonging を家族の事実なしに変換せず、gender / tone も world label にしない。feature の省略は unknown であり、absent を意味しない。
 
+native-theme 診断は `native_features` と **`native_feature_provenance`** を組にして使う。共有 label の `feature_provenance` へ置き換えると、未対応テーマの元根拠が診断から欠落する。native 側は検証済み 14 themes すべてについて、実際の annotation の quote と元 field（title / keyword / story）、native id / prominence、prompt / review version、既存 base の SQLite / annotation / source / bridge SHA を保持する。annotation のない row は空 dict を返す。新たな quote、confidence、人手判定、target label への写像は生成しない。native provenance の追加によって既存の feature value、mapping、推薦 weight は変更しない。
+
 ## 検証と実行範囲
 
 `uv run pytest tests/test_narou_adapter.py -q` は人工 SQLite / annotation のみを使用する。readonly bytes、stale source、identity / duplicate / quote / enum、unsupported bridge、userid の型、date tie、nonfinite JSON、WAL、source mutation、全 native read state の共通 engine への受け渡しを検証する。
+
+native provenance の追加は TDD で全 14 themes × central / secondary、mapped / unmapped の元 quote、confidence null、人手 gold false、入力 bytes 不変を検証した。ここでの個別テーマ fixture は provenance の形式・保持を検証し、文学的な意味分類の正確さを検証するものではない。元 private data / 分類 core artifact / mapping config / 順位計算は編集しない。
 
 実 private 入力も adapter を一度読み、source SHA 一致・全 335 row 保持・未 annotation 4・共有 feature 空 7・author identity 0 / writer blocking 331 / series identity 0・原 bytes 不変を確認した。aggregate audit は ignored private `adapter-audit.json` に保存した。実 rows をテストや公開 document に書き出していない。
 

@@ -10,6 +10,8 @@
 
 本人のなろう評価335作品を読み取り専用で接続し、世界の2,020作品に対する[推薦候補100件](data/recommendation-poc-v2/recommendations.html)と、作者名等のグループによる5分割評価を生成しました。今回の個人方式は人気順を上回っておらず、世界の小説の推薦品質・未読状態は未確認です。[実行手順](docs/recommendation-poc-guide.md)、[比較結果](docs/recommendation-poc-run-record.md)を参照してください。
 
+Open Library補充後の[変更268作品の固定入力](docs/enrichment-classification-preparation.md)と、[新分類の推薦への統合](docs/recommendation-overlay-guide.md)を用意しました。旧IDの既読履歴もSQLで検証した対応表から引き継ぎます。[推薦の誤差分析](docs/recommendation-error-analysis.md)では、特徴欠損と大きな同点群、対象分野の実評価不足を分けて記録しています。
+
 ## 開発環境
 
 Python 3.12以上とuvを使用します。Windows/Python 3.14で検証しています。

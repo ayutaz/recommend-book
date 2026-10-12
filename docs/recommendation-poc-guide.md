@@ -22,6 +22,7 @@ uv run --offline recommend-book recommend `
 | `recommendations.html` | 著者・原言語・年代、推薦理由、作品情報リンク、読書状態による表示切替 |
 | `recommendations.json` | 推薦順位・未校正の推定スコア・参照評価との共通特徴・出典 |
 | `profile.json` | 既存評価の集計。対応できないなろう固有テーマも別項目で保持 |
+| `read-history-audit.json` | 本人が指定した履歴の原記録、検証済みID対応、競合の処理。個人記録なのでGit管理しない |
 | `source-domain-evaluation.json` | 共通特徴を使った、既存評価のグループ別5分割検証 |
 | `native-theme-evaluation.json` | なろう固有14テーマだけを使う感度確認。元の文章＋テーマ方式の再現とは別 |
 | `manifest.json` | 入力・実装・出力のSHA、データ件数、推薦可能率、未検証項目 |
@@ -51,10 +52,16 @@ uv run --offline recommend-book recommend `
 
 ## 評価と残る条件
 
+[誤差分析](recommendation-error-analysis.md)は固定v2の性能差・大きな同点群・対応不足を記録する。後の実装では、なろう固有テーマも検証済みの元引用を `native_feature_provenance` として保持し、診断評価へ渡す。335実評価の別計算では、全方式・全foldの順位ID・スコア・評価指標がv2と完全一致し、native personalの根拠参照なし候補は335→12、計算可能だが参照なしの候補は323→0となった。これは根拠の保持を直した結果で、推薦精度を改善した証拠ではない。詳細はローカルの `data/evaluation/poc-openlibrary-enriched-v1-delta-v1/native-provenance-audit-v1.json` に保存した。
+
 本人の既存評価を著者・シリーズID、保守的な作者名グループ、同一外部IDの連結成分で5分割する。参照側だけから好みを作り、評価側の本人評価を順位計算から隠す。個人方式・人気順・固定乱数順を同じ候補集合で比較する。未知評価を低評価に変換しない。
 
 保存されていない著者・シリーズIDについて漏洩がないとは保証できない。現時点の作品情報を使う探索的な過去評価であり、当時の推薦や将来の未読作品での効果は再現していない。詳細は[評価仕様](recommendation-evaluation.md)、[実行記録](recommendation-poc-run-record.md)を参照する。
 
 世界の小説側の本人評価が不足している間は、なろう上の結果だけで分野横断の推薦精度を認定しない。分類の人手20作品試行→400作品評価、名寄せ400ペア、必要範囲の信頼度校正を続ける。分類評価の固定基準は変更しない。
 
-追加のOpen Library補充は[独立した新DB](openlibrary-enrichment-validation.md)へ保存した。入力が変わった作品は新規分類が必要で、旧結果を新しい代表IDやinput hashへ付け替えない。既存のレビュー用入力も変更しない。
+追加のOpen Library補充は[独立した新DB](openlibrary-enrichment-validation.md)へ保存した。[変更入力の準備](enrichment-classification-preparation.md)で全2,020作品を比較し、変更268作品・不変1,752作品・代表ID変更97作品を固定した。入力が変わった作品は新規分類が必要で、旧結果を新しい代表IDやinput hashへ付け替えない。既存のレビュー用入力も変更しない。
+
+新分類を反映する場合、既存の `--world-database` を分類済み旧DBのまま指定し、追加で `--enriched-database`、`--delta-inputs`、`--delta-manifest`、`--delta-results`、`--delta-run-manifest`、`--delta-terminal-proof` の6引数をすべて渡す。一部だけの指定は拒否する。268件すべての終了成功と入力・根拠・SHAの照合後、新しい推薦出力先に `world-works.json` と `classification-overlay-audit.json` を保存する。補充DBへ分類テーブルを追加したという意味ではない。詳細は[分類差分の統合](recommendation-overlay-guide.md)を参照する。
+
+統合時の既読履歴はSQLで検証した旧代表ID→新代表IDの対応だけを使う。旧IDの既読を新候補の除外へ反映し、元の本人記録は監査ファイルへ保持する。旧IDと新IDの別記録が同じ作品に一致する場合、既読や実評価があれば除外し、未読と不明が混在すれば不明を保つ。同一の元IDを重複登録した入力は引き続き拒否する。実評価を平均・合成したり、候補作品の本人評価として転記したりしない。

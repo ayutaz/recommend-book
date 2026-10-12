@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from copy import deepcopy
 from datetime import datetime, timezone
 import hashlib
 from html import escape
@@ -9,6 +10,7 @@ import json
 import math
 import os
 from pathlib import Path
+import shutil
 import tempfile
 from urllib.parse import urlsplit
 
@@ -95,6 +97,59 @@ def build_profile(rows: list[dict]) -> dict:
     }
 
 
+def _remap_history(rows: list[dict], mapping: dict[str, str] | None) -> tuple[list[dict], dict]:
+    """Map only SQL-verified aliases; retain the original personal records in audit.
+
+    Distinct old/new aliases may converge. Read takes precedence; unknown prevents
+    an unread assertion. A recorded rating is retained only for read exclusion,
+    never averaged or transferred to a target recommendation's rating field.
+    """
+    originals = deepcopy(rows)
+    seen = set()
+    mapped = []
+    records = []
+    groups: dict[str, list[int]] = {}
+    for index, original in enumerate(rows):
+        old = original.get('work_id')
+        if old is not None:
+            if old in seen:
+                raise ValueError('duplicate work_id in read_history: ' + old)
+            seen.add(old)
+        new = mapping.get(old, old) if mapping is not None else old
+        row = deepcopy(original)
+        if old is not None:
+            row['work_id'] = new
+            groups.setdefault(new, []).append(index)
+        mapped.append(row)
+        records.append({'source_index': index, 'old_work_id': old, 'new_work_id': new,
+                        'mapped_by_verified_crosswalk': mapping is not None and old in mapping,
+                        'identity_changed': old != new})
+    merged = []
+    removed = set()
+    for work, indices in groups.items():
+        if len(indices) == 1:
+            continue
+        aliases = [mapped[index] for index in indices]
+        statuses = {row['read_status'] for row in aliases}
+        resolved = 'read' if 'read' in statuses else 'unknown' if 'unknown' in statuses else 'unread'
+        rating_index = next((index for index in indices if mapped[index].get('rating') is not None), None)
+        combined = mapped[indices[0]]
+        external = {(item['source'], item['value']) for row in aliases for item in row.get('external_ids', [])}
+        combined.update(read_status=resolved, external_ids=[{'source': source, 'value': value}
+                                                           for source, value in sorted(external)])
+        combined['rating'] = mapped[rating_index]['rating'] if rating_index is not None else None
+        removed.update(indices[1:])
+        merged.append({'work_id': work, 'source_indices': indices, 'source_read_statuses': sorted(statuses),
+                       'resolved_read_status': resolved, 'rating_source_index': rating_index,
+                       'rating_selection': 'first_known_record_for_exclusion_only'})
+    output = [row for index, row in enumerate(mapped) if index not in removed]
+    return output, {'version': 'verified-history-canonical-mapping-v1', 'original_records': originals,
+                    'input_count': len(rows), 'output_count': len(output), 'record_mapping': records,
+                    'changed_identity_count': sum(record['identity_changed'] for record in records),
+                    'merged_identity_groups': merged, 'title_matching_used': False,
+                    'original_records_mutated': False, 'unknown_to_unread_inferred': False}
+
+
 def render_recommendations(result: dict, profile: dict) -> str:
     display_path = Path(__file__).resolve().parents[3] / 'config/recommendation-label-display-ja.json'
     labels_ja = json.loads(display_path.read_text(encoding='utf-8'))['labels'] if display_path.exists() else {}
@@ -138,13 +193,22 @@ def render_recommendations(result: dict, profile: dict) -> str:
 def run_recommendation(*, world_database: Path, narou_database: Path, annotations: Path,
                        output: Path, history: Path | None = None, bridge: Path | None = None,
                        limit: int = 20, require_confirmed_unread: bool = False,
-                       evaluate: bool = True) -> dict:
+                       evaluate: bool = True, enriched_database: Path | None = None,
+                       delta_inputs: Path | None = None, delta_manifest: Path | None = None,
+                       delta_results: Path | None = None, delta_run_manifest: Path | None = None,
+                       delta_terminal_proof: Path | None = None) -> dict:
     from .engine import rank_candidates
     from .narou import load_narou_reference
     from .world import load_world_database
     from .evaluation import evaluate_recommendations
     if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
         raise ValueError('Recommendation limit must be positive')
+    overlay_paths = {'enriched_database': enriched_database, 'delta_inputs': delta_inputs,
+                     'delta_manifest': delta_manifest, 'delta_results': delta_results,
+                     'delta_run_manifest': delta_run_manifest, 'delta_terminal_proof': delta_terminal_proof}
+    use_overlay = any(value is not None for value in overlay_paths.values())
+    if use_overlay and any(value is None for value in overlay_paths.values()):
+        raise ValueError('Classification overlay requires all six inputs and terminal proof')
     output = Path(output).resolve()
     if output.exists():
         raise ValueError('Output must be a new directory; existing artifacts are immutable')
@@ -155,15 +219,30 @@ def run_recommendation(*, world_database: Path, narou_database: Path, annotation
     if bridge is None:
         bridge = Path(__file__).resolve().parents[3] / 'config/recommendation-feature-bridge.json'
     paths['bridge'] = Path(bridge)
+    if use_overlay:
+        paths.update({key: Path(value) for key, value in overlay_paths.items()})
     project_root = Path(__file__).resolve().parents[3]
     code_paths = [Path(__file__), *(Path(__file__).parent / (name + '.py') for name in ('engine', 'narou', 'world', 'evaluation')),
                   project_root / 'config/taxonomy.json', project_root / 'config/recommendation-label-display-ja.json',
-                  project_root / 'pyproject.toml', project_root / 'uv.lock']
-    code_before = {str(path.relative_to(project_root)): _sha(path) for path in code_paths}
+                  project_root / 'pyproject.toml', project_root / 'uv.lock', project_root / 'src/recommend_book/cli.py']
+    if use_overlay:
+        code_paths.append(Path(__file__).with_name('overlay.py'))
+    code_before = {path.relative_to(project_root).as_posix(): _sha(path) for path in code_paths}
     before = {key: _sha(path) for key, path in paths.items()}
     world = load_world_database(Path(world_database))
+    overlay_audit = None
+    if use_overlay:
+        from .overlay import apply_classification_overlay
+        overlaid = apply_classification_overlay(world['rows'], base_database=Path(world_database),
+            enriched_database=Path(enriched_database), delta_inputs=Path(delta_inputs),
+            delta_manifest=Path(delta_manifest), results=Path(delta_results),
+            run_manifest=Path(delta_run_manifest), terminal_proof=Path(delta_terminal_proof))
+        world['rows'] = overlaid['rows']
+        overlay_audit = overlaid['audit']
     reference = load_narou_reference(Path(narou_database), Path(annotations), bridge=Path(bridge))
-    read_history = load_history(history)
+    read_history, history_audit = _remap_history(load_history(history),
+        overlay_audit['old_to_new_canonical'] if overlay_audit is not None else None)
+    history_audit['mapping_proof_source_sha256'] = overlay_audit['source_sha256'] if overlay_audit else None
     result = rank_candidates(world['rows'], reference['rows'], limit=limit,
                              read_history=read_history, require_confirmed_unread=require_confirmed_unread)
     profile = build_profile(reference['rows'])
@@ -172,15 +251,20 @@ def run_recommendation(*, world_database: Path, narou_database: Path, annotation
     if evaluate:
         evaluation_report['feature_space'] = 'partial_world_taxonomy_bridge'
         native_rows = [{**row, 'features': dict(row.get('native_features', {})),
-                        'feature_provenance': {}} for row in reference['rows']]
+                        'feature_provenance': deepcopy(row.get('native_feature_provenance', {}))}
+                       for row in reference['rows']]
         native_evaluation = evaluate_recommendations(native_rows)
         native_evaluation['feature_space'] = 'narou_native_theme_features'
         native_evaluation['quality_limits']['feature_space_interpretation'] = 'Theme-only sensitivity check; does not reproduce the original text-and-theme recommender.'
-    after = {key: _sha(path) for key, path in paths.items()}
-    if before != after:
-        raise ValueError('Recommendation source changed while being read')
-    if code_before != {str(path.relative_to(project_root)): _sha(path) for path in code_paths}:
-        raise ValueError('Recommendation implementation changed while running')
+    def assert_unchanged():
+        if before != {key: _sha(path) for key, path in paths.items()}:
+            raise ValueError('Recommendation source changed while being read')
+        if code_before != {path.relative_to(project_root).as_posix(): _sha(path) for path in code_paths}:
+            raise ValueError('Recommendation implementation changed while running')
+        if overlay_audit is not None and any(_sha(Path(path)) != digest
+                                             for path, digest in overlay_audit['source_sha256'].items()):
+            raise ValueError('Verified overlay source changed before recommendation publication')
+    assert_unchanged()
     overlap = {row['work_id'] for row in world['rows']} & {row['work_id'] for row in reference['rows']}
     source_external = {(item['source'], item['value']) for row in reference['rows'] for item in row.get('external_ids', [])}
     overlap.update(row['work_id'] for row in world['rows'] if source_external &
@@ -191,6 +275,15 @@ def run_recommendation(*, world_database: Path, narou_database: Path, annotation
         'execution_artifact_sha256': code_before,
         'source_paths': {key: str(path.resolve()) for key, path in paths.items()},
         'world_audit': world['audit'], 'reference_audit': reference['audit'],
+        'effective_world_snapshot': 'classified_database_plus_verified_delta' if use_overlay else 'classified_database',
+        'effective_world_feature_count': sum(bool(row['features']) for row in world['rows']),
+        'effective_world_featureless_count': sum(not row['features'] for row in world['rows']),
+        'classification_overlay': ({key: overlay_audit[key] for key in ('version', 'run_id', 'work_count',
+            'changed_work_count', 'unchanged_work_count', 'identity_changed_count', 'old_labels_rebound',
+            'changed_labels_union_with_old', 'human_verified', 'database_tables_written')}
+            if overlay_audit else None),
+        'read_history_audit': {'input_count': history_audit['input_count'], 'output_count': history_audit['output_count'],
+                               'changed_identity_count': history_audit['changed_identity_count']},
         'ranking_audit': result['audit'], 'reference_rated_count': profile['rated_count'],
         'target_rated_overlap_count': len(overlap),
         'target_domain_recommendation_quality': 'unverified',
@@ -202,15 +295,29 @@ def run_recommendation(*, world_database: Path, narou_database: Path, annotation
     }
     output.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=output.name + '.staging-', dir=output.parent))
-    _json(staging / 'recommendations.json', result)
-    _json(staging / 'profile.json', profile)
-    if evaluation_report is not None:
-        _json(staging / 'source-domain-evaluation.json', evaluation_report)
-        _json(staging / 'native-theme-evaluation.json', native_evaluation)
-    (staging / 'recommendations.html').write_text(render_recommendations(result, profile), encoding='utf-8')
-    manifest['artifact_sha256'] = {path.name: _sha(path) for path in sorted(staging.iterdir())}
-    _json(staging / 'manifest.json', manifest)
-    os.rename(staging, output)
+    try:
+        _json(staging / 'recommendations.json', result)
+        _json(staging / 'profile.json', profile)
+        _json(staging / 'read-history-audit.json', history_audit)
+        if overlay_audit is not None:
+            _json(staging / 'world-works.json', world['rows'])
+            _json(staging / 'classification-overlay-audit.json', overlay_audit)
+        if evaluation_report is not None:
+            _json(staging / 'source-domain-evaluation.json', evaluation_report)
+            _json(staging / 'native-theme-evaluation.json', native_evaluation)
+        (staging / 'recommendations.html').write_text(render_recommendations(result, profile), encoding='utf-8')
+        assert_unchanged()
+        manifest['artifact_sha256'] = {path.name: _sha(path) for path in sorted(staging.iterdir())}
+        _json(staging / 'manifest.json', manifest)
+        os.rename(staging, output)
+    except Exception:
+        # Remove only this call's generated sibling, after absolute containment checks.
+        resolved_staging = staging.resolve()
+        if (resolved_staging.parent == output.parent and resolved_staging != output
+                and resolved_staging.name.startswith(output.name + '.staging-')
+                and not staging.is_symlink()):
+            shutil.rmtree(resolved_staging)
+        raise
     return {'output': str(output), 'world_count': len(world['rows']),
             'reference_count': len(reference['rows']), 'recommendation_count': len(result['ranking']),
             'target_rated_overlap_count': len(overlap), 'target_quality': 'unverified'}

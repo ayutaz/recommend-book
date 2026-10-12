@@ -48,6 +48,7 @@ def test_pipeline_publishes_real_engine_evaluation_without_changing_inputs(tmp_p
     def row(work, rating):
         return {"work_id": work, "title": work, "rating": rating,
                 "features": {"genre.fantasy": 1}, "native_features": {"narou.theme.growth": 1},
+                "native_feature_provenance": {"narou.theme.growth": [{"source": "verified_fixture_annotation"}]},
                 "read_status": "unknown", "author_ids": [], "series_ids": [],
                 "external_ids": [], "feature_provenance": {}, "popularity": 1}
     monkeypatch.setattr(world, 'load_world_database', lambda path: {'rows': [row('world', None)], 'audit': {}})
@@ -66,6 +67,7 @@ def test_pipeline_publishes_real_engine_evaluation_without_changing_inputs(tmp_p
     native = json.loads((tmp_path / 'result' / 'native-theme-evaluation.json').read_text())
     assert native['feature_space'] == 'narou_native_theme_features'
     assert native['quality_limits']['independent_proof'] is False
+    assert native['methods']['personal']['no_evidence_candidate_n'] == 0
     with pytest.raises(ValueError, match='new directory'):
         run_recommendation(world_database=paths[0], narou_database=paths[1],
             annotations=paths[2], bridge=paths[3], output=tmp_path / 'result')

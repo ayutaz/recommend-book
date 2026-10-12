@@ -200,3 +200,49 @@ def test_native_reading_states_map_to_common_encountered_state_and_engine(tmp_pa
     assert row['provenance']['original_read_status']==original
     assert row['provenance']['has_read_whole_work'] is None
     assert rank_candidates(loaded['rows'],loaded['rows'])['audit']['eligible_work_ids']==[]
+
+
+@pytest.mark.parametrize('theme_id',[
+    'power','growth','craft','protection','recognition','autonomy','belonging',
+    'parenting','romance','revenge','redo','exploration','comedy','cozy',
+])
+@pytest.mark.parametrize('prominence,weight',[('central',1.0),('secondary',.3)])
+def test_all_native_themes_keep_original_evidence_without_forced_world_mapping(tmp_path,theme_id,prominence,weight):
+    db,annotations=fixture(tmp_path)
+    def change(a):
+        a['novels'][0]['themes']=[{'id':theme_id,'prominence':prominence,'source':'title','evidence':'Fixture'}]
+    change_annotation(annotations,change)
+    loaded=load_narou_reference(db,annotations)
+    row=loaded['rows'][0]
+    feature='narou.theme.'+theme_id
+    assert row['native_features']=={feature:weight}
+    assert set(row['native_feature_provenance'])=={feature}
+    proof=row['native_feature_provenance'][feature][0]
+    assert proof['native_theme_id']==theme_id and proof['native_prominence']==prominence
+    assert proof['source']=='narou_llm_synopsis_annotation'
+    assert proof['evidence']=={'source':'title','quote':'Fixture'}
+    assert proof['feature_strength']==weight
+    assert proof['prompt_version']=='content-v1' and proof['review_version']=='content-review-v1'
+    assert proof['human_taxonomy_truth'] is False and proof['review_is_human_taxonomy_gold'] is False
+    assert proof['database_sha256']==digest(db) and proof['annotations_sha256']==digest(annotations)
+    assert proof['source_sha256']==row['provenance']['source_sha256']
+    assert proof['bridge_sha256']==row['provenance']['bridge_sha256']
+    assert proof['raw_confidence'] is None and proof['calibrated_confidence'] is None
+    assert proof['raw_confidence_used_as_weight'] is False
+    if theme_id in ('power','cozy','parenting','belonging'):
+        assert row['features']=={'genre.fantasy':1.0}
+        assert row['unmapped_native_theme_ids']==[theme_id]
+    assert loaded['rows'][1]['native_feature_provenance']=={}
+
+
+def test_native_provenance_is_available_for_mapped_and_unmapped_original_quotes(tmp_path):
+    db,annotations=fixture(tmp_path)
+    before=digest(db),digest(annotations)
+    row=load_narou_reference(db,annotations)['rows'][0]
+    assert row['features']=={'genre.fantasy':1.0,'theme.growth':.3,'theme.revenge':1.0}
+    assert row['native_features']=={'narou.theme.growth':.3,'narou.theme.revenge':1.0,'narou.theme.power':1.0}
+    quotes={key:value[0]['evidence'] for key,value in row['native_feature_provenance'].items()}
+    assert quotes=={'narou.theme.growth':{'source':'story','quote':'grows'},
+                    'narou.theme.revenge':{'source':'story','quote':'revenge'},
+                    'narou.theme.power':{'source':'title','quote':'Fixture'}}
+    assert (digest(db),digest(annotations))==before

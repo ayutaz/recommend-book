@@ -70,6 +70,12 @@ def parser() -> argparse.ArgumentParser:
     recommend.add_argument("--limit", type=int, default=20)
     recommend.add_argument("--require-confirmed-unread", action="store_true")
     recommend.add_argument("--skip-source-evaluation", action="store_true", help="Only rank; do not rerun the source-domain grouped evaluation")
+    recommend.add_argument("--enriched-database", type=Path, help="Optional verified changed-only classification overlay; all six overlay options are required")
+    recommend.add_argument("--delta-inputs", type=Path)
+    recommend.add_argument("--delta-manifest", type=Path)
+    recommend.add_argument("--delta-results", type=Path)
+    recommend.add_argument("--delta-run-manifest", type=Path)
+    recommend.add_argument("--delta-terminal-proof", type=Path)
     return root
 
 
@@ -126,7 +132,10 @@ def main(argv: list[str] | None = None) -> int:
                 narou_database=arguments.narou_database, annotations=arguments.narou_annotations,
                 output=arguments.output, history=arguments.history, bridge=arguments.bridge,
                 limit=arguments.limit, require_confirmed_unread=arguments.require_confirmed_unread,
-                evaluate=not arguments.skip_source_evaluation))
+                evaluate=not arguments.skip_source_evaluation, enriched_database=arguments.enriched_database,
+                delta_inputs=arguments.delta_inputs, delta_manifest=arguments.delta_manifest,
+                delta_results=arguments.delta_results, delta_run_manifest=arguments.delta_run_manifest,
+                delta_terminal_proof=arguments.delta_terminal_proof))
         return 0
     except (ValueError, OSError) as error:
         print(f"Error: {error}", file=sys.stderr)

@@ -160,7 +160,7 @@ def load_narou_reference(database, annotations, *, bridge=None):
         authors=['narou_user:'+str(userid)] if type(userid) is int and userid>0 else []
         writer=record['writer'] if successful else None
         blocking=unicodedata.normalize('NFKC',writer).strip().casefold() if isinstance(writer,str) else ''
-        features={}; provenance={}; native_features={}; unmapped=[]
+        features={}; provenance={}; native_features={}; native_provenance={}; unmapped=[]
         base={'mapping_version':mapping['version'],'bridge_sha256':hashes['bridge'],
               'human_taxonomy_truth':False,'raw_confidence':None,'raw_confidence_used_as_weight':False,
               'calibrated_confidence':None,'calibration_status':'not_measured',
@@ -176,7 +176,14 @@ def load_narou_reference(database, annotations, *, bridge=None):
         if item:
             for theme in item['themes']:
                 weight=mapping['prominence_weights'][theme['prominence']]
-                native_features['narou.theme.'+theme['id']]=float(weight)
+                native_key='narou.theme.'+theme['id']
+                native_features[native_key]=float(weight)
+                native_provenance[native_key]=[{
+                    **base,'feature_strength':float(weight),'source':'narou_llm_synopsis_annotation',
+                    'prompt_version':annotation['prompt_version'],'review_version':annotation.get('review_version'),
+                    'review_is_human_taxonomy_gold':False,'native_theme_id':theme['id'],
+                    'native_prominence':theme['prominence'],
+                    'evidence':{'source':theme['source'],'quote':theme['evidence']}}]
                 matches=[r for r in mapping['theme_rules'] if r['source_id']==theme['id'] and theme['prominence'] in r['prominence']]
                 if not matches:
                     unmapped.append(theme['id']);unmapped_counts[theme['id']]+=1
@@ -187,6 +194,7 @@ def load_narou_reference(database, annotations, *, bridge=None):
                         'evidence':{'source':theme['source'],'quote':theme['evidence']}})
         popularity=record['global_point'] if successful and type(record['global_point']) is int and record['global_point']>=0 else None
         rows.append({'work_id':'narou:'+code,'title':record['title'],'features':features,'native_features':native_features,
+                     'native_feature_provenance':native_provenance,
                      'unmapped_native_theme_ids':sorted(unmapped),'rating':rating,'author_ids':authors,
                      'author_group_keys':['narou_writer_name:'+blocking] if blocking else [],'series_ids':[],
                      'read_status':common_status,'source_read_status':status,'external_ids':[{'source':'narou','value':code}],
