@@ -50,3 +50,5 @@ root の保存済み [観察 JSON](../data/evaluation/poc-frozen-v2/relevance-co
 5. decision coverage と relevance coverage を分ける。既存 [評価:131–143](../src/recommend_book/evaluation/metrics.py#L131) は non-null relevance pair だけで MAE 等を計算している。次版はスコア採用件数と対象分母を併記し、present-null を負例・relevance=0 と扱わない。
 
 次版の確認 fixture は、支持された present-null、支持された数値 present、根拠なし / confidenceなしの拒否、unknown-null と理由、unknown に数値を付けた拒否、taxonomy 定義自体の不足、同 input で validation版が異なる job_key、旧 completed / held の別台帳再検証、バッチ一件の不整合を含める。採用前の live v1 と frozen input / results / jobs は現在の契約・状態を維持する。
+
+後続作業では[隔離コピーでの採用前検証](relevance-v2-development-verification.md)を実施し、全322テストと保存済み6 attemptの読み取り専用再検証を確認した。本体への適用・実cache移行は未実施であり、この静的レビュー時点の旧契約と実行証拠を次版の実績へ読み替えない。
