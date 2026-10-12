@@ -21,7 +21,8 @@ def test_edition_isbn_translation_and_work_relation_have_distinct_scope(tmp_path
     assert not any(c.role == "author" for c in record.contributors)
     assert record.language == "ja" and record.original_language is None
     assert record.publication_year == 1990 and record.first_publication_year is None
-    assert record.titles[0].value == "Translated title" and record.titles[0].kind == "preferred"
+    assert record.titles[0].value == "1990 translated edition" and record.titles[0].kind == "preferred"
+    assert record.titles[1].value == "Translated title" and record.titles[1].kind == "alternative"
     assert not any(t.kind == "original" for t in record.titles)
     assert record.extra["relationship_basis"] == "P629 version, edition or translation of"
 

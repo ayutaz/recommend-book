@@ -84,3 +84,52 @@ def test_saved_author_qid_can_verify_pen_name_and_english_variant_is_retained():
     assert result['status'] == 'matched'
     assert result['original_language_qids'] == ['Q7979']
     assert result['author_comparison_basis'] == 'saved Wikisource Author page wikibase_item'
+
+
+def test_missing_label_keeps_published_title_and_exact_assertion_provenance():
+    import copy
+    c, es = fixture()
+    es['Q1']['labels'] = {}
+    statement = {'id': 'Q1$title', 'rank': 'normal',
+                 'mainsnak': {'snaktype': 'value', 'datavalue': {'value': {'text': '  Jane Eyre  ', 'language': 'en'}}},
+                 'qualifiers': {'P407': [claim({'id': 'Q1860'})]},
+                 'references': [{'snaks': {'P248': [claim({'id': 'Q9'})]}}]}
+    es['Q1']['claims']['P1476'] = [statement]
+    before = copy.deepcopy(es)
+    artifact = {'retrieved_at': '2026-10-12T00:00:00Z', 'sha256': 'a' * 64, 'path': 'saved.bin'}
+    record = module().source_record('Q1', es, artifact)
+    assert [(t.value, t.language, t.kind) for t in record.titles] == [
+        ('Q1', 'en', 'preferred'), ('  Jane Eyre  ', 'en', 'alternative')]
+    proof = record.extra['title_assertions'][0]
+    assert proof == {'locator': 'claims.P1476[0]', 'statement': statement,
+                     'title_index': 1, 'title_kind': 'alternative',
+                     'raw_sha256': 'a' * 64, 'raw_path': 'saved.bin'}
+    assert es == before
+
+
+def test_published_titles_preserve_languages_without_original_or_translation_inference():
+    c, es = fixture()
+    statements = [claim({'text': 'Original', 'language': 'en'}),
+                  claim({'text': 'Traduction', 'language': 'fr'}),
+                  claim({'text': 'Obsolete', 'language': 'de'})]
+    statements[0]['rank'] = 'preferred'
+    statements[2]['rank'] = 'deprecated'
+    es['Q1']['claims']['P1476'] = statements
+    es['Q2']['claims']['P1476'] = [claim({'text': 'Edition title', 'language': 'en'})]
+    artifact = {'retrieved_at': '2026-10-12T00:00:00Z', 'sha256': 'a' * 64, 'path': 'saved.bin'}
+    m = module()
+    decision = m.resolve_candidate(c, es)
+    work = m.source_record('Q1', es, artifact)
+    edition = m.source_record('Q2', es, artifact)
+    assert [t.model_dump() for t in work.titles] == [
+        {'value': 'Example', 'language': 'en', 'kind': 'preferred'},
+        {'value': 'Original', 'language': 'en', 'kind': 'alternative'},
+        {'value': 'Traduction', 'language': 'fr', 'kind': 'alternative'}]
+    assert len(work.extra['title_assertions']) == 3
+    assert work.extra['title_assertions'][2]['statement'] == statements[2]
+    assert work.extra['title_assertions'][2]['title_index'] is None
+    assert edition.titles[0].value == 'Example (1901)'
+    assert edition.titles[1].kind == 'alternative'
+    assert edition.original_language is None
+    assert work.original_language == 'en'
+    assert m.resolve_candidate(c, es) == decision

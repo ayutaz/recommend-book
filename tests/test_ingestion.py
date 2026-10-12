@@ -88,13 +88,15 @@ def test_wikidata_linked_topics_and_characters_are_not_prose_invented(tmp_path):
     assert any("Detective" in e.text and e.locator == "claims.P674" for e in record.evidence)
 
 
-def test_original_title_series_and_narrative_location_remain_distinct(tmp_path):
+def test_published_title_series_and_narrative_location_remain_distinct(tmp_path):
     def claim(value):
         return {"mainsnak": {"datavalue": {"value": value}}}
     entity = {"id": "Q1", "labels": {"en": {"value": "Translated title"}}, "claims": {"P1476": [claim({"text": "原題", "language": "ja"})], "P179": [claim({"id": "Q2"})], "P840": [claim({"id": "Q3"})]}}
     fetcher = HTTPFetcher(RawStore(tmp_path), client=httpx.Client(transport=httpx.MockTransport(lambda req: httpx.Response(200, json={"entities": {"Q1": entity}}))), min_interval=0)
     record = WikidataAdapter(fetcher).fetch_entities(["Q1"], linked_labels={"Q2": "Series A", "Q3": "Paris"}).records[0]
-    assert any(t.kind == "original" and t.value == "原題" and t.language == "ja" for t in record.titles)
+    assert any(t.kind == "alternative" and t.value == "原題" and t.language == "ja" for t in record.titles)
+    assert record.titles[0].value == "Translated title" and record.titles[0].kind == "preferred"
+    assert not any(t.kind == "original" for t in record.titles)
     assert record.series == "Series A" and record.extra["series_qids"] == ["Q2"]
     assert record.region == []
     assert any(e.locator == "claims.P840" and "Paris" in e.text for e in record.evidence)

@@ -165,15 +165,28 @@ class WikidataAdapter:
                     bibliographic = f"Title: {title}; contributors: {'; '.join(c.name for c in contributors)}; Wikidata instance IDs: " + ", ".join(v.get("id", "") for v in claim_values(entity, "P31") if isinstance(v, dict)) + "; Creative work form IDs: " + ", ".join(v.get("id", "") for v in claim_values(entity, "P7937") if isinstance(v, dict))
                     evidence.append(Evidence(evidence_id=f"wd:{qid}:bibliographic:{fetched.artifact.sha256[:12]}", kind="bibliographic", text=bibliographic, source_url=url, rights_policy_id="wikidata-cc0", llm_input_allowed=True, locator="labels;claims.P50;claims.P31;claims.P7937"))
                     titles = [Title(value=title, language=title_lang)]
-                    published_titles = [Title(value=v["text"], language=v.get("language"), kind="original" if kind == "work" else "preferred") for v in claim_values(entity, "P1476") if isinstance(v, dict) and v.get("text")]
-                    if kind == "edition" and published_titles:
-                        titles = published_titles + ([Title(value=title, language=title_lang, kind="alternative")] if title not in {t.value for t in published_titles} else [])
-                    else:
-                        titles.extend(published_titles)
+                    title_assertions = []
+                    # P1476 is a published name. Neither its text language nor
+                    # its rank proves original/translated title scope. Retain
+                    # all nondeprecated candidates, including normal titles
+                    # beside preferred, without changing claim_values().
+                    for index, statement in enumerate(entity.get("claims", {}).get("P1476", [])):
+                        value = statement.get("mainsnak", {}).get("datavalue", {}).get("value")
+                        title_index = None
+                        if statement.get("rank") != "deprecated" and isinstance(value, dict) and value.get("text"):
+                            title_index = len(titles)
+                            titles.append(Title(value=value["text"], language=value.get("language"), kind="alternative"))
+                        title_assertions.append({"locator": f"claims.P1476[{index}]", "statement": statement,
+                                                 "title_index": title_index,
+                                                 "title_kind": "alternative" if title_index is not None else None,
+                                                 "raw_sha256": fetched.artifact.sha256, "raw_path": fetched.artifact.path,
+                                                 "source_url": url, "source_id": qid, "record_kind": kind})
                     titles.extend(Title(value=v["value"], language=lang, kind="alternative") for lang, vals in entity.get("aliases", {}).items() for v in vals)
                     type_ids = [v["id"] for p in ("P7937", "P31") for v in claim_values(entity, p) if isinstance(v, dict) and "id" in v]
                     work_kind = next((name for q, name in [("Q747381", "light_novel"), ("Q49084", "short_story"), ("Q8261", "novel")] if q in type_ids), None)
                     record = SourceRecord(source="wikidata", source_id=qid, source_url=url, retrieved_at=fetched.artifact.retrieved_at, provider_id="wikidata", record_kind=kind, titles=titles, contributors=contributors, identifiers=identifiers, work_refs=[Identifier(source="wikidata", value=v["id"], scope="work") for v in claim_values(entity, "P629") if isinstance(v, dict) and "id" in v], original_language=language if kind == "work" else None, language=language if kind == "edition" else None, first_publication_year=min(years) if years and kind == "work" else None, publication_year=min(years) if years and kind == "edition" else None, work_kind=work_kind, region=regions, subjects=subjects, series="; ".join((linked_labels or {}).get(v, v) for v in series_ids) or None, evidence=evidence, raw_sha256=fetched.artifact.sha256, raw_path=fetched.artifact.path, rights_policy_id="wikidata-cc0", extra={"claims": entity.get("claims", {}), "sitelinks": entity.get("sitelinks", {}), "original_language_qids": lang_refs if kind == "work" else [], "language_qids": lang_refs if kind == "edition" else [], "publication_date_claims": dates, "lastrevid": entity.get("lastrevid"), "region_basis": "P495 country of origin", "subject_qids": genres + topics, "character_qids": characters, "series_qids": series_ids, "narrative_place_qids": places, "linked_label_qids": sorted(set(genres + topics + characters + places + series_ids + [i.value for c in contributors for i in c.identifiers]) & set(linked_labels or {}))})
+                    record.extra.update({"title_assertions": title_assertions,
+                                         "title_assertion_policy": "published_title_candidates_v1; existing label retained; all nondeprecated P1476 values retained as alternative; no original/translation-language inference"})
                     if kind == "edition":
                         record.extra.update({"relationship_basis": "P629 version, edition or translation of", "edition_instance_qids": [v["id"] for v in claim_values(entity, "P31") if isinstance(v, dict) and "id" in v], "isbn_claims": {p: claim_values(entity, p) for p in ("P212", "P957")}, "author_source": "edition entity claims.P50 only; no copy from work", "edition_entity_review_required": "P629 may identify a version or translation rather than a published edition"})
                         evidence.append(Evidence(evidence_id=f"wd:{qid}:edition:{fetched.artifact.sha256[:12]}", kind="bibliographic", text="Edition/version/translation relationships: " + ", ".join(i.value for i in record.work_refs) + "; ISBN: " + ", ".join(i.value for i in identifiers if i.source == "isbn") + "; edition language: " + str(language) + "; edition publication year: " + str(record.publication_year) + "; translators: " + ", ".join(c.name for c in contributors if c.role == "translator"), source_url=url, rights_policy_id="wikidata-cc0", llm_input_allowed=True, language=language, locator="claims.P629;claims.P212;claims.P957;claims.P407;claims.P577;claims.P655"))

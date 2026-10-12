@@ -114,9 +114,23 @@ def source_record(qid, entities, artifact):
     lang_refs = refs(entity, 'P407')
     language = ({'Q7979': 'en-GB'} | LANGUAGE_CODES).get(lang_refs[0], lang_refs[0]) if len(lang_refs) == 1 else None
     published = years(entity)
+    titles = [Title(value=label(entity), language='en')]
+    title_assertions = []
+    # Retain published-name assertions without claiming their language is the
+    # work's original language. Identity/rank selection stays in names()/refs().
+    for index, statement in enumerate(entity.get('claims', {}).get('P1476', [])):
+        value = statement.get('mainsnak', {}).get('datavalue', {}).get('value')
+        title_index = None
+        if statement.get('rank') != 'deprecated' and isinstance(value, dict) and value.get('text'):
+            title_index = len(titles)
+            titles.append(Title(value=value['text'], language=value.get('language'), kind='alternative'))
+        title_assertions.append({'locator': f'claims.P1476[{index}]', 'statement': statement,
+                                 'title_index': title_index,
+                                 'title_kind': 'alternative' if title_index is not None else None,
+                                 'raw_sha256': artifact['sha256'], 'raw_path': artifact['path']})
     return SourceRecord(source='wikidata', source_id=qid, source_url=f'https://www.wikidata.org/wiki/{qid}',
         retrieved_at=artifact['retrieved_at'], provider_id='wikidata', record_kind=kind,
-        titles=[Title(value=label(entity), language='en')],
+        titles=titles,
         contributors=[Contributor(name=label(entities.get(q, {'id': q})), identifiers=[Identifier(source='wikidata', value=q, scope='agent')]) for q in refs(entity, 'P50')],
         identifiers=[Identifier(source='wikidata', value=qid, scope=kind)],
         work_refs=[Identifier(source='wikidata', value=q, scope='work') for q in refs(entity, 'P629')],
@@ -129,7 +143,9 @@ def source_record(qid, entities, artifact):
                'attribution': 'Wikidata contributors', 'changes': 'bibliographic entity normalization; original response retained',
                'author_source': 'entity P50 only; no author copied from work', 'integration_requires_identity_map': True,
                'original_language_qids': lang_refs if kind == 'work' else [], 'language_qids': lang_refs if kind == 'edition' else [],
-               'publication_years': published, 'human_verified': False})
+               'publication_years': published, 'human_verified': False,
+               'title_assertions': title_assertions,
+               'title_assertion_policy': 'published_title_candidates_v1; existing label retained; all nondeprecated P1476 values retained as alternative; no original/translation-language inference'})
 
 
 def main():

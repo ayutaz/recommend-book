@@ -36,7 +36,7 @@ Wikidata 版探索では、提供側の WDQS 障害と 429 を観測した。最
 
 ## 実装検証
 
-コミット `5e8c5c1` の全体テストは Windows / Python 3.14 で 173 passed。今回のコミット対象は 228 passed、依存 lock・Python 構文・PowerShell 資源監視スクリプトの構文照合成功。作業中の独立原文 DB 統合スクリプトとその 5 テストは今回のコミットから除外した。機械テストの成功を実分類精度の達成とは扱わない。
+コミット `5e8c5c1` の全体テストは Windows / Python 3.14 で 173 passed、`07dd591` は 228 passed。その時点では作業中の独立原文 DB 統合スクリプトとそのテストをコミットから除外した。今回、その統合・単一DB snapshot・本番入力準備・分類観測・Wikidata題名の扱いの修正を含め、全体テストは 258 passed、依存 lock の照合も成功した。機械テストの成功を実分類精度の達成とは扱わない。
 
 Migration 3 は evidence の work/scope/order と works の resolved/canonical index を追加した。実 DB の backup コピーで同じ 100 件の根拠検索が 11.895 秒から 0.00685 秒、全 2,004 件の入力生成が 3.710 秒、stats が 0.170 秒となった。これは特定 snapshot・Windows 環境の観測値であり、10 万作品の性能保証ではない。元資料 version/payload hash と undo の検証を保持した。
 
@@ -46,16 +46,25 @@ Windows のジョブ lock は、空の lock file に初期化 byte を書いて�
 
 原文 20 作品は Sol CLI `gpt-6.1-sol` / CLI 0.162.1、並列 2、batch 5 で実分類が完了した。20 completed・0 failed、587.108 秒、CLI 5 回（1 バッチの厳密な引用照合エラーを再試行）。入力 SHA は `d60b1f2908ccb59fe1e784246c5e3e2e0950ad1f478e1e3b6b6ffcc4f22e6bf2`。全 20 件が schema・ID・参照・引用文字列の機械検証を通過し、原文 scope の文体ラベルは 31 件だった。意味的支持・作品全体の代表性・分類精度は人手未評価であり、calibrated confidence は全件 null。
 
-本体の固定入力は 2,000 作品、SHA `77793ab2c89983cb6174d58ce35d4d353934ac4cb73bd073aafdcae4a3c337fe`。100 作品の pilot は日本語 35・英語 35・その他 30 とし、その他の 12 言語/不明 bucket を保持した。固定 pilot を並列 2→4→8 で比較する run は実行中であり、最終結果は未確定。schema・ID・根拠参照・所要時間・CLI 使用 token・再試行を比較する。端末資源は scheduler と生存する子プロセスを別途サンプリングする。測定間隔内に終了したプロセスは記録できず、sample の最大値を厳密な peak と表示しない。
+本体の固定入力は 2,000 作品、SHA `77793ab2c89983cb6174d58ce35d4d353934ac4cb73bd073aafdcae4a3c337fe`。100 作品の pilot は日本語 35・英語 35・その他 30 とし、その他の 12 言語/不明 bucket を保持した。固定 pilot の並列 2→4→8 比較は終了コード0で完了し、全試行100有効・最終失敗0だった。時間は763.832/454.693/371.687秒、p95は97.264/97.911/117.886秒。8並列の1バッチを再試行した。処理量増加・p95悪化・最終失敗率の暫定gateから8並列を選択した。合計観測input token1,700,503・output185,064で、API課金額ではない。
+
+2並列結果の何らかの判定は52/100作品で、全軸unknownは48。genre44、theme30、structure14、protagonist28、style0、atmosphere21作品に判定があった。全72ラベル枠では190/7,200のpresent/absent判定（present190・absent0）で、省略ラベルを負例に変換しない。引用160参照の入力内存在を確認したが、意味的支持・summary忠実性は人手未評価。原文のない本体pilotからstyleを断定していない。
+
+固定2,000作品を内容変更なしで並べ替え、最初の1,000を日本語350・英語350・その他300、レビュー400とpilot100の和集合479作品を全件含む順序にした。`data/runs/poc-frozen-v2-production-v1` へ8並列・batch5で1,000作品の本番分類を開始した。詳細・再開条件は [production-classification-guide.md](production-classification-guide.md)。起動は完了件数を意味しない。
+
+端末資源は scheduler と生存する子プロセスを別途サンプリングする。測定間隔内に終了したプロセスは記録できず、sample の最大値を厳密な peak と表示しない。
 
 人手の gold は現在 0 件。400 作品の著者・シリーズを分離した dev 150 / calibration 100 / holdout 150 と dev 内の 20 作品の blind review を生成した。初版の言語偏りを修正し、新版の日本語/英語/その他は dev と holdout が 53/53/44、calibration が 35/35/30。混合言語 5 グループ・23 作品を丸ごと保持し、グループ分割・漏洩は 0 件だった。別途名寄せ 400 ペアのレビュー資料を生成したが、人手裁定はまだ 0 件。UI の synthetic annotation、Sol の一致、外部研究の native label は独立した人手裁定ではない。人手の支持判定・作品内容確認がないラベルは精度と confidence calibration を未検証として残す。
 
 ## ローカル成果物
 
+固定2,000作品と原文20作品を新しい単一DBへ統合し、resolved canonical work 2,020、外部キーエラー0、integrity checkはokを確認した。元2,000作品の入力hashとsource-version refsは全件不変、古典20件は原作authorityへ8接続・12保留。旧原文分類のIDを書き換えず、新しいcanonical入力に対する分類は未実行として扱う。詳細は [combined-poc-guide.md](combined-poc-guide.md)。
+
 取得原物、DB、モデル結果は `data/` 内に保存し、Git へ含めない。公開・再配布向け成果物を生成する場合は各用途の policy と作品別条件で別途抽出する。今回の作業は推薦ランキングや読書履歴の取り込みへ進めていない。
 
 - `data/poc-v1/`: 選定元、統合 DB、ソース補完。
 - `data/poc-frozen-v2/`: 固定 2,000 作品入力、pilot100、著者/シリーズ ID、DB snapshot、実行設定の SHA。
+- `data/poc-combined-v1/`: 固定2,000作品と原文20作品の単一DB、版関係・入力不変の監査、旧IDとのcrosswalk。
 - `data/evaluation/poc-frozen-v2/`: read-only 監査、分布調整した 400/20 作品レビュー資料。
 - `data/poc-v1/resolution-review-20261012-v4/`: 正式な名寄せ 400 ペアレビュー資料。途中版は保持する。
 - `data/openlibrary-prefix-v3/`: works 固定 prefix と完全 authors の原物照合・隔離・次回統合候補。
