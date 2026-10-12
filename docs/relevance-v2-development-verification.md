@@ -24,6 +24,16 @@
 
 基準snapshotの本体106ファイル（src/scripts/tests/schemas/config）と、凍結した処理context6ファイルは元SHAに一致した。人手gold0、意味的精度・関連度の正しさ・信頼度校正は未評価である。
 
+## 後続の評価・実行条件の補強
+
+次の採用候補には、実行条件のraw artifact保存処理と評価器の数値境界修正を追加した。[採用レビューmanifest v2](../data/development/relevance-v2/integration-review-manifest-v2.json)は16ファイルを記録し、SHAは`0764f2c1214fefedf033d0b40d073d2728cffd29871594ca2f24e5da73676f36`。隔離コピー全体のテストは**655 passed / 16.35秒**。前の10ファイル・322テストの記録を上書きしていない。
+
+- 実行条件preparerは正確な入力・manifest bytesと、sources/taxonomy/schema/prompt/validation/runner/models/jobs/pyproject/lockの10 artifactを新namespaceに保存する。入力provenanceと新execution contextを分け、途中変更時は公開しない。`prepared_not_started`と`supplied_unverified`を保持し、実行・CLI版の実測を偽装しない。
+- 評価器はgold relevanceと全predictionの関連度・採用confidenceに、nullまたは有限な非boolの0〜1を要求する。空gold・未注釈labelでも不正値を拒否し、known-nullを存在判断から除外しない。
+- 校正の学習・適用で低帯`[0,0.5)`、高帯`[0.5,1]`を共有する。0.5を低帯へ誤適用しない。model/prompt/taxonomy/CLI/target_languageが非空文字列として揃わないscopeには校正器を作らない。最小scope40件・帯20件と固定分割の条件は維持する。
+
+本体の旧106ファイルも[変更前archive](../data/development/root-before-relevance-v2/manifest.json)にraw copyで保持した。SHAは`f724175cc1cf7e95d7740474120f188fe60d6aa60679dae32fe3c4ec20c283c4`。校正実行可能性監査時の旧metricsコードSHAもこのarchiveに一致する。これは変更前ファイルの保存であり、旧runの実行policyを独立証明したことにはしない。
+
 ## 採用に残る条件
 
 旧runの同じ実行handleがterminalになったことを確認し、停止理由と全1,000入力のmanifestを監査する。その後に本体へ修正を適用して再検証し、新しい実行contextを固定する。移行処理で旧結果を保護した新namespaceを準備し、古典20を含む固定2,020入力を同じSol・batch size・並列数で処理する。実際の移行件数・再利用件数・追加CLI量は、その実行後の成果物から確認する。
