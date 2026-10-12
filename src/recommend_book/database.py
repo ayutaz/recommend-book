@@ -15,7 +15,7 @@ from typing import Iterable
 
 from .models import Evidence, SourceRecord, WorkInput
 from .normalization import normalize_isbn, normalize_text
-from .resolution import compare_records, work_identifiers
+from .resolution import compare_records, compare_source_mapping, work_identifiers
 
 
 def _json(value) -> str:
@@ -210,6 +210,11 @@ class DatasetDB:
             agent_id = self._agent_id(contributor, authority, version)
             self._field_assertions(version, authority, agent_id)
         records = self._active_records()
+        raw_mapping_cache = {}
+
+        def resolve_pair(left, right):
+            return compare_source_mapping(left, right, raw_cache=raw_mapping_cache) or compare_records(left, right)
+
         parents = {node: node for node in records}
         forbidden_pairs = [(row["left_work_id"], row["right_work_id"]) for row in db.execute("SELECT * FROM resolution_decisions WHERE undone=1 AND status='same'") if row["left_work_id"] in records and row["right_work_id"] in records and (row["method"] == "human" or row["left_version_id"] == records[row["left_work_id"]][0] and row["right_version_id"] == records[row["right_work_id"]][0])]
 
@@ -231,7 +236,7 @@ class DatasetDB:
                     return False
                 for x in members_a:
                     for y in members_b:
-                        consistency = compare_records(records[x][1], records[y][1])
+                        consistency = resolve_pair(records[x][1], records[y][1])
                         if consistency.status == "different" or consistency.status == "uncertain" and consistency.reason != "title or author similarity is insufficient work identity":
                             return False
             parents[max(a, b)] = min(a, b)
@@ -247,14 +252,16 @@ class DatasetDB:
         for nodes in buckets.values():
             nodes = sorted(set(nodes))
             candidates.update((a, b) for index, a in enumerate(nodes) for b in nodes[index + 1:])
-        db.execute("UPDATE resolution_decisions SET active=0 WHERE method='rule'")
+        db.execute("UPDATE resolution_decisions SET active=0 WHERE method IN ('rule','source_mapping')")
         reviews = []
         for left, right in sorted(candidates):
             lv, lr = records[left]
             rv, rr = records[right]
-            result = compare_records(lr, rr)
+            result = resolve_pair(lr, rr)
             decision_id = _id("resolution", lv, rv, result.status, result.reason)
-            db.execute("INSERT OR IGNORE INTO resolution_decisions(decision_id,left_work_id,right_work_id,left_version_id,right_version_id,status,reason,method,confidence,active) VALUES(?,?,?,?,?,?,?,'rule',?,0)", (decision_id, left, right, lv, rv, result.status, result.reason, result.confidence))
+            inserted = db.execute("INSERT OR IGNORE INTO resolution_decisions(decision_id,left_work_id,right_work_id,left_version_id,right_version_id,status,reason,method,confidence,active) VALUES(?,?,?,?,?,?,?,?,?,0)", (decision_id, left, right, lv, rv, result.status, result.reason, result.method, result.confidence))
+            if inserted.rowcount and result.method == "source_mapping" and result.status == "same":
+                db.execute("INSERT INTO resolution_events(decision_id,event_type,details_json) VALUES(?,'verified_source_mapping',?)", (decision_id, _json({"left_version_id": lv, "right_version_id": rv, "left_raw_sha256": lr.raw_sha256, "right_raw_sha256": rr.raw_sha256, "independent_identity_confirmation": False, "human_verified": False})))
             row = db.execute("SELECT undone FROM resolution_decisions WHERE decision_id=?", (decision_id,)).fetchone()
             if row[0]:
                 reviews.append((left, right, decision_id, "previous identity decision was undone"))
@@ -394,11 +401,20 @@ class DatasetDB:
                 all_evidence[row["work_id"]][row["expression_id"]].append(evidence)
         output = []
         for canonical, nodes in members.items():
-            sources = sorted((records[node] for node in nodes), key=lambda pair: (pair[1].record_kind != "work", pair[1].source, pair[1].source_id))
-            representative = sources[0][1]
-            authors = list(dict.fromkeys(item.name for _, record in sources for item in record.contributors if item.role == "author"))
+            priority = {"wikidata": 0, "openlibrary": 1, "wikipedia": 3}
+            sources = sorted((records[node] for node in nodes), key=lambda pair: (pair[1].record_kind != "work", priority.get(pair[1].source, 2), pair[1].source, pair[1].source_id))
+            # Work metadata never falls back to edition-language/date/imprint.
+            # All original assertions, including conflicts, remain in the DB.
+            work_sources = [record for _, record in sources if record.record_kind == "work"]
+            representative = work_sources[0]
+            def first_known(field):
+                return next((getattr(record, field) for record in work_sources if getattr(record, field) not in (None, [], "")), None)
+
+            author_source = next((record for record in work_sources if any(item.role == "author" for item in record.contributors)), representative)
+            authors = list(dict.fromkeys(item.name for item in author_source.contributors if item.role == "author"))
             scoped_evidence = all_evidence.get(canonical, {})
-            base = dict(work_id=canonical, title=representative.titles[0].value if representative.titles else "", authors=authors, original_language=representative.original_language, first_publication_year=representative.first_publication_year, region=list(dict.fromkeys(value for _, record in sources for value in record.region)), series=representative.series, source_record_ids=[version for version, _ in sources])
+            title = next((title.value for record in work_sources for title in record.titles if title.value and title.value != record.source_id), representative.titles[0].value if representative.titles else "")
+            base = dict(work_id=canonical, title=title, authors=authors, original_language=first_known("original_language"), first_publication_year=first_known("first_publication_year"), region=first_known("region") or [], series=first_known("series"), source_record_ids=[version for version, _ in sources])
             output.append(WorkInput(**base, evidence=scoped_evidence.get(None, [])))
             for expression_id, evidence in sorted(((key, value) for key, value in scoped_evidence.items() if key is not None)):
                 output.append(WorkInput(**base, expression_id=expression_id, evidence=evidence))
@@ -406,6 +422,12 @@ class DatasetDB:
 
     def review_queue(self) -> list[dict]:
         return [dict(row) for row in self.connection.execute("SELECT * FROM review_items ORDER BY review_id")]
+
+    def resolve_sources(self) -> dict:
+        """Rebuild verified source mappings without altering immutable source heads."""
+        with self.connection:
+            self._rebuild()
+        return self.stats()
 
     def merge_work(self, source_id: str, target_id: str, *, reason: str, reviewer: str) -> str:
         if not reason.strip() or not reviewer.strip() or source_id == target_id:

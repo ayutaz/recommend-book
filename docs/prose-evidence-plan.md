@@ -143,7 +143,7 @@ HTTP取得後の整形は決定的なローカル処理とし、指定revision�
 
 取得物は次の通り。
 
-- `manifest.json`: requested=20、completed=20、excerpt_count=40、llm_input_allowed=40、errors=[]。本レーンからライブLLMは起動していない。
+- `manifest.json`: requested=20、completed=20、excerpt_count=40、llm_input_allowed=40、errors=[]。取得器からライブLLMは起動しない。取得後の分類は下記の独立runとして実行した。
 - `source-records.jsonl`: 作品ごとの著者没年・初出・採用版・原文/訳・JP/US限定条件、固定章revision、author/edition fact引用、Contributor帰属、raw/normalized SHA、変更通知。
 - `work-inputs.jsonl`: 原文の文体判定に渡す入力。`kind=excerpt`、`language=en`、`expression_ref=null`、`license/license_url/attribution/inherited_restrictions` を保持する。
 - `quality-checks.json`: 20作品・40抜粋のraw SHA、normalized SHA、Unicode codepoint単位char locator、入力一致、default rights台帳条件を照合した機械チェック。分類の意味的精度や人手goldを示すものではない。
@@ -156,3 +156,23 @@ HTTP取得後の整形は決定的なローカル処理とし、指定revision�
 `wikisource-reviewed-original` をrepoの `config/sources.json` とwheel fallbackへ追加した。全用途をconditionalとし、`per_work_original_rights_checked`、`attribution`、`share_alike`、`mark_changes` の4義務を要求する。`fulfilled_for_record()` は記録されたper-work条件・書誌一致・原文Evidence・帰属条件を再検証する。policy名や `llm_input_allowed` の真偽だけから個別原作の条件履行を推測しない。原典の確認はJP/US限定であり、Contributorの創作的寄与にはCC BY-SA 4.0条件を継承する。世界一律のPD、別の現代訳、画像、ブランド/商標利用の許可へ拡張しない。
 
 章の `oldid` はtransclusion先のPage/Templateや著者データを原子的に固定しない。このため、実際に取得したrender応答のraw SHAと本文SHAを分類根拠の正本とする。章render後に観測した依存Page revisionを監査補助として保存するが、renderと同時刻の厳密な依存snapshotを証明する値ではない。著者年表も取得したrender原物を保持する。将来再現する際は現在のURLを再描画するだけで同一本文・同一年表が得られると仮定しない。
+
+## 原文20作品の実Sol分類（prose-style-v1）
+
+2026-10-12、rootから分類実行を委譲され、保存済み原文を再取得せず次を実行した。追加Wikidata通信も行っていない。
+
+```powershell
+uv run recommend-book classify --input data/prose-poc/work-inputs.jsonl --output data/runs/prose-style-v1 --model gpt-6.1-sol --concurrency 2 --batch-size 5 --timeout 900 --max-run-seconds 1800 --max-observed-tokens 500000 --stop-on-rate-limit
+```
+
+`input-preflight.json` で20作品・40抜粋のSHA/locator/rights条件を再照合し、実際の `build_batch_prompt()` が `license`・`license_url`・`attribution`・`inherited_restrictions` を省略せずstdin用JSONへ直列化することを確認した。CLIは通常のresolverでnative `codex.exe` を選択し、`codex-cli 0.162.1`、medium reasoning、read-only、web disabled、tool/subagent使用禁止の既存prompt/schemaを使用した。runner/prompt/schemaは変更していない。
+
+実行handleは `exec_command session_id=41539`、終了コード0。最終manifestのrun IDは `8245a97ec7a74fe5809f07510822dd22`、SHA-256は `cde1cd073b39b45d0b2ff3679fe59adfe739521ec3cf8d38d15ab1b8eaf4646c`。入力JSONLのSHA-256は `d60b1f2908ccb59fe1e784246c5e3e2e0950ad1f478e1e3b6b6ffcc4f22e6bf2`。
+
+最終20completed・0failed・0pending、587.108秒、CLI5回。初回4バッチのうち3バッチが参照検証まで通り、1バッチはNorthanger Abbeyの引用先頭 `her` と原文 `Her` の大小文字不一致で失敗した。既存runner内でその5作品を1回再試行し成功したため、manifestの `attempts=25`・`retries=5` はwork単位、CLI再試行は1回である。一過性のpolling yieldでプロセスを再起動していない。全CLIイベントでtool呼出し0。
+
+CLI観測利用量は input_tokens=157,414、output_tokens=43,500、reasoning_output_tokens=1,899、cached_input_tokens=0。API請求額や他の同時runの利用量を表す値ではない。CLI呼出し時間のp50=150.029秒、p95=226.059秒。
+
+`mechanical-report.json` に最終結果を入力と再照合した集計を保存した。20/20結果がSchema・ID・権利付き入力参照・locator・引用文字列の契約を通過し、20/20作品で原文scopeの文体判定が得られた（31styleラベル、すべて `scope=original`、en excerpt、expression_refなし）。全軸の既知判定116件はすべてpresentであり、省略ラベルやmissing_axesはunknownのまま扱う。全軸で128根拠参照、そのうち原文部分文字列の引用97件・summaryのみ31件。使われた抜粋は全軸39/40（97.5%）、文体24/40（60%）。一つの抜粋から複数ラベルが出ることもあるため、参照数と独立抜粋数を混同しない。
+
+これらは機械的な構造・引用所属・原文scopeの成立である。引用が原文に含まれることは、そのラベルの意味的支持を保証しない。summaryの忠実さ、31文体ラベルの人手precision/recall、作品全体への代表性は未評価。116ラベルの確率はuncalibratedであり、calibrated confidenceは全件null。仮のWikisource候補IDも実Wikidata work IDへ解決したことにはしていない。

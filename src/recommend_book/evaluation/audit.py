@@ -75,6 +75,60 @@ def review_preconditions(inputs):
         'trial20':{'work_count_ready':len(base)>=20,'target_works':20,'purpose':'Measure real reviewer time, undecidable labels and required additional sources; pack generation is not completed human review.'}}
 
 
+def _input_sources(sources, active_ids):
+    """Enrich author labels from the active immutable authority snapshot only.
+
+    This reproduces DatasetDB's agent-ID closure without opening its writer or
+    changing the original payloads used by independent provenance checks.
+    """
+    ordered=sorted((source for source in sources.values() if source['version_id'] in active_ids),
+                   key=lambda source:(source['source'],source['source_id']))
+    authorities=[source['payload'] for source in ordered if source['payload']['record_kind']=='agent']
+    authority_ids=[{(item['source'],item['value']) for item in authority.get('identifiers',[]) if item['scope']=='agent'} for authority in authorities]
+    enriched=dict(sources)
+    for source in ordered:
+        payload=source['payload']
+        if payload['record_kind']=='agent':
+            continue
+        contributors=[]
+        for contributor in payload.get('contributors',[]):
+            identifiers={(item['source'],item['value']) for item in contributor.get('identifiers',[]) if item['scope']=='agent'}
+            matches=[]
+            remaining=list(range(len(authorities))) if identifiers else []
+            changed=True
+            while changed:
+                changed=False
+                for index in list(remaining):
+                    if identifiers & authority_ids[index]:
+                        identifiers.update(authority_ids[index])
+                        matches.append(authorities[index])
+                        remaining.remove(index)
+                        changed=True
+            name=next((authority['titles'][0]['value'] for authority in matches if authority.get('titles')),contributor['name'])
+            contributors.append({**contributor,'name':name})
+        enriched[source['version_id']]={**source,'payload':{**payload,'contributors':contributors}}
+    return enriched
+
+
+def _work_metadata(source_rows):
+    """Match work-only source priority and per-field fallback in work_inputs."""
+    priority={'wikidata':0,'openlibrary':1,'wikipedia':3}
+    ordered=sorted(source_rows,key=lambda source:(source['payload']['record_kind']!='work',
+        priority.get(source['source'],2),source['source'],source['source_id']))
+    values=[source['payload'] for source in ordered if source['payload']['record_kind']=='work']
+    representative=values[0] if values else {}
+    def first_known(field):
+        return next((value.get(field) for value in values if value.get(field) not in (None,[],'')),None)
+    author_source=next((value for value in values if any(item.get('role','author')=='author' for item in value.get('contributors',[]))),representative)
+    fallback=representative['titles'][0]['value'] if representative.get('titles') else ''
+    title=next((title['value'] for value in values for title in value.get('titles',[])
+                if title.get('value') and title['value']!=value['source_id']),fallback)
+    return {'title':title,'authors':list(dict.fromkeys(item['name'] for item in author_source.get('contributors',[]) if item.get('role','author')=='author')),
+        'original_language':first_known('original_language'),'first_publication_year':first_known('first_publication_year'),
+        'region':first_known('region') or [],'series':first_known('series'),'work_kind':first_known('work_kind'),
+        'source_record_ids':[source['version_id'] for source in ordered]}
+
+
 def _derive_inputs(works, sources, evidence):
     """Mirror stored work inputs while avoiding DatasetDB migrations/writes."""
     grouped=defaultdict(list)
@@ -84,18 +138,12 @@ def _derive_inputs(works, sources, evidence):
     out=[]
     for canonical,nodes in sorted(grouped.items()):
         source_rows=[sources[n['source_version_id']] for n in nodes]
-        source_rows.sort(key=lambda x:(x['payload']['record_kind']!='work',x['source'],x['source_id']))
-        representative=source_rows[0]['payload']
-        authors=list(dict.fromkeys(c['name'] for source in source_rows for c in source['payload'].get('contributors',[]) if c.get('role','author')=='author'))
+        metadata=_work_metadata(source_rows)
         scopes=defaultdict(list)
         for item in sorted(evidence,key=lambda x:x['evidence_key']):
             if item['work_id']==canonical and item.get('scope_valid',1) and item['payload'].get('llm_input_allowed') is True:
                 scopes[item['expression_id']].append(item['payload'])
-        base={'work_id':canonical,'title':representative.get('titles',[{}])[0].get('value','') if representative.get('titles') else '',
-            'authors':authors,'original_language':representative.get('original_language'),
-            'first_publication_year':representative.get('first_publication_year'),
-            'region':list(dict.fromkeys(region for source in source_rows for region in source['payload'].get('region',[]))),
-            'series':representative.get('series'),'source_record_ids':[s['version_id'] for s in source_rows]}
+        base={'work_id':canonical,**{field:value for field,value in metadata.items() if field!='work_kind'}}
         out.append({**base,'expression_id':None,'evidence':scopes.get(None,[])})
         for expression,items in sorted(((key,value) for key,value in scopes.items() if key is not None)):
             out.append({**base,'expression_id':expression,'evidence':items})
@@ -143,9 +191,10 @@ def audit_dataset(database_path, *, inputs=None, results=None, gold=None, rights
         item['payload']=json.loads(item['evidence_json'])
     active_ids={h['version_id'] for h in heads}
     active=[s for s in sources if s['version_id'] in active_ids]
+    input_sources=_input_sources(by_source,active_ids)
     resolved_ids={w['canonical_id'] for w in works if w['resolved']}
     unresolved_ids={w['canonical_id'] for w in works if not w['resolved']}
-    row_inputs=records(inputs) if inputs is not None else _derive_inputs(works,by_source,evidence)
+    row_inputs=records(inputs) if inputs is not None else _derive_inputs(works,input_sources,evidence)
     invalid_input_keys=set()
     by_work={}
     for row in row_inputs:
@@ -161,17 +210,12 @@ def audit_dataset(database_path, *, inputs=None, results=None, gold=None, rights
             canonical[work['canonical_id']].append(work)
     metadata=[]
     for work_id,nodes in sorted(canonical.items()):
-        values=[by_source[node['source_version_id']]['payload'] for node in nodes]
-        values.sort(key=lambda row:(row['record_kind']!='work',row['source'],row['source_id']))
-        representative=values[0]
+        source_rows=[input_sources[node['source_version_id']] for node in nodes]
+        values=[source['payload'] for source in source_rows if source['payload']['record_kind']=='work']
         claims={row.get('original_language') for row in values if row.get('original_language')}
         if len(claims)>1:
             finding('conflicting_original_languages',work_id,', '.join(sorted(claims)),'warning')
-        row={'work_id':work_id,'title':representative.get('titles',[{}])[0].get('value','') if representative.get('titles') else '',
-             'authors':list(dict.fromkeys(c['name'] for value in values for c in value.get('contributors',[]) if c.get('role','author')=='author')),
-             'original_language':representative.get('original_language'), 'first_publication_year':representative.get('first_publication_year'),
-             'region':list(dict.fromkeys(region for value in values for region in value.get('region',[]))),
-             'work_kind':representative.get('work_kind'),'series':representative.get('series')}
+        row={'work_id':work_id,**_work_metadata(source_rows)}
         metadata.append(row)
         if work_id in by_work:
             for field in ('original_language','first_publication_year'):
@@ -409,6 +453,7 @@ def audit_dataset(database_path, *, inputs=None, results=None, gold=None, rights
             'resolution_pairs':{'minimum':300,'maximum':500,'required_types':['original-translation','different-translators','edition-change','same-title-different-work','different-volumes','story-vs-anthology','adaptation']}},
         'review_preconditions':{**review_preconditions(row_inputs),'input_snapshot_matches_db':not invalid_input_keys,'input_source_references_100_percent':input_ref_valid==len(row_inputs)},'findings':findings,
         'notes':['Original language uses explicit original_language metadata only; an English translated title, English Wikidata label, evidence language or target_language is never original-language evidence.',
+            'Work metadata uses work records only, prioritized Wikidata, Open Library, other sources, then Wikipedia, with per-field nonempty fallback. Edition language, publication date, region and series never fill original-work metadata. Source references still retain edition records.',
             'Region is explicit work/author origin metadata; story setting, citizenship and language are not substituted.',
             'Region memberships overlap. Missing series means not supplied or not applicable, not evidence of a data error.',
             'Counts and provenance checks do not establish classification quality or readiness for commercial publication.']}

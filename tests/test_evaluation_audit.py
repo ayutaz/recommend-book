@@ -1,6 +1,7 @@
 import hashlib
 import json
 from pathlib import Path
+import pytest
 from recommend_book.database import DatasetDB
 from recommend_book.models import SourceRecord, Title, Contributor, Identifier, Evidence
 from recommend_book.evaluation.audit import audit_dataset, write_audit_report, review_preconditions
@@ -74,3 +75,62 @@ def test_input_evidence_not_in_db_is_not_trusted(tmp_path):
     report=audit_dataset(db.path,inputs=inputs,root_dir=tmp_path)
     assert any(f['code']=='input_evidence_not_in_db' for f in report['findings'])
     assert report['review_preconditions']['input_snapshot_matches_db'] is False
+
+
+@pytest.mark.parametrize('wd_language,wd_year,ol_language,ol_year,expected_language,expected_period',[
+    ('ja',1880,'en',2001,'ja','pre1900'),
+    (None,None,'de',1905,'de','1900-1949'),
+    (None,None,None,None,'unknown','unknown'),
+])
+def test_readonly_audit_matches_work_priority_and_work_only_fallback(
+        tmp_path,wd_language,wd_year,ol_language,ol_year,expected_language,expected_period):
+    from recommend_book.classification.validation import input_hash, load_taxonomy, target_language
+    raw=tmp_path/'metadata-fixture.json';raw.write_text('{}',encoding='utf-8')
+    common=dict(retrieved_at='2026-10-12T00:00:00Z',raw_path=str(raw),raw_sha256=hashlib.sha256(raw.read_bytes()).hexdigest())
+    author_id=Identifier(source='wikidata',value='Q-author',scope='agent')
+    wd=SourceRecord(source='wikidata',source_id='Q-work',source_url='https://www.wikidata.org/Q-work',
+        provider_id='wikidata',rights_policy_id='wikidata-cc0',record_kind='work',
+        titles=[Title(value='Q-work'),Title(value='Original work title')],
+        contributors=[Contributor(name='Raw author alias',identifiers=[author_id])],
+        original_language=wd_language,first_publication_year=wd_year,
+        region=['Japan'] if wd_language else [],series='Original series' if wd_language else None,
+        work_kind='novel',**common)
+    ol=SourceRecord(source='openlibrary',source_id='/works/OL-fixture-W',source_url='https://openlibrary.org/works/OL-fixture-W',
+        provider_id='openlibrary',rights_policy_id='openlibrary-metadata',record_kind='work',
+        titles=[Title(value='English translated work title')],contributors=[Contributor(name='Different author')],
+        original_language=ol_language,first_publication_year=ol_year,region=['Germany'],series='OL series',work_kind='short_story',**common)
+    edition=SourceRecord(source='openlibrary',source_id='/books/OL-fixture-M',source_url='https://openlibrary.org/books/OL-fixture-M',
+        provider_id='openlibrary',rights_policy_id='openlibrary-metadata',record_kind='edition',
+        titles=[Title(value='Translated edition')],contributors=[Contributor(name='Edition-only author')],
+        language='en',publication_year=2025,original_language='fr',first_publication_year=2025,
+        region=['Edition-only region'],series='Edition-only series',work_kind='edition',**common)
+    authority=SourceRecord(source='wikidata',source_id='Q-author',source_url='https://www.wikidata.org/Q-author',
+        provider_id='wikidata',rights_policy_id='wikidata-cc0',record_kind='agent',
+        titles=[Title(value='Authority author label')],identifiers=[author_id],**common)
+    db=DatasetDB(tmp_path/'metadata.sqlite');db.ingest([wd,ol,edition,authority])
+    nodes={json.loads(row['record_json'])['source_id']:row['work_id'] for row in db.connection.execute(
+        'SELECT w.work_id,s.record_json FROM works w JOIN source_records s ON s.version_id=w.source_version_id')}
+    db.merge_work(nodes[ol.source_id],nodes[wd.source_id],reason='Explicit test fixture identity',reviewer='test-fixture')
+    db.merge_work(nodes[edition.source_id],nodes[wd.source_id],reason='Explicit test fixture edition membership',reviewer='test-fixture')
+    inputs=db.work_inputs();assert len(inputs)==1
+    assert inputs[0].title=='Original work title'
+    assert inputs[0].authors==['Authority author label']
+    taxonomy=load_taxonomy()
+    result=dict(work_id=inputs[0].work_id,expression_id=None,target_language=target_language(inputs[0]),
+        taxonomy_version=taxonomy['version'],prompt_version='1.0',model='test-fixture',cli_version='test-fixture',
+        input_hash=input_hash(inputs[0]),labels=[],missing_axes=[{'axis':axis['axis_id'],'reason':'Fixture has no classification evidence','decision':'unknown'} for axis in taxonomy['axes']],
+        conflicts=[],needs_human_review=True)
+    db.close();before=db.path.read_bytes()
+    for supplied in (inputs,None):
+        report=audit_dataset(db.path,inputs=supplied,results=[result],root_dir=tmp_path)
+        assert report['distributions']['original_language']=={expected_language:1}
+        assert report['distributions']['first_publication_period']=={expected_period:1}
+        assert report['distributions']['region']=={'Japan' if wd_language else 'Germany':1}
+        assert report['distributions']['work_kind']=={'novel':1}
+        assert report['counts']['validated_result_rows']==1
+        assert report['review_preconditions']['input_snapshot_matches_db'] is True
+        assert not any(f['code']=='input_metadata_differs' for f in report['findings'])
+        assert report['provenance']['source_records']['valid_rate']==1
+        assert report['provenance']['raw_integrity']['valid_rate']==1
+        assert report['quality']['status']=='human_validation_pending'
+    assert db.path.read_bytes()==before

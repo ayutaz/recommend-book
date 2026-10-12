@@ -5,7 +5,7 @@ import pytest
 
 from recommend_book.database import DatasetDB
 from recommend_book.models import Contributor, Evidence, Identifier, Title
-from test_resolution import record
+from test_resolution import record, source_mapping_pair
 
 
 def sql(db, query):
@@ -258,3 +258,63 @@ def test_work_inputs_reads_evidence_once_for_multiple_work_ids(tmp_path):
     assert len(inputs) == 6
     evidence_queries = [query for query in queries if query.lstrip().upper().startswith("SELECT") and "FROM evidence" in query]
     assert len(evidence_queries) == 1
+
+
+def test_source_mapping_has_nonhuman_audit_and_undo_preserves_nodes(tmp_path):
+    db = DatasetDB(tmp_path / "books.sqlite")
+    wd, wp = source_mapping_pair(tmp_path)
+    db.ingest([wd, wp])
+    assert db.stats()["works"] == 1
+    decision, method, reviewer = sql(db, "SELECT decision_id,method,reviewer FROM resolution_decisions WHERE status='same' AND active=1")[0]
+    assert method == "source_mapping" and reviewer is None
+    assert sql(db, "SELECT * FROM resolution_events WHERE event_type='verified_source_mapping'")
+    db.undo(decision)
+    assert db.stats()["works"] == 2
+    db.resolve_sources()
+    assert db.stats()["works"] == 2
+    assert db.stats()["source_records"] == 2
+
+
+def test_resolve_sources_applies_verified_mapping_without_reingest(tmp_path):
+    db = DatasetDB(tmp_path / "books.sqlite")
+    wd, wp = source_mapping_pair(tmp_path)
+    original = (tmp_path / "wp.json").read_bytes()
+    (tmp_path / "wp.json").unlink()
+    db.ingest([wd, wp])
+    assert db.stats()["works"] == 2
+    versions = sql(db, "SELECT version_id,record_json FROM source_records ORDER BY version_id")
+    (tmp_path / "wp.json").write_bytes(original)
+    db.resolve_sources()
+    assert db.stats()["works"] == 1
+    assert sql(db, "SELECT version_id,record_json FROM source_records ORDER BY version_id") == versions
+
+
+def test_openlibrary_merge_keeps_wikidata_work_metadata_scope(tmp_path):
+    db = DatasetDB(tmp_path / "books.sqlite")
+    shared = Identifier(source="openlibrary", value="/works/OL1W", scope="work")
+    original = record("Q1", source="wikidata", identifiers=[shared], titles=[Title(value="Original title", language="en")], original_language="en", first_publication_year=1901, region=["Author origin"], series="Original series")
+    ol = record("/works/OL1W", source="openlibrary", identifiers=[shared], titles=[Title(value="Translated title", language="ja")], original_language=None, first_publication_year=None, region=[], series=None)
+    edition = record("edition", source="ndl", record_kind="edition", work_refs=[shared], original_language=None, language="ja", first_publication_year=2020, publication_year=2021, region=["Edition publisher region"], series="Edition imprint")
+    db.ingest([original, ol, edition])
+    assert db.stats()["works"] == 1
+    item = db.work_inputs()[0]
+    assert item.title == "Original title"
+    assert item.original_language == "en"
+    assert item.first_publication_year == 1901
+    assert item.region == ["Author origin"]
+    assert item.series == "Original series"
+    assert len(item.source_record_ids) == 3
+
+
+def test_work_metadata_fallback_preserves_conflicting_source_assertions(tmp_path):
+    db = DatasetDB(tmp_path / "books.sqlite")
+    shared = Identifier(source="openlibrary", value="/works/OL1W", scope="work")
+    wd = record("Q1", source="wikidata", identifiers=[shared], first_publication_year=None)
+    ol = record("/works/OL1W", source="openlibrary", identifiers=[shared], first_publication_year=1901)
+    db.ingest([wd, ol])
+    assert db.work_inputs()[0].first_publication_year == 1901
+    wd_new = wd.model_copy(update={"first_publication_year": 1902, "raw_sha256": "updated"})
+    db.ingest([wd_new])
+    assert db.work_inputs()[0].first_publication_year == 1902
+    values = {json.loads(value) for value, in sql(db, "SELECT value_json FROM field_assertions WHERE field_name='first_publication_year'")}
+    assert values == {1901, 1902}

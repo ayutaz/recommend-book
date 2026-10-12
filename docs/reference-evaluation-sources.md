@@ -71,3 +71,37 @@ Underwoodでは `Shadows` が1896年Palmarini作品に対し2012年Jennifer Arme
 - `snapshot_sources.py` / `audit_reference_sources.py`: 調査再現用。前者は公式archiveを取得、後者は小量metadata取得と機械集計を行う。live LLMは使わない。データ・zipをGitへ入れず、docsとハッシュで出典を保持する。
 
 今回追加したファイルだけを扱い、既存コード・設定・DB・READMEの変更、git操作、LLM分類は行っていない。
+
+## 追記: ステージ4用の限定した補助参照の準備
+
+上記は最初の調査時点の記録である。その後、`scripts/prepare_curated_reference.py` により269件の固定native fixtureから、**4ラベルの正例だけ**を既存評価APIが読める `curated_reference` 形式へ変換した。新taxonomyの6軸全体を変換・検証したものではない。
+
+| 原native field/value | 現taxonomyへの正例変換 | 支持件数 | 定義照合の理由 |
+|---|---|---:|---|
+| `protagonist.age=child` | `protagonist.child=present` | 20 | 原metadataが主人公を子どもと明示し、中心人物がexplicitly a childという定義へ直接対応 |
+| `protagonist.age=adult` | `protagonist.adult=present` | 145 | 原metadataのadultという明示判定へ限定。young/matureを成人扱いしない |
+| `protagonist.profession=student` | `protagonist.student=present` | 13 | 明示された学生という役割へ対応。年齢や舞台から学生を推測しない |
+| `protagonist.profession=artist` | `protagonist.artist=present` | 22 | 芸術の職業を示す原カテゴリへ限定。writerやjournalistを推論で追加しない |
+
+現taxonomyのdefinition文字列を変換器内の確認済み定義と照合し、変更された場合は自動処理を止める。原metadataにおける単一主人公の記述は「少なくとも一人の中心人物にその属性が明示される」という正例の適用範囲で扱う。他の主人公に別属性がある可能性を排除せず、`absent` を生成しない。ソース注釈の確実度high/mediumは文字列で保持するが、数値confidenceやrelevanceに変換しない。すべての出力labelのconfidence/raw_confidence/relevanceはnull。
+
+`narrator=homodiegetic/autodiegetic/heterodiegetic` は語り手の物語参加を述べるカテゴリであり、現taxonomyの文法的first/third personと同値だと確認できない。`epistolary` についても現definitionが要求する「主にletters/documentsで届ける」という範囲を、保存されたカテゴリだけから検証できない。このため**structure.first_person等のgoldは生成していない**。不確かな値をgoldの `unknown` にすることも避け、`mapping-audit.jsonl` の `conversion_status=unsupported` に保存した。これは判定不能の人手正解ではなく、変換できないという実装上の状態である。end/subgenre/cligsの分類、外部由来のsubgenre列、機械生成の `am.*` もgoldには使わない。
+
+実出力は `data/reference/conssa-curated-v1/gold.jsonl` の180作品・200正例。89作品は直接対応する正例がないためgoldから除外したが、269件すべての非対応理由を監査sidecarに保持する。上表の支持件数は元研究との一致を照合するための件数であり、今回の人手評価の支持件数ではない。正例のみの参照から一般的なprecision/accuracy、全ラベルの不存在、校正済みconfidenceは主張しない。評価を実施する場合も、まずは限定された正例検出のrecallとして解釈する。
+
+各出力はsource commit、metadata SHA-256、native field/value、変換rule/reason、taxonomy version、帰属、license URL、changesを保持する。fixtureと原metadataのSHA-256が違えば出力作成前に失敗する。`work_id` は `reference:conssa:neXXXX` という参照専用の未同定IDで、`identity_status=unresolved`、`evaluation_ready=false`、`input_status=independent_input_not_constructed` として保存する。元研究の注釈を今回の独立2名human goldへ昇格しない。
+
+現main PoC入力 `data/poc-v1/work-inputs.jsonl` の実2,000行（SHA-256 `5a8502845254a7369e2fc250a13e6101147c33da3fc077ab79d9c09396e88bc0`）との正規化代表タイトル一致を追加測定したところ、269候補中2件だった。`ne0157 Pequeñeces` と `ne0175 El niño de la Bola` で、上記の年の相違を含め同定は未確定。別題探索・本文・入力ラベル漏洩の検査ではない。この**ほぼ重ならない未同定の参照集合を2,000作品評価へ流し込んでいない**。詳細は `data/reference/current-poc-title-overlap.json` に保存した。
+
+再現コマンド:
+
+```powershell
+uv run python scripts/prepare_curated_reference.py --output data/reference/conssa-curated-v1
+uv run pytest tests/test_curated_reference.py tests/test_evaluation.py -q
+```
+
+出力先は新規または空のdirectoryを指定する。既存の非空snapshotを上書きしない。変換scriptはローカル保存済みmetadataだけを読む。Web/WD/LLMの取得、本文入力、DB変更は行わない。
+
+入力fixture SHA-256は `4acc51caff87ee9f12815dda0644301b912742e2e5c67c960b7645744ba7c66a`、taxonomy SHA-256は `688f8e1a0921bcbafabbbf54d99b9039bce8c525ea7e7147bdb01821b449084e`、gold SHA-256は `13b0f25cfbb291705ef6ddc62046e0bc0ca4621bc5a544c9784358b6da5389f0`。出力manifestにも保存した。TDDでは実装前に変換器ファイル未存在による9件の失敗を確認し、実装後に9件が成功した。原資料の意味の全正解、新しい人手400作品、実作品での分類精度が確認されたという意味ではない。
+
+既存評価器との回帰検証を含む `tests/test_curated_reference.py tests/test_evaluation.py` は23件成功した。参照を形式上評価器へ渡せることと、human集計・校正へ混ざらないことを確認したテストであり、実PoCへ参照を投入した結果ではない。
