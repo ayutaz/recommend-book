@@ -67,3 +67,10 @@ def test_selection_cannot_claim_world_validation_or_accept_invalid_family():
         build_delivery({'rows': [row('world')], 'audit': {}}, {'rows': [], 'audit': {}},
                        {'recommended_setting': {'id': 'bad', 'family': 'fake'}}, ranker=ranker)
 
+
+def test_boolean_assertion_cannot_authorize_unverified_target_popularity():
+    with pytest.raises(ValueError, match='verified target popularity'):
+        build_delivery({'rows': [row('world', popularity=100)], 'audit': {}},
+                       {'rows': [row('ref', rating=5)], 'audit': {}},
+                       {'recommended_setting': {'id': 'popular', 'family': 'popularity'}},
+                       ranker=ranker, target_popularity_comparable=True)

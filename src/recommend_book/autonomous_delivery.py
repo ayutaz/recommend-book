@@ -35,6 +35,8 @@ def verify_baseline(manifest_path, root):
 
 def build_delivery(world, references, selection, *, ranker, limit=100,
                    target_popularity_comparable=False):
+    if target_popularity_comparable:
+        raise ValueError('A boolean cannot establish verified target popularity; this PoC uses the personal fallback')
     selected = deepcopy(selection['recommended_setting'])
     if selected.get('family') not in {'personal', 'popularity', 'hybrid_rank', 'personal_tie_robust'}:
         raise ValueError('Unsupported recommendation family')
