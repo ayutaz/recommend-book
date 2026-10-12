@@ -74,3 +74,34 @@ def test_boolean_assertion_cannot_authorize_unverified_target_popularity():
                        {'rows': [row('ref', rating=5)], 'audit': {}},
                        {'recommended_setting': {'id': 'popular', 'family': 'popularity'}},
                        ranker=ranker, target_popularity_comparable=True)
+
+
+def test_delivery_uses_verified_scope_eligibility_instead_of_historical_pool(tmp_path, monkeypatch):
+    import json
+    from recommend_book import autonomous_database, autonomous_delivery
+    from recommend_book.recommendation import world, narou
+
+    historical = {'rows': [row('edition'), row('work')], 'audit': {'work_count': 2}}
+    eligible = {'rows': [row('work')], 'audit': {
+        'historical_work_count': 2, 'eligible_work_count': 1,
+        'scope_quarantined_count': 1, 'scope_quarantine_verified': True}}
+    monkeypatch.setattr(world, 'load_world_database', lambda path: deepcopy(historical))
+    monkeypatch.setattr(autonomous_database, 'load_autonomous_world_database',
+                        lambda path: deepcopy(eligible), raising=False)
+    monkeypatch.setattr(narou, 'load_narou_reference', lambda *args: {
+        'rows': [row('ref', rating=5)], 'audit': {}})
+    monkeypatch.setattr(autonomous_delivery, 'verify_baseline',
+                        lambda *args: {'unchanged': True, 'verified_count': 16})
+    sources = {}
+    for name in ('world_database', 'narou_database', 'annotations', 'baseline_manifest'):
+        sources[name] = tmp_path / (name + '.json')
+        sources[name].write_text('{}', encoding='utf-8')
+    sources['selection_path'] = tmp_path / 'selection.json'
+    sources['selection_path'].write_text(json.dumps({
+        'recommended_setting': {'id': 'personal', 'family': 'personal'}}), encoding='utf-8')
+    output = tmp_path / 'delivery'
+    result = autonomous_delivery.run_delivery(**sources, output=output)
+    assert result['work_count'] == 1
+    delivered = json.loads((output / 'world-works.json').read_text(encoding='utf-8'))
+    assert [record['work_id'] for record in delivered] == ['work']
+    assert json.loads((output / 'world-audit.json').read_text(encoding='utf-8'))['historical_work_count'] == 2

@@ -74,7 +74,7 @@ def build_delivery(world, references, selection, *, ranker, limit=100,
 
 def run_delivery(*, world_database, narou_database, annotations, selection_path,
                  baseline_manifest, output, limit=100):
-    from recommend_book.recommendation.world import load_world_database
+    from recommend_book.autonomous_database import load_autonomous_world_database
     from recommend_book.recommendation.narou import load_narou_reference
     from recommend_book.recommendation.autonomous_evaluation import rank_with_setting
     root = Path(__file__).resolve().parents[2]
@@ -89,7 +89,11 @@ def run_delivery(*, world_database, narou_database, annotations, selection_path,
                'baseline_manifest': baseline_manifest}.items()}
     hashes = {name: file_sha(path) for name, path in inputs.items()}
     selection = json.loads(inputs['selection'].read_text(encoding='utf-8'))
-    world = load_world_database(inputs['world_database'])
+    world = load_autonomous_world_database(inputs['world_database'])
+    if world['audit'].get('scope_quarantine_verified') is not True:
+        raise ValueError('Verified world scope eligibility is required')
+    if world['audit'].get('eligible_work_count') != len(world['rows']):
+        raise ValueError('World eligible row count does not match scope audit')
     refs = load_narou_reference(inputs['narou_database'], inputs['annotations'])
     built = build_delivery(world, refs, selection, ranker=rank_with_setting, limit=limit)
     with tempfile.TemporaryDirectory(prefix='.delivery-', dir=output.parent) as temporary:
@@ -110,7 +114,11 @@ def run_delivery(*, world_database, narou_database, annotations, selection_path,
                     'sources': {name: {'path': str(path), 'sha256': hashes[name]} for name, path in inputs.items()},
                     'outputs': {path.name: file_sha(path) for path in sorted(stage.iterdir())},
                     'baseline_before': baseline_before, 'baseline_after': baseline_after,
-                    'work_count': len(world['rows']), 'existing_ratings': sum(r.get('rating') is not None for r in refs['rows']),
+                    'work_count': len(world['rows']),
+                    'historical_work_count': world['audit']['historical_work_count'],
+                    'scope_quarantined_count': world['audit']['scope_quarantined_count'],
+                    'scope_quarantine_verified': True,
+                    'existing_ratings': sum(r.get('rating') is not None for r in refs['rows']),
                     'ranking_count': len(built['recommendations']['ranking']),
                     'supported_count': built['recommendations']['audit']['supported_count'],
                     'confirmed_unread_count': built['confirmed_unread']['audit']['eligible_count'],

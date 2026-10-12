@@ -54,7 +54,7 @@ class WikidataAdapter:
         if not instances:
             raise ValueError("instance_qids must not be empty")
         types = "VALUES ?type { " + " ".join("wd:" + _qid(v) for v in instances) + " }"
-        query = "SELECT DISTINCT ?work WHERE { " + types + " { ?work wdt:P7937 ?type. } UNION { ?work wdt:P31 ?type. } " + clause + " FILTER NOT EXISTS { ?work wdt:P629 ?editionWork. } } ORDER BY ?work LIMIT " + str(limit) + " OFFSET " + str(offset)
+        query = "SELECT DISTINCT ?work WHERE { " + types + " { ?work wdt:P7937 ?type. } UNION { ?work wdt:P31 ?type. } " + clause + " FILTER NOT EXISTS { ?work wdt:P629 ?editionWork. } FILTER NOT EXISTS { ?work wdt:P31 wd:Q3331189. } } ORDER BY ?work LIMIT " + str(limit) + " OFFSET " + str(offset)
         result = self.fetcher.get(QUERY_URL, source="wikidata", params={"query": query, "format": "json"}, headers={"Accept": "application/sparql-results+json"})
         if result.status != "success":
             return [], CollectionResult(status="failed", errors=[result.error or "SPARQL failed"])
@@ -113,6 +113,31 @@ class WikidataAdapter:
                         collection.errors.append(f"missing entity: {qid}")
                         collection.status = "failed"
                         continue
+                    if kind == "work":
+                        # Literary form does not establish work scope. Preserve
+                        # conflicting normal claims even beside preferred ones.
+                        assertions = []
+                        for prop in ("P31", "P629"):
+                            for index, statement in enumerate(entity.get("claims", {}).get(prop, [])):
+                                if statement.get("rank") == "deprecated":
+                                    continue
+                                value = statement.get("mainsnak", {}).get("datavalue", {}).get("value")
+                                if isinstance(value, dict) and (
+                                    (prop == "P31" and value.get("id") == "Q3331189") or
+                                    (prop == "P629" and re.fullmatch(r"Q[1-9][0-9]*", str(value.get("id", ""))))
+                                ):
+                                    assertions.append({"locator": f"claims.{prop}[{index}]", "statement": statement})
+                        if assertions:
+                            collection.metadata.setdefault("scope_holds", []).append({
+                                "source_id": qid, "requested_kind": kind,
+                                "reason": "Explicit edition assertion conflicts with requested work scope",
+                                "raw_path": fetched.artifact.path, "raw_sha256": fetched.artifact.sha256,
+                                "assertion_locators": [a["locator"] for a in assertions],
+                                "assertions": assertions,
+                            })
+                            collection.errors.append(f"scope hold: {qid} has an explicit edition assertion")
+                            collection.status = "failed"
+                            continue
                     title, title_lang = _label(entity, languages)
                     url = f"https://www.wikidata.org/wiki/{qid}"
                     identifiers = [Identifier(source="wikidata", value=qid, scope=kind)]
