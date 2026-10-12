@@ -1,0 +1,44 @@
+{
+  "version": "autonomous-evaluation-v1",
+  "plan": "docs/autonomous-completion-plan-v2.md",
+  "user_tasks_required": 0,
+  "additional_user_ratings_required": 0,
+  "provenance_classes": ["mechanical_audit", "curated_reference", "ai_silver", "ai_resolution_review", "observed_existing_ratings"],
+  "human_annotation_generated": false,
+  "model": "gpt-6.1-sol",
+  "global_max_cli_concurrency": 8,
+  "classification_batch_size": 5,
+  "improvement_round_limit": 2,
+  "reference": {
+    "pilot_works": 20,
+    "target_works": 100,
+    "maximum_curated_works": 180,
+    "positive_only_metrics": ["positive_detection_recall", "input_coverage"],
+    "positive_only_baselines": ["always_present", "always_unknown"],
+    "held_unknown_omitted_are_misses": true,
+    "calibration_from_silver_or_positive_only": false
+  },
+  "silver": {
+    "works": 400,
+    "blind_lanes": 2,
+    "disagreement_adjudication_lanes": 1,
+    "original_predictions_in_blind_input": false,
+    "human_gold_output": false
+  },
+  "resolution": {"pairs": 400, "unresolved_records": 26, "ai_agreement_is_authority": false},
+  "enrichment": {"pilot_works": 100, "candidate_works": 1026, "denied_or_unresolved_evidence_is_input": false},
+  "recommendation": {
+    "primary_metric": "ndcg_at_10",
+    "secondary_metrics": ["precision_at_10", "coverage", "ties_at_10"],
+    "outer_folds": 5,
+    "inner_folds": 3,
+    "outer_seed": 20261013,
+    "inner_seed": 20261014,
+    "max_candidate_settings": 12,
+    "method_families": ["personal", "popularity", "hybrid_rank", "personal_tie_robust"],
+    "dataset_previously_observed": true,
+    "fresh_holdout_claim": false,
+    "unknown_read_status_is_unread": false,
+    "narou_popularity_transferred_to_world": false
+  }
+}
