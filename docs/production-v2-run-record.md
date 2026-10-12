@@ -48,3 +48,11 @@ uv run --offline recommend-book classify `
 旧1,000実行の[資源観測](../data/evaluation/poc-frozen-v2/production-v1-resource-observation/summary.json)は335 sample、うち334が生存targetを含んだ。最大sampleのnative Codex数は8、native working set合計1,329,111,040 bytes、schedulerと子を含む合計1,393,811,456 bytes。不正・欠損metric groupは2件を除外した。これらは間欠sampleの最大値で、厳密なpeakや全子プロセスのCPU総量ではない。新runも別のresource fileで観測する。
 
 人手goldは0件。Schemaや引用所属が有効でも、意味的支持・作品全体の正しさ・関連度精度・校正済み信頼度を証明しない。固定400の校正100は数量不足のため、実known予測・confidence帯・実行contextと、全400から分離した候補poolを確認して追加レビューの範囲を決める。主要ラベルの品質gateと人手名寄せ評価は未完了である。
+
+## 終了後の反映・診断処理
+
+分類runを変更しない新規6ファイルで、[派生SQLiteへの反映](classification-database-import-guide.md)と[追加校正候補の診断](calibration-candidate-diagnostic.md)を実装した。両担当の停止後、本体で全**769 tests passed / 28.98秒**を確認。rootの独立レビューでWindows runnerのnative separatorを誤拒否する不整合を発見し、runnerと同じPath→strのfixtureでREDを確認して修正した。元runner・入力・実runは変更していない。
+
+取り込み処理は元DBの全テーブル値を保持し、selected入力・source version・work/expression・完了/保留状態・結果と根拠を新しい6テーブルへ保存する。診断は固定main2,000のcalibration100と全400groupから分離したpoolに限定し、追加古典20はidentityを検証して件数へ加えない。known予測の件数と信頼度帯を数量上限として出力し、精度や人手truthを生成しない。
+
+どちらも実handleのterminal終了を観測したcallerが保存する共通proofを要求する。現時点の検証は合成fixtureであり、実runへの適用・派生DB公開・実際の候補診断は終了後に残る。固定400の選定・分割・blind packを維持し、人手未入力の状態を保持する。

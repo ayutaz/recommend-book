@@ -10,6 +10,7 @@
 | 用途別利用条件 | `config/sources.json`、許可根拠、作品別原版条件、帰属・変更・条件の記録 | ソース・項目別に管理。一括商用許可や全世界の本文権利確認は未達。未解決資料は分類入力から除外 |
 | 世界・年代・ジャンル横断 | 固定2,000は原言語ja700/en700/その他600、古典原文20を追加 | 実際の便宜的フレーム。長編1,359/LN108/短編533はソースmetadataの分類であり、2,000長編や作品種別の人手確認を意味しない |
 | 作品単位のDB | `poc-combined-v1/dataset.sqlite`、`manifest.json`、`audit.json`、`verification.json` | 2,020 resolved canonical works、未解決26、FK0、integrity=ok。原2,000のID/input hash/source refs不変を確認 |
+| 分類のSQLite反映 | [派生DB importer](classification-database-import-guide.md)、元テーブル・scope・数値保持のfixture | 実装済み。本体全769テスト成功。終了証拠を要求するため、live2,020 runへの実適用は終了後に行う |
 | 原題・翻訳・文庫等の関係 | edition/expression/contents、raw assertion、同定ledger、古典8件の原作接続・12件の保留 | 関係を保持する基盤を実装。NDL26件の作品対応は未確定。原題/翻訳題をP1476単独で認定しない。旧固定資料の題名kindは書き換えていない |
 | 誤統合取消・同名別作品・巻違い | DB/resolution/normalizationのfixtureテスト | 実装検証済み。人手の名寄せ400ペアは未判定で、実データのprecision・候補recall・cluster誤統合は未評価 |
 | Sol CLIの並列実行 | 同じpilot100の2/4/8試行、全300有効、CLI履歴・資源sample | 運用比較完了、8並列を選択。LLM同士の一致を正解率としない |
@@ -18,7 +19,7 @@
 | 関連度・信頼度 | 生のモデル値、calibrated値null、scope・根拠・欠損 | 付与基盤あり。旧validatorのknown-null拒否をv2で修正し、本体655テスト成功。中心性不明はnullを保持し、存在判断coverageと関連度availabilityを分離。人手の意味的正しさ・校正は未評価 |
 | 人手正解と分割 | balanced400のdev150/calibration100/holdout150、dev内pilot20、72ラベル日本語ガイド | blind pack作成済み、人手gold0。二名判定/裁定または人数制約を記録した実注釈が必要 |
 | 分類精度・関連度精度・根拠支持 | 評価器・構造/引用所属の機械照合・分布レポート | 人手precision/recall/F1、関連度MAE・順位相関、意味的支持は未評価。引用文字列の存在はラベル支持の証拠とは別 |
-| 信頼度校正 | calibration/holdout分離、実装テスト、[実行可能性監査](calibration-feasibility-v1.md)、最小標本条件 | 固定calibration100は同一scopeの最大が16件で、必要な40件へ構造的に届かない。元400を維持した別の追加calibrationが必要。実際のknown予測・人手truth・confidence帯・同一contextを確認して対象範囲を決める。範囲外はnullを維持 |
+| 信頼度校正 | calibration/holdout分離、実装テスト、[実行可能性監査](calibration-feasibility-v1.md)、最小標本条件 | 固定calibration100は同一scopeの最大が16件で、必要な40件へ構造的に届かない。元400を維持した別の追加calibrationが必要。[実予測の候補診断](calibration-candidate-diagnostic.md)を実装。terminal後にknown予測・confidence帯・同一contextを照合し、人手truthと追加packの対象範囲を決める。範囲外はnullを維持 |
 | 固定品質gate・再現・復旧 | `poc-quality-gates-v1.md`、immutable入力、lease/cache/再開テスト | 条件は固定済み。全本番結果・人手評価・処理量を照合した最終品質レポートは未完了 |
 | fixtureによるCI | `.github/workflows/tests.yml`のWindows/Ubuntu設定、依存lock・workflow構文の検証、追加時点のローカル269テスト成功 | CI設定を追加済み。GitHub hosted実行は未実施。ローカル成功をCI実行成功として報告しない |
 
