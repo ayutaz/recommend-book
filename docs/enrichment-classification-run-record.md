@@ -98,6 +98,16 @@ Chromeで[実HTML](../data/recommendation-poc-v3/recommendations.html)の100 art
 
 ## 残る完了条件
 
+[更新後のcoverage診断](../data/evaluation/recommendation-poc-v3-v1/coverage-diagnostic.json)では、旧classified DBから全2,020入力・特徴を再構成し、旧orderedのhash/source refs、新全入力・delta結果・新旧行を照合した。診断が保護した既存artifactは14個で、前後SHAとrootの再照合が一致する。全raw資料をこの診断で再取得・再検証したという意味ではない。
+
+特徴なし1,026作品にはすべて許可済み根拠があるが、855作品はsubject/synopsis/excerpt等がないmetadata中心の種類だった。残り171作品はsubject等の種類を持つ機械的な確認候補で、資料の十分性やモデル誤りを確定した件数ではない。subjectあり168、synopsisあり6（すべて日本語）、原文excerptあり0。これらの区分は重複する。許可済みsynopsis6作品と、subjectのみでnarrative種類がない165作品から保留理由を確認する。特徴なし全1,026作品は分類ラベル自体0で、scope除外だけによる欠損ではない。
+
+変更268作品の遷移は、特徴なし→あり32、あり→なし0、なし→なし61、あり→あり175。情報量が純増したことは確認できるが、32件の分類が正しいという人手証拠ではない。新資料が必要な対象には項目別の利用条件確認を行い、除外済みOpen Library description112件を代用しない。
+
+[synopsis6作品の保留理由対照](../data/evaluation/recommendation-poc-v3-v1/six-synopsis-hold-diagnostic-v1.json)では、6件すべて旧v2入力から不変で、今回のdelta268対象外だった。実状態はcompletedかつ6軸unknownで、ジョブの失敗・未完了ではない。保存されたsynopsisは13〜118文字、部・章見出しのみ2件と短い断片・一般的な筋説明等。具体的な共同生活の導入を含む1件もあり、分類閾値の人手レビュー論点として残す。
+
+旧入力・結果hashとscopeを照合し、既存raw4ファイルの正確なpage/revisionからscreen出力を再現した。抽出時のテンプレート・引用等の除外記録を保持し、既に除外した段落を今回の診断で再許可していない。入力・titleのU+FFFDは全0で、Windows端末表示の文字化けは保存データの破損ではなかった。保護14資料と追加読取15資料の前後SHA、rootの再照合が一致し、追加取得・LLM・コード修正は0。機械的な矛盾や確定バグは発見していないが、この読み取り診断を人手正解・分類精度・法的完全確認とは扱わない。
+
 1. blind20→400作品と名寄せ400ペアの人手判定は0件。分類precision/recall/F1、関連度MAE・根拠の意味的支持・名寄せ品質・信頼度校正を検証するには実注釈が必要。
 2. 特徴なし1,026作品と、特徴があっても嗜好に共通する特徴がない作品の内訳を確認し、利用条件を満たす資料から補充する。新入力への分類は別versionとし、旧固定評価packへ付け替えない。
 3. 人気順を下回る原因を[誤差分析](recommendation-error-analysis.md)で切り分け、開発用評価で改善案を比較する。全foldを見た探索結果を未使用holdoutの成功としない。
