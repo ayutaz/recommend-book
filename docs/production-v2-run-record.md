@@ -55,4 +55,6 @@ uv run --offline recommend-book classify `
 
 取り込み処理は元DBの全テーブル値を保持し、selected入力・source version・work/expression・完了/保留状態・結果と根拠を新しい6テーブルへ保存する。診断は固定main2,000のcalibration100と全400groupから分離したpoolに限定し、追加古典20はidentityを検証して件数へ加えない。known予測の件数と信頼度帯を数量上限として出力し、精度や人手truthを生成しない。
 
-どちらも実handleのterminal終了を観測したcallerが保存する共通proofを要求する。現時点の検証は合成fixtureであり、実runへの適用・派生DB公開・実際の候補診断は終了後に残る。固定400の選定・分割・blind packを維持し、人手未入力の状態を保持する。
+どちらも実handleのterminal終了を観測したcallerが保存する共通proofを要求する。分類結果の取り込みと候補診断の検証は合成fixtureであり、実runへの適用・派生DB公開・実際の候補診断は終了後に残る。固定400の選定・分割・blind packを維持し、人手未入力の状態を保持する。
+
+2026-10-12 03:31 UTCに、取り込み処理の入力検証を実データで読み取り専用実行した。元combined DBから全2,020 WorkInputを再構成し、固定入力の全input hash、source version、work/expression所属の一致を確認した。SQLite integrity checkは`ok`、foreign key errorは0。元DB・入力・入力manifest・実行contextのbytesは処理前後で不変、実行用10 artifactも固定SHAと一致した。[事前検証記録](../data/development/poc-v2-postprocessing-preflight-v1/preflight.json)に保存している。この検証では実分類結果・terminal proofを読まず、分類DBへの取り込みや校正候補診断は実施していない。
