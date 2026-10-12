@@ -77,3 +77,7 @@ Windows のジョブ lock は、空の lock file に初期化 byte を書いて�
 - `data/reference/`: 外部研究の固定 metadata と帰属・native annotation。本文・現taxonomyの人手正解とは区別。
 
 実行完了後に、この記録へ terminal status と新しい固定入力・分類・評価の観測を追記する。
+
+## 後続の本体採用と2,020実行
+
+旧1,000の実行はterminal（completed975/held25/pending0）になり、旧結果を保持したままv2で1,000件を再検証・移行した。本体の全655テスト成功後、新canonical古典20を含む2,020入力を8並列で起動した。上記の「実行中」「未起動」はその観測時点の履歴であり、現在の進捗・実行条件・残る検証は[2,020入力の実行記録v2](production-v2-run-record.md)を参照。人手gold0・意味的精度/校正未評価は継続している。

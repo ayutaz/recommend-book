@@ -24,7 +24,7 @@ LLM分類には、認証済みのCodex CLIから `gpt-6.1-sol` を使用しま�
 |---|---|
 | 収集・利用条件 | Open Library/Wikidata/NDL等の原物とSHAを保存し、用途別の利用条件を保持。[計画](docs/world-novel-dataset-plan.md)、[実績](docs/poc-execution-report.md) |
 | 作品DB・名寄せ | SQLiteで作品/表現/版・author/series authority・immutable source versionを管理。[出典対応](docs/source-mapping-resolution.md)、[NDLの接続不足](docs/ndl-resolution-coverage.md)、[古典原文の版関係](docs/prose-integration-guide.md)、[2,020作品の単一DB](docs/combined-poc-guide.md) |
-| LLM分類 | 6軸72ラベル、根拠・関連度・raw confidence・unknownを保存。[1,000→2,000作品実行](docs/production-classification-guide.md)、[分類の観測](docs/classification-observation-guide.md) |
+| LLM分類 | 6軸72ラベル、根拠・関連度・raw confidence・unknownを保存。[1,000→2,000作品実行](docs/production-classification-guide.md)、[分類の観測](docs/classification-observation-guide.md)、[2,020入力のv2実行](docs/production-v2-run-record.md) |
 | 精度検証 | 独立レビュー・dev/calibration/holdout・根拠支持・校正。[評価手順](docs/evaluation-guide.md)、[固定品質条件](docs/poc-quality-gates-v1.md)、[分布調整した400作品](docs/evaluation-balanced-v1.md)、[校正標本の実行可能性](docs/calibration-feasibility-v1.md) |
 | 人手判定 | [72ラベル日本語ガイド](docs/human-taxonomy-v1-guide.md)、[名寄せ400ペア](docs/resolution-review-guide.md) |
 
