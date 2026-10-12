@@ -37,6 +37,10 @@ class Evidence(Contract):
     language: str | None = None
     locator: str | None = None
     expression_ref: str | None = None
+    license: str | None = None
+    license_url: str | None = None
+    attribution: dict = Field(default_factory=dict)
+    inherited_restrictions: list[str] = Field(default_factory=list)
 
 
 class SourceRecord(Contract):

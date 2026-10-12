@@ -93,18 +93,36 @@ def _atomic_lines(path: Path, rows):
         temporary.unlink(missing_ok=True)
 
 
+def validate_controls(*, concurrency=2,timeout=900,limit=None,batch_size=1,
+        max_run_seconds=None,max_observed_tokens=None):
+    """Shared API/CLI bounds; zero dataset/budget limits deliberately stop work."""
+    if not isinstance(concurrency,int) or concurrency < 1:
+        raise ValueError("concurrency must be a positive integer")
+    if not isinstance(batch_size,int) or not 1 <= batch_size <= 10:
+        raise ValueError("batch_size must be between 1 and 10")
+    if not isinstance(timeout,(int,float)) or not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("timeout must be finite and positive")
+    if limit is not None and (not isinstance(limit,int) or limit < 0):
+        raise ValueError("limit must be a nonnegative integer")
+    if max_run_seconds is not None and (not isinstance(max_run_seconds,(int,float)) or not math.isfinite(max_run_seconds) or max_run_seconds < 0):
+        raise ValueError("max_run_seconds must be finite and nonnegative")
+    if max_observed_tokens is not None and (not isinstance(max_observed_tokens,int) or max_observed_tokens < 0):
+        raise ValueError("max_observed_tokens must be a nonnegative integer")
+
+
 def run_classification(inputs: list[WorkInput], output_dir: Path, *, concurrency: int=2,
         model: str="gpt-6.1-sol", executable: str | None=None, limit: int | None=None,
         timeout: float=900, max_run_seconds: float | None=None,
-        max_observed_tokens: int | None=None, batch_size: int=1) -> dict:
+        max_observed_tokens: int | None=None, batch_size: int=1,
+        stop_on_rate_limit: bool=False) -> dict:
     """Classify a fixed snapshot with <=3 attempts, leases, cache and manifests.
 
     Budget bounds pause NEW submissions, allowing in-flight jobs to finish.
     CLI token usage is observed usage, not an API billing estimate. No fabricated
     all-unknown fallback is written when an invocation or validation fails.
     """
-    if concurrency < 1 or timeout <= 0 or (limit is not None and limit < 0) or not 1 <= batch_size <= 10:
-        raise ValueError("Invalid concurrency, timeout or limit")
+    validate_controls(concurrency=concurrency,timeout=timeout,limit=limit,batch_size=batch_size,
+        max_run_seconds=max_run_seconds,max_observed_tokens=max_observed_tokens)
     selected = inputs[:limit] if limit is not None else inputs
     identities = [(work.work_id, work.expression_id) for work in selected]
     if len(set(identities)) != len(identities):
@@ -131,15 +149,24 @@ def run_classification(inputs: list[WorkInput], output_dir: Path, *, concurrency
     jobs = [(job_key(input_hash(work), config), work) for work in selected]
     started = time.monotonic()
     usage, durations, attempted = {}, [], []
-    guard = threading.Lock()
+    guard = threading.RLock()
     stop = threading.Event()
     throttled = threading.Event()
     reused = set()
+    stop_reasons = set()
 
-    def budget_hit():
+    def request_stop(reason):
+        with guard:
+            stop_reasons.add(reason)
+            stop.set()
+
+    def budget_reason():
         observed = usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
-        return (max_run_seconds is not None and time.monotonic()-started >= max_run_seconds) or (
-            max_observed_tokens is not None and observed >= max_observed_tokens)
+        if max_run_seconds is not None and time.monotonic()-started >= max_run_seconds:
+            return "time_budget"
+        if max_observed_tokens is not None and observed >= max_observed_tokens:
+            return "token_budget"
+        return None
 
     def process(pairs):
         pending = []
@@ -229,8 +256,9 @@ def run_classification(inputs: list[WorkInput], output_dir: Path, *, concurrency
                 durations.append(elapsed)
                 for name, value in events["usage"].items():
                     usage[name] = usage.get(name, 0)+value
-                if budget_hit():
-                    stop.set()
+                reason = budget_reason()
+                if reason:
+                    request_stop(reason)
             if category is None:
                 for item_key, item_work, item_lease in leases:
                     result_path = output_dir / "results" / f"{item_key}.json"
@@ -245,9 +273,11 @@ def run_classification(inputs: list[WorkInput], output_dir: Path, *, concurrency
                 if store.get(item_key)["status"] == "pending":
                     pending.append((item_key,item_work))
             if category in ("usage_limit", "authentication"):
-                stop.set()
+                request_stop(category)
             if category == "rate_limit":
                 throttled.set()
+                if stop_on_rate_limit:
+                    request_stop("rate_limit")
             if not retryable or not pending or stop.is_set():
                 return
             # rate limits get a longer wait; malformed outputs remain separate.
@@ -257,8 +287,9 @@ def run_classification(inputs: list[WorkInput], output_dir: Path, *, concurrency
     try:
         cursor, active_concurrency = 0, concurrency
         while cursor < len(jobs) and not stop.is_set():
-            if budget_hit():
-                stop.set()
+            reason = budget_reason()
+            if reason:
+                request_stop(reason)
                 break
             wave = jobs[cursor:cursor+active_concurrency*batch_size]
             groups = [wave[offset:offset+batch_size] for offset in range(0,len(wave),batch_size)]
@@ -292,7 +323,9 @@ def run_classification(inputs: list[WorkInput], output_dir: Path, *, concurrency
             "usage":usage, "usage_source":"Codex CLI turn.completed events; not API billing",
             "elapsed_seconds":time.monotonic()-started, "p50_seconds":percentile(.5), "p95_seconds":percentile(.95),
             "initial_concurrency":concurrency, "final_concurrency":active_concurrency,
-            "stopped":stop.is_set(), "jobs":states,
+            "stopped":stop.is_set(), "stop_reasons":sorted(stop_reasons), "jobs":states,
+            "limits":{"timeout":timeout,"max_run_seconds":max_run_seconds,"max_observed_tokens":max_observed_tokens,
+                "stop_on_rate_limit":stop_on_rate_limit,"in_flight_completion_may_exceed_budgets":True},
             "human_quality_verified":False}
         atomic_json(output_dir / "manifest.json", manifest)
         atomic_json(output_dir / f"manifest.{manifest['run_id']}.json", manifest)

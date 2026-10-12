@@ -204,3 +204,47 @@ def test_usage_limit_stops_new_work(monkeypatch, tmp_path, work):
     assert manifest["pending"] == 1
     assert manifest["attempts"] == 1
     assert manifest["stopped"] is True
+
+
+def test_token_budget_stop_and_resume_reuses_completed(monkeypatch, tmp_path, work):
+    other = work.model_copy(deep=True)
+    other.work_id = "work-2"
+    calls = []
+    def fake(command, **kwargs):
+        if "--version" in command:
+            return subprocess.CompletedProcess(command,0,"fake-1", "")
+        from pathlib import Path
+        current = other if '"work_id": "work-2"' in kwargs["input"] else work
+        calls.append(current.work_id)
+        Path(command[command.index("-o")+1]).write_text(json.dumps(result_for(current)), encoding="utf-8")
+        return subprocess.CompletedProcess(command,0,'{"type":"turn.completed","usage":{"input_tokens":12,"output_tokens":8}}', "")
+    monkeypatch.setattr("recommend_book.classification.runner.subprocess.run",fake)
+    stopped = run_classification([work,other],tmp_path,executable="fixture",concurrency=1,max_observed_tokens=20)
+    assert stopped["completed"] == 1
+    assert stopped["pending"] == 1
+    assert stopped["stop_reasons"] == ["token_budget"]
+    resumed = run_classification([work,other],tmp_path,executable="fixture",concurrency=1)
+    assert resumed["completed"] == 2
+    assert resumed["reused"] == 1
+    assert calls == ["work-1","work-2"]
+
+
+def test_rate_stop_preserves_retryable_job_for_resume(monkeypatch,tmp_path,work):
+    calls = [0]
+    def fake(command, **kwargs):
+        if "--version" in command:
+            return subprocess.CompletedProcess(command,0,"fake-1", "")
+        calls[0] += 1
+        if calls[0] == 1:
+            return subprocess.CompletedProcess(command,1,"", "429 rate limit")
+        from pathlib import Path
+        Path(command[command.index("-o")+1]).write_text(json.dumps(result_for(work)),encoding="utf-8")
+        return subprocess.CompletedProcess(command,0,"", "")
+    monkeypatch.setattr("recommend_book.classification.runner.subprocess.run",fake)
+    stopped = run_classification([work],tmp_path,executable="fixture",stop_on_rate_limit=True)
+    assert stopped["pending"] == 1
+    assert stopped["failed"] == 0
+    assert stopped["stop_reasons"] == ["rate_limit"]
+    resumed = run_classification([work],tmp_path,executable="fixture",stop_on_rate_limit=True)
+    assert resumed["completed"] == 1
+    assert next(iter(resumed["jobs"].values()))["attempts"] == 2

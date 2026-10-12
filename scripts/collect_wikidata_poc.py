@@ -23,15 +23,26 @@ def save_json(path: Path, value: object) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, default=Path("data/wikidata-poc"))
-    parser.add_argument("--target", type=int, default=2400)
+    parser.add_argument("--target", type=int, default=2400, help="Candidate frame sizing reference; final distinct-work target is frozen by prepare_poc.py")
     args = parser.parse_args()
     args.root.mkdir(parents=True, exist_ok=True)
     fetcher = HTTPFetcher(RawStore(args.root / "raw"), user_agent="recommend-book-research/0.1 (https://github.com/ayutaz/recommend-book)", min_interval=1.1)
     adapter = WikidataAdapter(fetcher)
     # Oversample original-language groups to permit later age/author/genre balancing.
-    groups = [("ja", ["Q5287"], 1000), ("en", ["Q1860"], 1000), ("fr", ["Q150"], 200), ("de", ["Q188"], 160), ("es", ["Q1321"], 160), ("ru", ["Q7737"], 140), ("zh", ["Q7850"], 120), ("ko", ["Q9176"], 100), ("it", ["Q652"], 100), ("pt", ["Q5146"], 80), ("other", ["Q9610", "Q1568", "Q13955"], 100)]
+    if args.target < 1:
+        raise ValueError("target must be positive")
+    base_groups = [("ja", ["Q5287"], 1000), ("en", ["Q1860"], 1000), ("fr", ["Q150"], 200), ("de", ["Q188"], 160), ("es", ["Q1321"], 160), ("ru", ["Q7737"], 140), ("zh", ["Q7850"], 120), ("ko", ["Q9176"], 100), ("it", ["Q652"], 100), ("pt", ["Q5146"], 80), ("other", ["Q9610", "Q1568", "Q13955"], 100)]
+    groups = [(group, languages, max(1, round(count * args.target / 2400))) for group, languages, count in base_groups]
     selection_path = args.root / "selection.json"
     selection = json.loads(selection_path.read_text(encoding="utf-8")) if selection_path.exists() else {"created_at": datetime.now(timezone.utc).isoformat(), "pages": [], "ids": [], "queries": [], "limitations": ["Selected Wikidata instance coverage; not the world fiction population", "Metadata language is not inferred from translated titles"]}
+    frame_context = {"groups": groups, "forms": ["Q8261", "Q747381", "Q49084"], "discovery": "P7937_or_P31_excluding_P629"}
+    # Do not reuse the earlier sparse P31-only frame after discovery changes.
+    if selection.get("queries") and any("wdt:P7937" not in q.get("query", "") for q in selection["queries"]):
+        raise ValueError("Legacy P31-only selection; use a new --root for the corrected discovery")
+    previous_context = selection.get("frame_context")
+    if previous_context is not None and json.dumps(previous_context, sort_keys=True) != json.dumps(frame_context, sort_keys=True):
+        raise ValueError("Discovery groups/configuration changed; use a new --root")
+    selection["frame_context"] = frame_context
     seen = set(selection["ids"])
     for group, language_ids, count in groups:
         for offset in range(0, count, 500):

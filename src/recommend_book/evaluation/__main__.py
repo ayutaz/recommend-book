@@ -23,6 +23,7 @@ def main():
     imp.add_argument('--annotations',required=True)
     imp.add_argument('--pack',required=True)
     imp.add_argument('--output',required=True)
+    imp.add_argument('--allow-synthetic-test',action='store_true',help='Validate explicitly synthetic UI tests; never usable as human gold')
     evaluation=sub.add_parser('evaluate')
     evaluation.add_argument('--results',required=True)
     evaluation.add_argument('--gold')
@@ -39,11 +40,11 @@ def main():
         chosen={work['work_id'] for work in inputs}
         result=create_review_pack(inputs,[r for r in results if r['work_id'] in chosen],args.output)
     elif args.command=='import':
-        result=import_annotations(args.annotations,args.pack)
+        result=import_annotations(args.annotations,args.pack,allow_synthetic=args.allow_synthetic_test)
         target=Path(args.output)
         target.parent.mkdir(parents=True,exist_ok=True)
         target.write_text(''.join(json.dumps(r,ensure_ascii=False)+'\n' for r in result),encoding='utf-8')
-        result={'validated_annotation_records':len(result),'output':str(target),'verification_scope':'schema, snapshot and declarations; not verification of real human identity/knowledge'}
+        result={'validated_annotation_records':len(result),'output':str(target),'annotation_kind':'synthetic_ui_test_only' if args.allow_synthetic_test else 'human_declarations','verification_scope':'schema, snapshot and declarations; not verification of real human identity/knowledge'}
     else:
         report=evaluate_results(load(args.results),load(args.gold) if args.gold else [],load(args.taxonomy))
         result=write_report(report,args.output)

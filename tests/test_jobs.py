@@ -53,3 +53,29 @@ def test_two_store_instances_only_one_claims(tmp_path):
     with ThreadPoolExecutor(max_workers=2) as pool:
         claims = list(pool.map(lambda store: store.claim("same"), stores))
     assert sum(claim is not None for claim in claims) == 1
+
+
+@pytest.mark.skipif(__import__("os").name != "nt", reason="Windows byte-range locks")
+def test_claim_waits_when_empty_lock_file_is_already_locked(tmp_path):
+    import msvcrt
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError
+    import threading
+
+    store = JobStore(tmp_path)
+    started = threading.Event()
+    def claim():
+        started.set()
+        return store.claim("empty")
+
+    with (store.directory / "empty.lock").open("a+b") as holder:
+        msvcrt.locking(holder.fileno(), msvcrt.LK_NBLCK, 1)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(claim)
+            try:
+                assert started.wait(5)
+                with pytest.raises(TimeoutError):
+                    future.result(timeout=.1)
+            finally:
+                holder.seek(0)
+                msvcrt.locking(holder.fileno(), msvcrt.LK_UNLCK, 1)
+            assert future.result(timeout=5) is not None

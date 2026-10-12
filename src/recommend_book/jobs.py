@@ -56,10 +56,9 @@ class JobStore:
         with self._thread_lock, path.open("a+b") as stream:
             if os.name == "nt":
                 import msvcrt
-                stream.seek(0, 2)
-                if stream.tell() == 0:
-                    stream.write(b"0")
-                    stream.flush()
+                # Windows permits locking beyond EOF. Writing an initializer
+                # before acquiring the lock races another owner's byte lock.
+                # https://learn.microsoft.com/en-us/cpp/c-runtime-library/reference/locking
                 while True:
                     stream.seek(0)
                     try:

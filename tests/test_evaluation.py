@@ -115,3 +115,18 @@ def test_model_change_does_not_reuse_calibration():
     report=evaluate_results(predictions,gold,TAX)
     assert report['calibration']['status']=='calibrated_scopes_available'
     assert report['human']['evidence']['holdout']['calibrated_confidence_diagnostics']['n']==0
+
+def test_synthetic_ui_pack_never_imports_as_human_gold(tmp_path):
+    from recommend_book.evaluation import evaluate_results
+    create_review_pack([{'work_id':'a','title':'UI test'}],[pred('a','present')],tmp_path,annotation_mode='synthetic_ui_test')
+    path=tmp_path/'synthetic.json';record=human('a','present');record['provenance']='synthetic_ui_test'
+    path.write_text(json.dumps([record]),encoding='utf-8')
+    with pytest.raises(ValueError,match='synthetic'):
+        import_annotations(path,tmp_path)
+    imported=import_annotations(path,tmp_path,allow_synthetic=True)
+    assert imported[0]['provenance']=='synthetic_ui_test'
+    with pytest.raises(ValueError,match='provenance'):
+        evaluate_results([pred('a','present')],imported,TAX)
+    record['provenance']='human';path.write_text(json.dumps([record]),encoding='utf-8')
+    with pytest.raises(ValueError,match='synthetic'):
+        import_annotations(path,tmp_path,allow_synthetic=True)

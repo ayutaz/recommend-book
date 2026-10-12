@@ -105,6 +105,13 @@ INSERT INTO schema_migrations(version) VALUES(2);
 PRAGMA user_version=2;
 """
 
+MIGRATION_3 = """
+CREATE INDEX evidence_work_scope_order ON evidence(work_id,scope_valid,evidence_key);
+CREATE INDEX works_resolved_canonical ON works(resolved,canonical_id,work_id);
+INSERT INTO schema_migrations(version) VALUES(3);
+PRAGMA user_version=3;
+"""
+
 
 class DatasetDB:
     def __init__(self, path: str | Path):
@@ -120,7 +127,10 @@ class DatasetDB:
             version = 1
         if version == 1:
             self.connection.executescript(MIGRATION_2)
-        elif version != 2:
+            version = 2
+        if version == 2:
+            self.connection.executescript(MIGRATION_3)
+        elif version != 3:
             self.close()
             raise ValueError(f"Unsupported dataset schema version: {version}")
 
@@ -365,7 +375,9 @@ class DatasetDB:
         db = self.connection
         counts = {table: db.execute(f"SELECT count(*) FROM {table}").fetchone()[0] for table in ("source_records", "expressions", "editions", "agents", "series", "field_assertions", "resolution_decisions")}
         counts.update(works=db.execute("SELECT count(DISTINCT canonical_id) FROM works WHERE resolved=1").fetchone()[0], unresolved_works=db.execute("SELECT count(DISTINCT canonical_id) FROM works WHERE resolved=0").fetchone()[0], work_nodes=db.execute("SELECT count(*) FROM works").fetchone()[0], active_source_records=db.execute("SELECT count(*) FROM source_heads").fetchone()[0], review_queue=db.execute("SELECT count(*) FROM review_items").fetchone()[0])
-        counts["classification_ready_works"] = len({item.work_id for item in self.work_inputs() if item.evidence})
+        # Same permission/scope rules as work_inputs, without reparsing every
+        # source or constructing thousands of WorkInput/Pydantic objects.
+        counts["classification_ready_works"] = db.execute("SELECT count(DISTINCT e.work_id) FROM evidence e JOIN works w ON w.work_id=e.work_id WHERE w.resolved=1 AND e.scope_valid=1 AND json_extract(e.evidence_json,'$.llm_input_allowed')=1").fetchone()[0]
         return counts
 
     def work_inputs(self) -> list[WorkInput]:
@@ -373,16 +385,19 @@ class DatasetDB:
         members = defaultdict(list)
         for row in self.connection.execute("SELECT work_id,canonical_id FROM works WHERE resolved=1 ORDER BY canonical_id,work_id"):
             members[row["canonical_id"]].append(row["work_id"])
+        # Batch the evidence read. Per-work SELECT formerly scanned the whole
+        # evidence table once for every canonical work (minutes at the PoC size).
+        all_evidence = defaultdict(lambda: defaultdict(list))
+        for row in self.connection.execute("SELECT e.work_id,e.expression_id,e.evidence_json FROM evidence e JOIN works w ON w.work_id=e.work_id WHERE w.resolved=1 AND e.scope_valid=1 ORDER BY e.work_id,e.evidence_key"):
+            evidence = Evidence.model_validate_json(row["evidence_json"])
+            if evidence.llm_input_allowed:
+                all_evidence[row["work_id"]][row["expression_id"]].append(evidence)
         output = []
         for canonical, nodes in members.items():
             sources = sorted((records[node] for node in nodes), key=lambda pair: (pair[1].record_kind != "work", pair[1].source, pair[1].source_id))
             representative = sources[0][1]
             authors = list(dict.fromkeys(item.name for _, record in sources for item in record.contributors if item.role == "author"))
-            scoped_evidence = defaultdict(list)
-            for row in self.connection.execute("SELECT expression_id,evidence_json FROM evidence WHERE work_id=? AND scope_valid=1 ORDER BY evidence_key", (canonical,)):
-                evidence = Evidence.model_validate_json(row["evidence_json"])
-                if evidence.llm_input_allowed:
-                    scoped_evidence[row["expression_id"]].append(evidence)
+            scoped_evidence = all_evidence.get(canonical, {})
             base = dict(work_id=canonical, title=representative.titles[0].value if representative.titles else "", authors=authors, original_language=representative.original_language, first_publication_year=representative.first_publication_year, region=list(dict.fromkeys(value for _, record in sources for value in record.region)), series=representative.series, source_record_ids=[version for version, _ in sources])
             output.append(WorkInput(**base, evidence=scoped_evidence.get(None, [])))
             for expression_id, evidence in sorted(((key, value) for key, value in scoped_evidence.items() if key is not None)):
@@ -438,7 +453,7 @@ class DatasetDB:
     def export(self, path: str | Path) -> dict:
         """Local audit snapshot including restricted records; no redistribution claim."""
         tables = [row[0] for row in self.connection.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
-        snapshot = {"schema_version": 2, "export_purpose": "local_audit", "stats": self.stats(), "tables": {table: [dict(row) for row in self.connection.execute(f'SELECT * FROM "{table}"')] for table in tables}}
+        snapshot = {"schema_version": 3, "export_purpose": "local_audit", "stats": self.stats(), "tables": {table: [dict(row) for row in self.connection.execute(f'SELECT * FROM "{table}"')] for table in tables}}
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")

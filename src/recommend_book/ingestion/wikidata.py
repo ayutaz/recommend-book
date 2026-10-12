@@ -65,6 +65,30 @@ class WikidataAdapter:
             return [], CollectionResult(status="failed", errors=[f"invalid SPARQL response: {exc}"])
         return ids, CollectionResult(status="truncated" if len(ids) == limit else "complete", metadata={"query": query, "raw_path": result.artifact.path, "raw_sha256": result.artifact.sha256, "offset": offset, "next_offset": offset + len(ids), "instance_qids": instances, "selection": "P7937 forms or legacy direct P31 classes; explicit P629 editions excluded; convenience sample, not world-population representative"})
 
+    def query_edition_ids(self, work_ids: Iterable[str], *, limit: int = 500,
+                          offset: int = 0) -> tuple[list[str], CollectionResult]:
+        """Find only P629 versions/editions/translations of a bounded work-ID set.
+
+        LIMIT and OFFSET apply to relation rows, not unique editions. P629 by itself
+        is broader than a published manifestation; preserve the relation for review.
+        """
+        works = list(dict.fromkeys(_qid(value) for value in work_ids))
+        if not 1 <= len(works) <= 100 or not 1 <= limit <= 500 or offset < 0:
+            raise ValueError("edition discovery requires 1..100 work IDs, limit 1..500, nonnegative offset")
+        query = "SELECT DISTINCT ?edition ?work WHERE { VALUES ?work { " + " ".join("wd:" + value for value in works) + " } ?edition wdt:P629 ?work. } ORDER BY ?edition ?work LIMIT " + str(limit) + " OFFSET " + str(offset)
+        fetched = self.fetcher.get(QUERY_URL, source="wikidata", params={"query": query, "format": "json"}, headers={"Accept": "application/sparql-results+json"})
+        if fetched.status != "success":
+            return [], CollectionResult(status="failed", errors=[fetched.error or "edition discovery failed"])
+        try:
+            rows = json.loads(fetched.content)["results"]["bindings"]
+            relations = [{"edition": _qid(row["edition"]["value"].rsplit("/", 1)[-1]), "work": _qid(row["work"]["value"].rsplit("/", 1)[-1])} for row in rows]
+            if any(relation["work"] not in works for relation in relations):
+                raise ValueError("SPARQL relation refers to a work outside the requested frame")
+            ids = list(dict.fromkeys(relation["edition"] for relation in relations))
+        except (ValueError, KeyError, TypeError) as exc:
+            return [], CollectionResult(status="failed", errors=[f"invalid edition discovery response: {exc}"])
+        return ids, CollectionResult(status="truncated" if len(rows) == limit else "complete", metadata={"query": query, "work_ids": works, "relations": relations, "relation_rows": len(rows), "offset": offset, "next_offset": offset + len(rows), "raw_path": fetched.artifact.path, "raw_sha256": fetched.artifact.sha256, "selection": "P629 version, edition or translation of; fixed candidate works only"})
+
     def fetch_entities(self, ids: Iterable[str], *, languages: tuple[str, ...] = ("en", "ja"),
                        kind: str = "work", linked_labels: dict[str, str] | None = None) -> CollectionResult:
         if kind not in {"work", "edition", "agent"}:
@@ -92,6 +116,9 @@ class WikidataAdapter:
                     title, title_lang = _label(entity, languages)
                     url = f"https://www.wikidata.org/wiki/{qid}"
                     identifiers = [Identifier(source="wikidata", value=qid, scope=kind)]
+                    if kind == "edition":
+                        for prop in ("P212", "P957"):
+                            identifiers.extend(Identifier(source="isbn", value=str(value), scope="edition") for value in claim_values(entity, prop) if isinstance(value, str))
                     for value in claim_values(entity, "P648"):
                         # OL identifiers encode type; do not coerce an edition into a work ID.
                         match = re.fullmatch(r"OL\d+([WMA])", str(value))
@@ -138,11 +165,20 @@ class WikidataAdapter:
                     bibliographic = f"Title: {title}; contributors: {'; '.join(c.name for c in contributors)}; Wikidata instance IDs: " + ", ".join(v.get("id", "") for v in claim_values(entity, "P31") if isinstance(v, dict)) + "; Creative work form IDs: " + ", ".join(v.get("id", "") for v in claim_values(entity, "P7937") if isinstance(v, dict))
                     evidence.append(Evidence(evidence_id=f"wd:{qid}:bibliographic:{fetched.artifact.sha256[:12]}", kind="bibliographic", text=bibliographic, source_url=url, rights_policy_id="wikidata-cc0", llm_input_allowed=True, locator="labels;claims.P50;claims.P31;claims.P7937"))
                     titles = [Title(value=title, language=title_lang)]
-                    titles.extend(Title(value=v["text"], language=v.get("language"), kind="original") for v in claim_values(entity, "P1476") if isinstance(v, dict) and v.get("text"))
+                    published_titles = [Title(value=v["text"], language=v.get("language"), kind="original" if kind == "work" else "preferred") for v in claim_values(entity, "P1476") if isinstance(v, dict) and v.get("text")]
+                    if kind == "edition" and published_titles:
+                        titles = published_titles + ([Title(value=title, language=title_lang, kind="alternative")] if title not in {t.value for t in published_titles} else [])
+                    else:
+                        titles.extend(published_titles)
                     titles.extend(Title(value=v["value"], language=lang, kind="alternative") for lang, vals in entity.get("aliases", {}).items() for v in vals)
                     type_ids = [v["id"] for p in ("P7937", "P31") for v in claim_values(entity, p) if isinstance(v, dict) and "id" in v]
                     work_kind = next((name for q, name in [("Q747381", "light_novel"), ("Q49084", "short_story"), ("Q8261", "novel")] if q in type_ids), None)
-                    collection.records.append(SourceRecord(source="wikidata", source_id=qid, source_url=url, retrieved_at=fetched.artifact.retrieved_at, provider_id="wikidata", record_kind=kind, titles=titles, contributors=contributors, identifiers=identifiers, work_refs=[Identifier(source="wikidata", value=v["id"], scope="work") for v in claim_values(entity, "P629") if isinstance(v, dict) and "id" in v], original_language=language if kind == "work" else None, language=language if kind == "edition" else None, first_publication_year=min(years) if years and kind == "work" else None, publication_year=min(years) if years and kind == "edition" else None, work_kind=work_kind, region=regions, subjects=subjects, series="; ".join((linked_labels or {}).get(v, v) for v in series_ids) or None, evidence=evidence, raw_sha256=fetched.artifact.sha256, raw_path=fetched.artifact.path, rights_policy_id="wikidata-cc0", extra={"claims": entity.get("claims", {}), "sitelinks": entity.get("sitelinks", {}), "original_language_qids": lang_refs, "publication_date_claims": dates, "lastrevid": entity.get("lastrevid"), "region_basis": "P495 country of origin", "subject_qids": genres + topics, "character_qids": characters, "series_qids": series_ids, "narrative_place_qids": places, "linked_label_qids": sorted(set(genres + topics + characters + places + series_ids + [i.value for c in contributors for i in c.identifiers]) & set(linked_labels or {}))}))
+                    record = SourceRecord(source="wikidata", source_id=qid, source_url=url, retrieved_at=fetched.artifact.retrieved_at, provider_id="wikidata", record_kind=kind, titles=titles, contributors=contributors, identifiers=identifiers, work_refs=[Identifier(source="wikidata", value=v["id"], scope="work") for v in claim_values(entity, "P629") if isinstance(v, dict) and "id" in v], original_language=language if kind == "work" else None, language=language if kind == "edition" else None, first_publication_year=min(years) if years and kind == "work" else None, publication_year=min(years) if years and kind == "edition" else None, work_kind=work_kind, region=regions, subjects=subjects, series="; ".join((linked_labels or {}).get(v, v) for v in series_ids) or None, evidence=evidence, raw_sha256=fetched.artifact.sha256, raw_path=fetched.artifact.path, rights_policy_id="wikidata-cc0", extra={"claims": entity.get("claims", {}), "sitelinks": entity.get("sitelinks", {}), "original_language_qids": lang_refs if kind == "work" else [], "language_qids": lang_refs if kind == "edition" else [], "publication_date_claims": dates, "lastrevid": entity.get("lastrevid"), "region_basis": "P495 country of origin", "subject_qids": genres + topics, "character_qids": characters, "series_qids": series_ids, "narrative_place_qids": places, "linked_label_qids": sorted(set(genres + topics + characters + places + series_ids + [i.value for c in contributors for i in c.identifiers]) & set(linked_labels or {}))})
+                    if kind == "edition":
+                        record.extra.update({"relationship_basis": "P629 version, edition or translation of", "edition_instance_qids": [v["id"] for v in claim_values(entity, "P31") if isinstance(v, dict) and "id" in v], "isbn_claims": {p: claim_values(entity, p) for p in ("P212", "P957")}, "author_source": "edition entity claims.P50 only; no copy from work", "edition_entity_review_required": "P629 may identify a version or translation rather than a published edition"})
+                        evidence.append(Evidence(evidence_id=f"wd:{qid}:edition:{fetched.artifact.sha256[:12]}", kind="bibliographic", text="Edition/version/translation relationships: " + ", ".join(i.value for i in record.work_refs) + "; ISBN: " + ", ".join(i.value for i in identifiers if i.source == "isbn") + "; edition language: " + str(language) + "; edition publication year: " + str(record.publication_year) + "; translators: " + ", ".join(c.name for c in contributors if c.role == "translator"), source_url=url, rights_policy_id="wikidata-cc0", llm_input_allowed=True, language=language, locator="claims.P629;claims.P212;claims.P957;claims.P407;claims.P577;claims.P655"))
+                        record.evidence = evidence
+                    collection.records.append(record)
             except (ValueError, KeyError, TypeError) as exc:
                 collection.status = "failed"
                 collection.errors.append(f"invalid entity response: {exc}")

@@ -203,3 +203,58 @@ def test_crosslink_bridge_cannot_hide_conflicting_work_authority_ids(tmp_path):
     c = record("c", identifiers=[common, Identifier(source="wikidata", value="Q2", scope="work")])
     db.ingest([a, b, c])
     assert db.stats()["works"] == 2
+
+
+def test_migration_three_indexes_work_evidence_and_preserves_history(tmp_path):
+    path = tmp_path / "books.sqlite"
+    db = DatasetDB(path)
+    db.ingest([record("a")])
+    db.ingest([record("a", titles=[Title(value="Changed")], raw_sha256="new")])
+    versions = sql(db, "SELECT version_id,record_json FROM source_records ORDER BY version_id")
+    # Simulate a saved v2 DB, including immutable history and replay events.
+    with db.connection:
+        db.connection.execute("DROP INDEX IF EXISTS evidence_work_scope_order")
+        db.connection.execute("DROP INDEX IF EXISTS works_resolved_canonical")
+        db.connection.execute("DELETE FROM schema_migrations WHERE version=3")
+        db.connection.execute("PRAGMA user_version=2")
+    db.close()
+    with DatasetDB(path) as reopened:
+        assert reopened.connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        plans = [row[3] for row in reopened.connection.execute("EXPLAIN QUERY PLAN SELECT expression_id,evidence_json FROM evidence WHERE work_id=? AND scope_valid=1 ORDER BY evidence_key", ("work",))]
+        assert any("SEARCH" in plan and "evidence_work_scope_order" in plan for plan in plans)
+        assert not any("TEMP B-TREE" in plan for plan in plans)
+        assert sql(reopened, "SELECT version_id,record_json FROM source_records ORDER BY version_id") == versions
+        active = reopened.connection.execute("SELECT version_id FROM source_heads").fetchone()[0]
+        reopened.undo_ingest(active)
+        assert reopened.work_inputs()[0].title == "Snow"
+
+
+def test_stats_does_not_build_work_inputs_to_count_ready_works(tmp_path, monkeypatch):
+    db = DatasetDB(tmp_path / "books.sqlite")
+    allowed = Evidence(evidence_id="allowed", kind="subject", text="subject", source_url="https://example.test", rights_policy_id="policy", llm_input_allowed=True)
+    denied = allowed.model_copy(update={"evidence_id": "denied", "llm_input_allowed": False})
+    invalid_scope = allowed.model_copy(update={"evidence_id": "bad", "expression_ref": "unknown-expression"})
+    db.ingest([record("a", evidence=[allowed]), record("b", evidence=[denied]), record("c", evidence=[invalid_scope]), record("d", record_kind="edition", evidence=[allowed])])
+    ready = len({item.work_id for item in db.work_inputs() if item.evidence})
+    assert ready == 1
+
+    def forbidden_load():
+        raise AssertionError("stats must not construct all WorkInputs")
+
+    monkeypatch.setattr(db, "work_inputs", forbidden_load)
+    assert db.stats()["classification_ready_works"] == ready
+
+
+def test_work_inputs_reads_evidence_once_for_multiple_work_ids(tmp_path):
+    db = DatasetDB(tmp_path / "books.sqlite")
+    allowed = Evidence(evidence_id="allowed", kind="subject", text="subject", source_url="https://example.test", rights_policy_id="policy", llm_input_allowed=True)
+    db.ingest([record(str(index), titles=[Title(value=f"Work {index}")], evidence=[allowed]) for index in range(6)])
+    queries = []
+    db.connection.set_trace_callback(queries.append)
+    try:
+        inputs = db.work_inputs()
+    finally:
+        db.connection.set_trace_callback(None)
+    assert len(inputs) == 6
+    evidence_queries = [query for query in queries if query.lstrip().upper().startswith("SELECT") and "FROM evidence" in query]
+    assert len(evidence_queries) == 1

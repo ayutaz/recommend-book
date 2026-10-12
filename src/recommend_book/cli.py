@@ -43,6 +43,11 @@ def parser() -> argparse.ArgumentParser:
     classify.add_argument("--model", default="gpt-6.1-sol")
     classify.add_argument("--executable")
     classify.add_argument("--limit", type=int)
+    classify.add_argument("--batch-size", type=int, default=1, help="Works per CLI invocation (1-10)")
+    classify.add_argument("--timeout", type=float, default=900, help="Maximum seconds per CLI invocation")
+    classify.add_argument("--max-run-seconds", type=float, help="Stop new submissions after elapsed seconds; in-flight jobs finish")
+    classify.add_argument("--max-observed-tokens", type=int, help="Stop new submissions after CLI-observed input + output tokens")
+    classify.add_argument("--stop-on-rate-limit", action="store_true", help="Preserve pending jobs and stop new submissions at first rate limit")
     review = commands.add_parser("review", help="Build a local human annotation pack")
     review.add_argument("--database", type=Path, default=Path("data/dataset.sqlite"))
     review.add_argument("--results", type=Path, required=True)
@@ -75,14 +80,18 @@ def main(argv: list[str] | None = None) -> int:
             output(result)
         elif arguments.command == "classify":
             from .classification import run_classification
+            from .classification.runner import validate_controls
+            validate_controls(concurrency=arguments.concurrency,timeout=arguments.timeout,limit=arguments.limit,
+                batch_size=arguments.batch_size,max_run_seconds=arguments.max_run_seconds,max_observed_tokens=arguments.max_observed_tokens)
             if arguments.input:
                 inputs = [WorkInput.model_validate(item) for item in read_jsonl(arguments.input)]
             else:
                 from .database import DatasetDB
                 inputs = DatasetDB(arguments.database).work_inputs()
-            if arguments.concurrency < 1 or (arguments.limit is not None and arguments.limit < 1):
-                raise ValueError("concurrency and limit must be positive")
-            output(run_classification(inputs, arguments.output, concurrency=arguments.concurrency, model=arguments.model, executable=arguments.executable, limit=arguments.limit))
+            output(run_classification(inputs, arguments.output, concurrency=arguments.concurrency, model=arguments.model,
+                executable=arguments.executable, limit=arguments.limit,batch_size=arguments.batch_size,timeout=arguments.timeout,
+                max_run_seconds=arguments.max_run_seconds,max_observed_tokens=arguments.max_observed_tokens,
+                stop_on_rate_limit=arguments.stop_on_rate_limit))
         elif arguments.command == "review":
             from .database import DatasetDB
             from .classification import read_results
