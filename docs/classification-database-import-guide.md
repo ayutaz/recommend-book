@@ -2,7 +2,7 @@
 
 `scripts/import_classification_database.py` は、停止済み run の分類結果を、元の書誌 DB の SQLite backup に追加するローカル処理です。LLM・Web・Codex CLI の探索、版照会、起動は行いません。元 DB、入力、run、prepared execution context、migration manifest、terminal proof は読み取り専用です。既存出力や入力ディレクトリ配下への出力は拒否します。
 
-今回の実装検証は合成 fixture のみです。稼働中の実 run を読んだり、実データに適用したりしていません。元 DB は schema 3、checkpoint 済みである必要があり、非空 WAL があれば拒否します。
+初回の実装検証は合成fixtureでした。現在は固定runtimeとworld用採用経路を通じて実36作品へ適用済みです（[実施記録](phase8-quality-evaluation-v1.md)）。以下の汎用importerのschema 3契約と、world用next DB 3.2の採用経路は区別します。元 DB は schema 3、checkpoint 済みである必要があり、非空 WAL があれば拒否します。
 
 ## 終了証拠
 
@@ -43,7 +43,7 @@ uv run --frozen --offline python scripts/import_classification_database.py `
   --output-dir <new-derived-directory>
 ```
 
-入力には sibling `manifest.json` が必要です。宣言された ordered/work inputs SHA は正確な bytes の SHA と一致する必要があります。prepared context の入力、元 sibling manifest、10 artifact の raw copy と現コードを照合し、`build_run_config` が同じ config を生成することも確認します。CLI 版文字列は保存された値を比較し、実測したと扱いません。
+入力には sibling `manifest.json` が必要です。宣言された ordered/work inputs SHA は正確な bytes の SHA と一致する必要があります。prepared contextの入力、元sibling manifest、ローカルspecから導くartifact集合（従来baseline10件、provenance-v4は13件）のraw copyと現コードを照合し、`build_run_config` が同じ config を生成することも確認します。CLI 版文字列は保存された値を比較し、実測したと扱いません。
 
 全選択 WorkInput を元 DB の immutable/query-only 接続から既存 `work_inputs()` で再構成し、入力 hash 全体、immutable source version refs、根拠と権利、work/expression scope を照合します。`DatasetDB.__init__` は呼ばず、migration・WAL pragma は実行しません。版 source の work content link と expression の所属も確認します。completed は current validator、model/CLI、job key、durable job、durable result、JSONL index の値と順序まで一致させます。duplicate JSON property、非有限値、float overflow、bool の件数、duplicate work/expression を拒否します。
 

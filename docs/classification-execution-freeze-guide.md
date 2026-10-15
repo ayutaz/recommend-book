@@ -1,8 +1,10 @@
 # 分類実行 namespace のオフライン準備
 
+2026-10-16更新: 現行処理は実データの分類・採用に使用済み。`--execution-spec provenance-v4`で実際のprompt/schema/spec registryを固定する。[実行版と境界](native-snapshot-runtime-v1.md)と[実施結果](phase8-quality-evaluation-v1.md)を参照する。以下のscratch・未適用・fixture限定の記述と試験数は初回開発時点の履歴。
+
 > 本体への採用状況（2026-10-12）：この実装は本体へ適用し、本体の全テストで655 passedを確認した。以下のscratch限定・未適用・fixture限定の記述は隔離開発時点の記録である。実データのキャッシュ移行と実行条件の保存については、[採用記録](relevance-v2-development-verification.md#本体への採用と実データ移行)を参照。
 
-`scripts/freeze_classification_execution.py` は scratch 内の次版開発用 preparer。分類・CLI 探索・CLI version 照会・通信を行わず、新 namespace に入力と実行条件の証拠を保存する。今回の検証は temp の合成 fixture のみで、root の実 input / DB / production run を読取り・更新していない。
+`scripts/freeze_classification_execution.py` はオフライン準備用の処理。分類・CLI探索・CLI version照会・通信を行わず、新namespaceに入力と実行条件の証拠を保存する。初回の実装検証はtempの合成fixtureで行い、その後の実データ適用は冒頭の実施記録へ分けて保存した。
 
 ```powershell
 # scratch working directory で使う例。実データに対して今回実行したコマンドではない。
@@ -17,7 +19,7 @@ uv run --offline python scripts/freeze_classification_execution.py `
 
 `runner.build_run_config()` と `validate_controls()` を利用して model、供給 CLI version、batch_size と concurrency / timeout / time・token budget / stop_on_rate_limit を固定する。CLI version は **supplied_unverified** であり、実測したとの主張はしない。将来の実行直前に root が別途照合する。状態は **prepared_not_started**、model_run_started=false。この準備自体を実モデル run や評価成功として数えない。
 
-新出力は `manifest.json`、`inputs/{ordered.jsonl,manifest.json}`、`artifacts/` の raw copies。指定コード artifact は正確に **10** 件：sources、taxonomy、classification schema、prompt、validation、runner、models、jobs、pyproject、uv.lock。コピー相対パス・SHA と validation version / hash を含む run_config を記録する。元 files の値や SHA を準備の開始と公開直前で比較し、変更があれば公開を拒否する。
+新出力は `manifest.json`、`inputs/{ordered.jsonl,manifest.json}`、`artifacts/` の raw copies。従来の既定/baseline artifactは10件を維持する。非baselineではローカル`get_spec()`が示す実prompt・実schema・`specs.py`を追加し、`provenance-v4`は13件となる。manifestの任意のファイル一覧を信頼せず、specから必要集合を導く。コピー相対パス・SHA と validation version / hash を含む run_config を記録する。元 files の値や SHA を準備の開始と公開直前で比較し、変更があれば公開を拒否する。
 
 既存出力と入力 directory 配下の出力を拒否する。新 namespace の親に UUID stage を作り、stage の raw copies / manifest と全 source bytes / config 値を再検証後、rename で公開する。失敗時の削除対象はこの呼出しが作った検証済み UUID stage だけ。既存出力、他 stage、元入力を消さない。将来の runner は別の run subdirectory を使い、この prepared manifest / raw evidence を保持する。
 
@@ -27,4 +29,4 @@ TDD は実装前 **11 failed**（script 未存在）を確認し、実装後・�
 uv run --offline pytest tests/test_freeze_classification_execution.py -q
 ```
 
-この開発成果を root の live code / frozen input / production jobs にコピーしていない。actual model run は別の明示的実行段階に残る。
+上記は初回開発時点の記録。現在の実適用と本物のモデル実行は冒頭リンクの後続記録で確認できる。準備処理自体がモデルを実行することはない。

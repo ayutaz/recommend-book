@@ -24,6 +24,8 @@
 
 件数、実際のモデル実行、撤回・復旧、画面確認の範囲は[実生成・検証報告](docs/autonomous-next-delivery-report-v3.md)にまとめています。自動テストと実データでの確認は区別して記録します。
 
+直近の分類修正・36作品の処理・履歴と評価の監査は[PR #9](https://github.com/ayutaz/recommend-book/pull/9)でmainへ統合済みです。[その実装版のCI](https://github.com/ayutaz/recommend-book/actions/runs/38766835239)はWindows・Ubuntuとも成功しました。分類精度や推薦品質の合格を示すものではありません。
+
 ## 開発・ローカルでの確認
 
 Python 3.12以上と[uv](https://docs.astral.sh/uv/)を使用します。

@@ -66,4 +66,4 @@
 
 実分類とAI審査は計11呼出、input 425,493・output 59,875、合計485,368 token。reasoningはoutputの内数で二重加算しない。分類は最初10件が約176.5秒、残26件が約527.3秒で、失敗・再試行は0。これは開発用サブエージェントや会話を含む全利用量ではなく、API料金へ換算しない。
 
-最終版のWindows/Ubuntu CIとGit統合状態は、本変更のPR・コミット履歴を参照する。過去版CIやfixture成功を実作品の精度へ読み替えない。既存335評点の比較は新規接続0件のため再実行していない。現在の採用率約64%は運用目標70%未達で、1万作品への追加投入は停止する。独立goldに基づく精度・校正・本人改善の実証、1万作品の一括処理、本番公開、外注・購入・有料APIは実施していない。
+[PR #9](https://github.com/ayutaz/recommend-book/pull/9)でmainへ統合済み（`6579c58`）。[実装版CI](https://github.com/ayutaz/recommend-book/actions/runs/38766835239)はUbuntu 1,717成功・3skip、Windows 1,718成功・2skip。両OSのskip2件は旧取得済みscheduler依存、Ubuntuの追加1件はWindows専用lockである。最終確認は`data/autonomous-next-v3/evaluation/phase8-completion-v1/completion-audit.json`に保存した。fixture成功を実作品の精度へ読み替えない。既存335評点の比較は新規接続0件のため再実行していない。現在の採用率約64%は運用目標70%未達で、1万作品への追加投入は停止する。独立goldに基づく精度・校正・本人改善の実証、1万作品の一括処理、本番公開、外注・購入・有料APIは実施していない。
