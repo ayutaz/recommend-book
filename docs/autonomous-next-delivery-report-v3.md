@@ -16,7 +16,7 @@
 
 今回の[最終推薦画面](../data/autonomous-next-v3/database/phase8-world-delivery-v1/index.html)は2,025候補、特徴1,027、得点216。phase7版から+26候補・+19特徴・+2得点である。Chromeで採点あり216件、検索0件と解除後2,025件、保留作品の特徴なし・未採点・読書状態不明、追加作品の固定版・履歴・CC BY-SA帰属・変更説明を実確認し、console errorは0件だった。同題の別候補が残るため、一意な作品数・名寄せ完了は主張しない。実データ・ブラウザ確認はfixture試験、CI、分類精度と分ける。
 
-今回のGit反映と最終版CIは当該PR・コミット履歴を参照する。以降の節は過去のスナップショットであり、「残り26件未実行」などを現在値として読まない。
+今回の実装と計画1〜4の実施記録は[PR #9](https://github.com/ayutaz/recommend-book/pull/9)でmainへ統合済み（`6579c58`）。[実装版CI](https://github.com/ayutaz/recommend-book/actions/runs/38766835239)はUbuntu 1,717成功・3skip、Windows 1,718成功・2skip。両OSのskip2件は旧取得済みscheduler依存、Ubuntuの追加1件はWindows専用lockである。統合後のmainはテスト済みheadと同じtreeであることを確認し、重複CIは停止した。以降の節は過去のスナップショットであり、「残り26件未実行」などを現在値として読まない。
 
 ## 前回追加（phase7）：新規小説の実分類・審査・採用
 

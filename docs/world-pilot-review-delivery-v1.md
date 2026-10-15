@@ -1,8 +1,10 @@
-# 世界小説 pilot: 独立レビューと表示統合 v1
+# 世界小説 pilot: AI審査と表示統合
 
-この段階は、実際に完了した新規分類の独立 AI レビューと、既存の 1,989 作品の表示への追加を扱う。レビューは人手正解、分類精度の測定、同一作品の統合承認ではない。既存の個人評価や比較評価を再解釈しない。
+2026-10-16更新: 最新の審査入口は`review_world_pilot_v2.py`。v1の共通処理を使い、共有rawだけでsubject conflictにしない指示とv2 wrapper自身のsource pinを追加する。最終表示は2,025候補・特徴1,027・得点216。固定36作品中23採用・13不確実であり、AI審査は独立した人手正解ではない。[実施結果](phase8-quality-evaluation-v1.md)を参照する。
 
-## 独立レビュー
+この段階は、実際に完了した新規分類に対する別実行のAI審査と、既存1,989候補への追加を扱う。審査は人手正解、分類精度の測定、同一作品の統合承認ではない。既存の個人評価や比較評価を再解釈しない。
+
+## AI審査
 
 `scripts/review_world_pilot_v1.py` は、実行 coordinator が終了コード 0 を観測した後だけ使用する。入力一覧、実行 manifest、results index、実行 context を terminal proof の SHA に照合する。各 completed result の native descriptor と完全な元 batch を、凍結した `usage_guard_v4` の `native_scopes.validation()` 内で検証する。元 WorkInput と authentic native output の両方に `external_llm` の許可を要求する。
 
@@ -27,7 +29,7 @@
 ## 実行 interface
 
 ```powershell
-uv run python scripts/review_world_pilot_v1.py --runtime-root <frozen-runtime> --ordered-inputs <ordered.jsonl> --run-dir <terminal-run> --execution-context-manifest <context-manifest> --terminal-proof <observed-proof> --ledger <frozen-v4-ledger> --ledger-sha256 <sha> --output <fresh-review-directory>
+uv run python scripts/review_world_pilot_v2.py --runtime-root <frozen-runtime> --ordered-inputs <ordered.jsonl> --run-dir <terminal-run> --execution-context-manifest <context-manifest> --terminal-proof <observed-proof> --ledger <frozen-v4-ledger> --ledger-sha256 <sha> --output <fresh-review-directory>
 
 uv run python scripts/build_world_pilot_delivery_v1.py --runtime-root <frozen-runtime> --database <adopted-database> --ledger <frozen-v4-ledger> --ledger-sha256 <sha> --selected-inputs <ordered.jsonl> --quality-review <quality-adoption-review.json> --output <fresh-delivery-directory>
 ```
@@ -36,7 +38,7 @@ selected input と quality review は複数回指定できる。既存の出力�
 
 `--database` も複数回指定できる。凍結 importer は採用済み DB への追加入力を拒否するため、first10 と rest26 は同じ元 source DB から作る独立した採用 supplement として読み込む。各 completed work の所有 supplement は一つに限り、重複した書誌・元 projection は完全一致した場合だけ受け入れる。選択した各作品について、その completed run の owning DB が固定した **exact review SHA** を必ず指定する。別 run の有効 review だけを渡して uncertain ケースを省略することはできない。
 
-## 最初の実レビュー記録
+## 前回の実レビュー記録（phase7）
 
 `evaluation/phase7-world-pilot-review-first10-v1` のレビューは実プロセス PID 86588、終了 0。10作品が実際に返した64 native labelsをすべて検査した。taxonomy が72候補あることと、native output のラベル数は別である。review は4作品の各1 label を semantic entailment uncertain とし、subject/scope held は0。native conflict は別途3作品にある。既定の保守的な表示選択では、4作品・28 labels が推薦特徴として残る見込みであり、DB採用・実表示の結果とは分ける。
 

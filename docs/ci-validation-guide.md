@@ -2,6 +2,23 @@
 
 `.github/workflows/tests.yml` は Windows と Ubuntu の GitHub hosted runner で、既存の全 pytest を実行する。2026-10-12 時点のローカル環境に合わせて Python 3.14 と uv 0.12.20 を指定し、2 job の最小構成にした。`pyproject.toml` の宣言上の最小 Python 3.12 は、この matrix では検証しない。
 
+## 最新の実装版の確認（2026-10-16）
+
+[PR #9](https://github.com/ayutaz/recommend-book/pull/9)のhead `c7d4587`に対する[CI run 38766835239](https://github.com/ayutaz/recommend-book/actions/runs/38766835239)は両OSで成功した。mainへの統合commitは`6579c58`で、テスト済みheadとtreeが一致する。
+
+| OS | 結果 | pytestの時間 |
+|---|---|---:|
+| Ubuntu / Python 3.14 | 1,717 passed・3 skipped | 38.13秒 |
+| Windows / Python 3.14 | 1,718 passed・2 skipped | 586.60秒 |
+
+両OSのskip2件は`test_autonomous_native_reference_runner.py`の旧取得済みschedulerがCIにないためで、現在の拒否経路の試験は実行する。Ubuntuの追加1件はWindows byte-range lock専用試験。実装版CIの成功は実作品の分類精度・confidence校正・本人向け推薦改善を証明しない。PRと重複したpush側、および統合後の同内容のmain側CIは意図的に停止し、成功したPR側の結果と区別して記録した。
+
+## 文書だけを更新する場合
+
+変更差分がMarkdownだけであること、参照先、現在値と保存済み結果の一致、過去の記録と今後の作業の区別を確認する。分類、DB生成、全件pytestは繰り返さない。コード・schema・設定・依存・workflowを変更した場合は該当する試験と最終版CIを実行する。
+
+Markdownのみのcommitは`[skip ci]`を使い、push/PRによる全件試験の重複を避けられる（[GitHubの公式手順](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/skip-workflow-runs)）。必須チェックによって統合が止まる場合は、それを回避せず必要なCIを実行する。文書確認の成功と、過去の実装版CIの成功を別に報告する。
+
 ## 実行対象と再現手順
 
 push、pull request、手動の workflow dispatch が対象。各 OS で次の順に実行し、失敗したコマンドは job を失敗させる。テストの除外オプションや `continue-on-error` は使用しない。
@@ -39,9 +56,9 @@ Python / uv の導入には公式 `astral-sh/setup-uv` を使い、action を完
 
 CI はライブ収集、実 LLM 分類、外部データ snapshot の更新を実行しない。テスト自体の HTTP / Codex 境界は上記 fixture に依存する。runner のネットワークを firewall で遮断する構成ではないので、新規テストでも実 client / executable を fixture に置き換えること。Python、uv、action、依存パッケージの取得にはネットワークが必要であり、`uv` の offline オプションを付けるだけでは pytest の通信禁止にはならない。
 
-`tests/test_jobs.py::test_claim_waits_when_empty_lock_file_is_already_locked` は既存の Windows byte-range-lock 専用テストで、Ubuntu は理由付き skip、Windows は実行対象となる。これ以外に CI 用の skip は追加していない。新たな実通信 / 実 Codex 依存や platform 障害が見つかった場合は、テストを除外して成功扱いにせず、失敗と原因を報告する。
+`tests/test_jobs.py::test_claim_waits_when_empty_lock_file_is_already_locked` はWindows byte-range-lock専用で、Ubuntuは理由付きskip、Windowsでは実行する。現行のskip内訳は冒頭の実測表を参照する。新たな実通信・実Codex依存やplatform障害が見つかった場合は、テストを除外して成功扱いにせず、失敗と原因を報告する。
 
-## 構文検証と今回の範囲
+## 作成時点の構文検証と範囲（2026-10-12）
 
 workflow の YAML、expression、matrix、action input は [actionlint](https://github.com/rhysd/actionlint) で確認する。ローカルに Go がある場合の固定版コマンドは次のとおり。これは開発用ツールとして Go の cache を使い、プロジェクトの Python 依存には追加しない。
 
@@ -59,4 +76,4 @@ go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 .github/workflows/test
 | actionlint v1.7.12 | exit 0、diagnostic なし |
 | Ubuntu / GitHub hosted runner | 未実行 |
 
-今回の作業はローカルの workflow / 本文の追加と検証まで。push、PR 作成、GitHub Actions の起動は行わない。ローカルの Windows テスト結果は Ubuntu や hosted runner 上の成功を証明しない。両 job の実行結果は、後日の許可された push / PR / 手動起動後に別途確認する。
+この節は初回導入時点の履歴で、当時はローカルのworkflow・本文の追加と検証までだった。現在のGitHub hosted runnerでの実成功は冒頭に記載した。ローカル結果を別OSや別実装版の成功へ読み替えない。
