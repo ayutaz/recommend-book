@@ -71,6 +71,8 @@ def prepare(output,pairs,database):
 
 
 def run(output,cases,*,limit=None,batch_size=5,timeout=900):
+    # Historical recipes remain readable; fresh model calls require the usage-guarded pipeline.
+    raise RuntimeError('Archived runner: no fresh calls; guarded path only')
     output=output.resolve();command=resolve_executable();version=cli_version(command);model='gpt-6.1-sol'
     manifest=json.loads((output/'manifest.json').read_bytes())
     if digest((output/'inputs.jsonl').read_bytes())!=manifest['input_sha256'] or digest((output/'schema.json').read_bytes())!=manifest['schema_sha256']:raise ValueError('Frozen input or schema changed')
@@ -124,6 +126,7 @@ def run(output,cases,*,limit=None,batch_size=5,timeout=900):
 def main():
     p=argparse.ArgumentParser();p.add_argument('--output',type=Path,required=True);p.add_argument('--pairs',type=Path,default=ROOT/'data/poc-v1/resolution-review-20261012-v4/pairs.jsonl');p.add_argument('--database',type=Path,default=ROOT/'data/poc-openlibrary-enriched-v1/dataset.sqlite');p.add_argument('--prepare-only',action='store_true');p.add_argument('--limit',type=int);p.add_argument('--batch-size',type=int,default=5);args=p.parse_args()
     if not 1<=args.batch_size<=10 or args.limit is not None and args.limit<1:p.error('Invalid batch/limit')
+    if not args.prepare_only:raise RuntimeError('Archived runner: no fresh calls; guarded path only')
     cases=[json.loads(x) for x in (args.output/'inputs.jsonl').read_text(encoding='utf8').splitlines()] if args.output.exists() else prepare(args.output,args.pairs,args.database)
     if not args.prepare_only:run(args.output,cases,limit=args.limit,batch_size=args.batch_size)
 

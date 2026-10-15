@@ -58,14 +58,32 @@ def test_invalid_membership_identity_and_boundary_rejected(tmp_path,bad):
 
 
 def test_two_lanes_fixed_budget_pilot_resume_and_prompt_denied_filter(tmp_path):
-    pack,inputs,cross,database,works=fixture(tmp_path);out=tmp_path/'silver';prepare_blind_inputs(pack,inputs,cross,database,out,expected_count=2)
+    pack,inputs,cross,database,works,ledger,binary=guarded_fixture(tmp_path);out=tmp_path/'silver';prepare_blind_inputs(pack,inputs,cross,database,out,expected_count=2)
     calls=[]
     def fake(works,output_dir,**kwargs):
         calls.append((works,output_dir,kwargs));return {'completed':len(works),'failed':0,'pending':0,'stopped':False}
-    report=run_blind_lanes(out,pilot_count=1,runner=fake)
+    report=run_blind_lanes(out,pilot_count=1,runner=fake,usage_ledger=ledger,execution_spec='definitions-v3')
     assert len(calls)==2 and len({c[1] for c in calls})==2
     assert all(len(c[0])==1 and c[2]['concurrency']==2 and c[2]['batch_size']==5 and c[2]['stop_on_rate_limit'] for c in calls)
     assert report['human_gold_created'] is False
+    assert all(c[2]['usage_ledger']==ledger and c[2]['execution_spec']=='definitions-v3' for c in calls)
+
+
+def guarded_fixture(tmp_path):
+    from test_classification_guarded import allowed_many_fixture
+    source=tmp_path/'guarded';source.mkdir()
+    works,ledger,binary,_=allowed_many_fixture(source)
+    pack=source/'pack.json';pack.write_text(json.dumps({'works':[w.model_dump(mode='json')for w in works]}))
+    inputs=source/'inputs.jsonl';inputs.write_text(''.join(canonical_json(w.model_dump(mode='json'))+'\n'for w in works))
+    cross=source/'crosswalk.json';cross.write_text(json.dumps([{'old_canonical_id':w.work_id,'new_canonical_ids':[w.work_id],'old_work_node_ids':[w.work_id]}for w in works]))
+    return pack,inputs,cross,source/'source-many.sqlite',works,ledger,binary
+
+
+def test_silver_public_entry_cannot_bypass_ledger_with_injected_runner(tmp_path):
+    calls=[]
+    with pytest.raises(ValueError,match='usage ledger'):
+        run_blind_lanes(tmp_path/'nonexistent',runner=lambda *a,**k:calls.append(a))
+    assert calls==[] and not (tmp_path/'nonexistent').exists()
 
 
 def test_agreement_unknown_is_not_absent_and_relevance_not_confidence(tmp_path):
@@ -96,24 +114,27 @@ def test_missing_result_is_held_not_unknown_agreement(tmp_path):
 
 @pytest.mark.parametrize('tooluse',[False,True])
 def test_existing_runner_blind_stdin_events_and_tool_rejection(tmp_path,monkeypatch,tooluse):
-    pack,inputs,cross,database,works=fixture(tmp_path);out=tmp_path/'silver';prepare_blind_inputs(pack,inputs,cross,database,out,expected_count=2)
+    pack,inputs,cross,database,works,ledger,binary=guarded_fixture(tmp_path);out=tmp_path/'silver';prepare_blind_inputs(pack,inputs,cross,database,out,expected_count=2)
     calls=[]
     def fake(command,**kwargs):
         if '--version' in command:return subprocess.CompletedProcess(command,0,'fake-1','')
         assert kwargs['shell'] is False and '--ephemeral' in command and '--ignore-user-config' in command
         assert '--sandbox' in command and 'read-only' in command
-        prompt=kwargs['input'];assert 'NEVER_BLIND' not in prompt and 'raw_confidence":' not in prompt
+        prompt=kwargs['input'].decode('utf-8');assert 'NEVER_BLIND' not in prompt and 'raw_confidence":' not in prompt
         data=json.loads(prompt.split('BEGIN_LOCAL_DATA_JSON\n',1)[1].rsplit('\nEND_LOCAL_DATA_JSON',1)[0])
         values=data.get('works',[data]);results=[]
         for value in values:
             w=next(w for w in works if w.work_id==value['work']['work_id'])
-            result=result_for(w);result.update(value['output_identity']);results.append(result)
+            from test_classification_guarded import unknown_result
+            result=unknown_result(w);result.update(value['output_identity']);results.append(result)
         target=Path(command[command.index('-o')+1]);target.write_text(json.dumps({'results':results}),encoding='utf8')
         calls.append(command)
-        event={'type':'item.completed','item':{'type':'command_execution'}} if tooluse else {'type':'turn.completed','usage':{'input_tokens':10,'output_tokens':2}}
-        return subprocess.CompletedProcess(command,0,json.dumps(event),'')
+        from test_classification_guarded import event_bytes
+        events=event_bytes({'results':results})
+        if tooluse:events+=b'{"type":"item.completed","item":{"type":"command_execution"}}\n'
+        return subprocess.CompletedProcess(command,0,events,b'')
     monkeypatch.setattr('recommend_book.classification.runner.subprocess.run',fake)
-    report=run_blind_lanes(out,executable='fixture-executable')
+    report=run_blind_lanes(out,executable=str(binary),usage_ledger=ledger)
     assert len(calls)==2 and report['successful'] is (not tooluse)
     for lane in report['lanes'].values():
         assert lane['cli_invocations']==1
@@ -121,8 +142,8 @@ def test_existing_runner_blind_stdin_events_and_tool_rejection(tmp_path,monkeypa
         assert lane['failed']==(2 if tooluse else 0)
         if tooluse:assert all(j['error_category']=='tool_use' for j in lane['jobs'].values())
     if not tooluse:
-        resume=run_blind_lanes(out,pilot_count=1,executable='fixture-executable')
-        assert len(calls)==2 and all(m['reused']==1 and m['usage']=={} and m['cli_invocations']==0 for m in resume['lanes'].values())
+        resume=run_blind_lanes(out,pilot_count=1,executable=str(binary),usage_ledger=ledger)
+        assert len(calls)==4 and all(m['reused']==0 and m['cli_invocations']==1 for m in resume['lanes'].values())
 
 
 def test_adjudication_different_third_judgment_remains_held(tmp_path):
@@ -137,18 +158,21 @@ def test_adjudication_different_third_judgment_remains_held(tmp_path):
 def test_terminal_audit_rejects_index_durable_mismatch(tmp_path,monkeypatch):
     from recommend_book.autonomous_silver import audit_silver_run
     from recommend_book.classification.runner import run_classification
-    pack,inputs,cross,database,works=fixture(tmp_path);out=tmp_path/'silver';prepare_blind_inputs(pack,inputs,cross,database,out,expected_count=2)
+    pack,inputs,cross,database,works,ledger,binary=guarded_fixture(tmp_path);out=tmp_path/'silver';prepare_blind_inputs(pack,inputs,cross,database,out,expected_count=2)
     def fake(command,**kwargs):
         if '--version' in command:return subprocess.CompletedProcess(command,0,'fake-1','')
-        data=json.loads(kwargs['input'].split('BEGIN_LOCAL_DATA_JSON\n',1)[1].rsplit('\nEND_LOCAL_DATA_JSON',1)[0]);values=data['works'];results=[]
+        data=json.loads(kwargs['input'].decode('utf-8').split('BEGIN_LOCAL_DATA_JSON\n',1)[1].rsplit('\nEND_LOCAL_DATA_JSON',1)[0]);values=data['works'];results=[]
         for value in values:
-            w=next(w for w in works if w.work_id==value['work']['work_id']);r=result_for(w);r.update(value['output_identity']);results.append(r)
+            w=next(w for w in works if w.work_id==value['work']['work_id']);
+            from test_classification_guarded import unknown_result
+            r=unknown_result(w);r.update(value['output_identity']);results.append(r)
         Path(command[command.index('-o')+1]).write_text(json.dumps({'results':results}),encoding='utf8')
-        return subprocess.CompletedProcess(command,0,'{"type":"turn.completed","usage":{"input_tokens":3}}','')
+        from test_classification_guarded import event_bytes
+        return subprocess.CompletedProcess(command,0,event_bytes({'results':results}),b'')
     monkeypatch.setattr('recommend_book.classification.runner.subprocess.run',fake)
-    run_classification(works,out/'lane-a',executable='fixture-executable',batch_size=5)
+    run_classification(works,out/'lane-a',executable=str(binary),batch_size=5,usage_ledger=ledger)
     audit=audit_silver_run(out/'lane-a',works)
     assert audit['completed']==2 and audit['unique_cli_invocations']==1 and audit['tool_calls']==0
-    index=out/'lane-a'/'results.jsonl';r=json.loads(index.read_text().splitlines()[0]);r['labels'][0]['raw_confidence']=.7
+    index=out/'lane-a'/'results.jsonl';r=json.loads(index.read_text().splitlines()[0]);r['needs_human_review']=False
     lines=index.read_text().splitlines();lines[0]=json.dumps(r);index.write_text('\n'.join(lines)+'\n')
     with pytest.raises(ValueError,match='durable'):audit_silver_run(out/'lane-a',works)

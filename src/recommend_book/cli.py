@@ -39,6 +39,8 @@ def parser() -> argparse.ArgumentParser:
     classify.add_argument("--database", type=Path, default=Path("data/dataset.sqlite"))
     classify.add_argument("--input", type=Path, help="Optional fixed WorkInput JSONL snapshot")
     classify.add_argument("--output", type=Path, required=True)
+    classify.add_argument("--usage-ledger", type=Path, help="Required current usage ledger; checked before input loading and CLI discovery")
+    classify.add_argument("--execution-spec", default="guarded-v3-baseline", help="guarded-v3-baseline; world definitions-v3/context-v3; independent native-definitions-v3/native-context-v3")
     classify.add_argument("--concurrency", type=int, default=2)
     classify.add_argument("--model", default="gpt-6.1-sol")
     classify.add_argument("--executable")
@@ -99,15 +101,23 @@ def main(argv: list[str] | None = None) -> int:
             from .classification.runner import validate_controls
             validate_controls(concurrency=arguments.concurrency,timeout=arguments.timeout,limit=arguments.limit,
                 batch_size=arguments.batch_size,max_run_seconds=arguments.max_run_seconds,max_observed_tokens=arguments.max_observed_tokens)
+            from .classification.specs import get_spec
+            get_spec(arguments.execution_spec)
+            if arguments.usage_ledger is None or not arguments.usage_ledger.is_file():
+                raise ValueError("A current usage ledger is required for classification")
             if arguments.input:
                 inputs = [WorkInput.model_validate(item) for item in read_jsonl(arguments.input)]
             else:
                 from .database import DatasetDB
                 inputs = DatasetDB(arguments.database).work_inputs()
+            from .usage_guard import UsageGuard
+            selected = inputs[:arguments.limit] if arguments.limit is not None else inputs
+            UsageGuard(arguments.usage_ledger).assert_inputs_allowed(selected or inputs, usage="external_llm")
             output(run_classification(inputs, arguments.output, concurrency=arguments.concurrency, model=arguments.model,
                 executable=arguments.executable, limit=arguments.limit,batch_size=arguments.batch_size,timeout=arguments.timeout,
                 max_run_seconds=arguments.max_run_seconds,max_observed_tokens=arguments.max_observed_tokens,
-                stop_on_rate_limit=arguments.stop_on_rate_limit))
+                stop_on_rate_limit=arguments.stop_on_rate_limit,usage_ledger=arguments.usage_ledger,
+                execution_spec=arguments.execution_spec))
         elif arguments.command == "review":
             from .database import DatasetDB
             from .classification import read_results

@@ -141,20 +141,35 @@ def _prepared(namespace):
 
 
 def run_blind_lanes(namespace, *, pilot_count=None, timeout=900, max_run_seconds=7200,
-                    max_observed_tokens=5000000, executable=None, runner=None):
+                    max_observed_tokens=5000000, executable=None, runner=None,
+                    usage_ledger=None,execution_spec='guarded-v3-baseline',expected_usage_ledger_sha256=None):
     """Two independent existing-runner namespaces; maximum four CLI workers."""
+    from recommend_book.classification.runner import validate_controls
+    from recommend_book.classification.specs import get_spec,NATIVE_SPECS
+    from recommend_book.usage_guard import UsageGuard
+    validate_controls(concurrency=2,batch_size=5,timeout=timeout,
+        max_run_seconds=max_run_seconds,max_observed_tokens=max_observed_tokens)
+    get_spec(execution_spec)
+    if execution_spec in NATIVE_SPECS:raise ValueError('Silver lanes require the world classification task')
+    if usage_ledger is None:raise ValueError('A current usage ledger is required for silver classification')
+    usage_ledger=Path(usage_ledger)
     namespace,works,prepared=_prepared(namespace)
     if pilot_count is not None:
         if isinstance(pilot_count,bool) or not isinstance(pilot_count,int) or not 1<=pilot_count<=len(works):raise ValueError('Invalid pilot count')
         works=works[:pilot_count]
+    ledger_sha=_sha(usage_ledger)
+    if expected_usage_ledger_sha256 is not None and ledger_sha!=expected_usage_ledger_sha256:raise ValueError('Frozen usage ledger changed')
+    UsageGuard(usage_ledger,expected_ledger_sha256=ledger_sha).assert_inputs_allowed(works,'external_llm')
     runner=runner or run_classification
     phase='pilot' if pilot_count is not None else 'full'
     report_path=namespace/f'{phase}-lanes-report.json'
     if report_path.exists():raise ValueError('Run report exists; refusing an implicit rerun')
     def lane(name):
-        return runner(works,namespace/name,concurrency=2,batch_size=5,model='gpt-6.1-sol',
+        output=namespace/name if pilot_count is None else namespace/f'pilot-{pilot_count}'/name
+        return runner(works,output,concurrency=2,batch_size=5,model='gpt-6.1-sol',
             timeout=timeout,max_run_seconds=max_run_seconds,max_observed_tokens=max_observed_tokens,
-            stop_on_rate_limit=True,executable=executable)
+            stop_on_rate_limit=True,executable=executable,usage_ledger=usage_ledger,execution_spec=execution_spec,
+            expected_usage_ledger_sha256=ledger_sha)
     with ThreadPoolExecutor(max_workers=2) as pool:
         futures={name:pool.submit(lane,name) for name in ('lane-a','lane-b')}
         manifests={name:future.result() for name,future in futures.items()}
@@ -172,7 +187,11 @@ def _result_index(results, works):
     for row in results:
         key=row['work_id']
         if key not in expected or key in index:raise ValueError('Unknown/duplicate reviewer result')
-        validate_result(row,expected[key]);index[key]=row
+        if row.get('prompt_version') in ('3.0-definitions','3.1-context'):
+            from recommend_book.classification.specs import get_spec
+            get_spec('definitions-v3' if row['prompt_version']=='3.0-definitions' else 'context-v3').validate_result(row,expected[key],load_taxonomy())
+        else:validate_result(row,expected[key])
+        index[key]=row
     return index
 
 
@@ -271,7 +290,7 @@ def audit_silver_run(output_dir, inputs):
     root=Path(output_dir).resolve(strict=True);works={w.work_id:w for w in inputs};manifest=_json(root/'manifest.json')
     if len(works)!=len(inputs) or manifest['selected']!=len(works):raise ValueError('Audit selected identity mismatch')
     config=manifest['config']
-    if config!=build_run_config(config['model'],config['cli_version'],load_taxonomy(),config['batch_size']):
+    if config!=build_run_config(config['model'],config['cli_version'],load_taxonomy(),config['batch_size'],execution_spec=config.get('execution_spec')):
         raise ValueError('Audit current execution config mismatch')
     results=_result_index(read_results(root),inputs);events={};file_sha={str(root/'manifest.json'):_sha(root/'manifest.json'),str(root/'results.jsonl'):_sha(root/'results.jsonl')}
     def relative(value):
@@ -297,7 +316,7 @@ def audit_silver_run(output_dir, inputs):
             completed+=1
             durable=_json(relative(state['result_path']))
             if work.work_id not in results or canonical_json(durable)!=canonical_json(results[work.work_id]):raise ValueError('Index/durable result mismatch')
-            validate_result(durable,work)
+            _result_index([durable],[work])
             if state.get('history'):
                 last=state['history'][-1];last_events=events[str((root/last['events_path']).resolve())]
                 if last['returncode']!=0 or last['error_category'] is not None or last_events['event_errors'] or last_events['tool_calls']:raise ValueError('Completed result has unsuccessful final attempt')

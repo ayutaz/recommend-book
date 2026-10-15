@@ -169,167 +169,111 @@ def test_original_style_rejects_translated_excerpt(work):
         validate_result(valid, work)
 
 
-def test_runner_resume_and_raw_events_separate(monkeypatch, tmp_path, work):
-    calls = []
-    def fake(command, **kwargs):
-        if "--version" in command:
-            return subprocess.CompletedProcess(command, 0, "fake-1", "")
-        calls.append(command)
-        assert kwargs["shell"] is False
-        assert command[-1] == "-"
-        assert "--ignore-user-config" in command
-        assert "WITHHELD TEXT" not in kwargs["input"]
-        path = command[command.index("-o") + 1]
-        from pathlib import Path
-        Path(path).write_text(json.dumps(result_for(work)), encoding="utf-8")
-        return subprocess.CompletedProcess(command, 0, '{"type":"turn.completed","usage":{"input_tokens":12,"output_tokens":9}}\n', "")
-    monkeypatch.setattr("recommend_book.classification.runner.subprocess.run", fake)
-    first = run_classification([work], tmp_path, executable="fixture-executable")
-    second = run_classification([work], tmp_path, executable="fixture-executable")
-    assert first["completed"] == 1
-    assert first["usage"]["input_tokens"] == 12
-    assert second["reused"] == 1
+# Runtime tests use raw/SQL/rights-bound inputs; the loose narrative fixture
+# above exercises only historical prompt and grounding semantics.
+from pathlib import Path
+from test_classification_guarded import allowed_many_fixture, unknown_result, event_bytes
+
+
+def native_many(monkeypatch,works,responder=None):
+    calls=[]
+    def fake(argv,**kwargs):
+        if '--version' in argv:return subprocess.CompletedProcess(argv,0,b'fake-1\n',b'')
+        calls.append(argv)
+        if responder:
+            returned=responder(argv,kwargs,len(calls))
+            if returned is not None:return returned
+        data=json.loads(kwargs['input'].decode().split('BEGIN_LOCAL_DATA_JSON\n',1)[1].rsplit('\nEND_LOCAL_DATA_JSON',1)[0])
+        entries=data.get('works',[data]);results=[]
+        for entry in entries:
+            work=next(w for w in works if w.work_id==entry['work']['work_id'])
+            results.append(unknown_result(work))
+        value={'results':results} if len(results)>1 else results[0]
+        Path(argv[argv.index('-o')+1]).write_bytes(json.dumps(value).encode())
+        return subprocess.CompletedProcess(argv,0,event_bytes(value),b'')
+    monkeypatch.setattr('recommend_book.classification.runner.subprocess.run',fake)
+    monkeypatch.setattr('recommend_book.classification.runner.time.sleep',lambda _:None)
+    return calls
+
+
+def test_runner_resume_and_raw_events_separate(monkeypatch,tmp_path):
+    works,ledger,binary,_=allowed_many_fixture(tmp_path,1)
+    calls=native_many(monkeypatch,works);out=tmp_path/'run'
+    first=run_classification(works,out,executable=str(binary),usage_ledger=ledger)
+    second=run_classification(works,out,executable=str(binary),usage_ledger=ledger)
+    assert first['completed']==1 and first['usage']['input_tokens']==12
+    assert second['reused']==1 and second['cli_invocations']==0 and second['usage']=={}
     from recommend_book.classification.runner import build_run_config
-    assert first["config"] == build_run_config("gpt-6.1-sol", "fake-1", load_taxonomy(), 1)
-    assert next(iter(first["jobs"].values()))["config"] == first["config"]
-    assert len(calls) == 1
-    assert len(read_results(tmp_path)) == 1
-    assert len(list((tmp_path / "attempts").glob("*.stdout.jsonl"))) == 1
+    assert first['config']==build_run_config('gpt-6.1-sol','fake-1',load_taxonomy(),1,execution_spec='guarded-v3-baseline')
+    assert len(calls)==1 and len(read_results(out))==1
+    assert len(list((out/'attempts').glob('*.stdout.jsonl')))==1
 
 
-def test_failure_never_fabricates_result_and_retry_capped(monkeypatch, tmp_path, work):
-    def fake(command, **kwargs):
-        if "--version" in command:
-            return subprocess.CompletedProcess(command, 0, "fake-1", "")
-        return subprocess.CompletedProcess(command, 0, '{"type":"turn.completed"}\n', "")
-    monkeypatch.setattr("recommend_book.classification.runner.subprocess.run", fake)
-    monkeypatch.setattr("recommend_book.classification.runner.time.sleep", lambda _: None)
-    manifest = run_classification([work], tmp_path, executable="fixture-executable")
-    assert manifest["failed"] == 1
-    assert manifest["attempts"] == 3
-    assert read_results(tmp_path) == []
-    assert next(iter(manifest["jobs"].values()))["error_category"] == "missing_output"
+def test_failure_never_fabricates_result_and_invalid_not_retried(monkeypatch,tmp_path):
+    works,ledger,binary,_=allowed_many_fixture(tmp_path,1)
+    calls=native_many(monkeypatch,works,lambda argv,kw,n:subprocess.CompletedProcess(argv,0,b'{"type":"turn.completed"}\n',b''))
+    report=run_classification(works,tmp_path/'run',executable=str(binary),usage_ledger=ledger)
+    assert report['failed']==1 and report['attempts']==1 and len(calls)==1
+    assert read_results(tmp_path/'run')==[]
+    assert next(iter(report['jobs'].values()))['error_category']=='missing_output'
 
 
-def test_changed_input_is_new_job(monkeypatch, tmp_path, work):
-    def fake(command, **kwargs):
-        if "--version" in command:
-            return subprocess.CompletedProcess(command, 0, "fake-1", "")
-        from pathlib import Path
-        Path(command[command.index("-o")+1]).write_text(json.dumps(result_for(work)), encoding="utf-8")
-        return subprocess.CompletedProcess(command, 0, "", "")
-    monkeypatch.setattr("recommend_book.classification.runner.subprocess.run", fake)
-    run_classification([work], tmp_path, executable="fixture-executable")
-    work.evidence[0].text += " More evidence."
-    manifest = run_classification([work], tmp_path, executable="fixture-executable")
-    assert manifest["reused"] == 0
-    assert len(read_results(tmp_path)) == 1
+def test_changed_input_requires_new_whole_provenance(monkeypatch,tmp_path):
+    from recommend_book.usage_guard import UsageDenied
+    works,ledger,binary,_=allowed_many_fixture(tmp_path,1)
+    calls=native_many(monkeypatch,works)
+    run_classification(works,tmp_path/'run',executable=str(binary),usage_ledger=ledger)
+    old=input_hash(works[0]);works[0].title+=' Changed without raw proof'
+    assert old!=input_hash(works[0])
+    with pytest.raises(UsageDenied):run_classification(works,tmp_path/'run',executable=str(binary),usage_ledger=ledger)
+    assert len(calls)==1
 
 
-def test_small_batch_exact_ids_and_partial_recovery(monkeypatch, tmp_path, work):
-    other = work.model_copy(deep=True)
-    other.work_id = "work-2"
-    calls = []
-    def fake(command, **kwargs):
-        if "--version" in command:
-            return subprocess.CompletedProcess(command, 0, "fake-1", "")
-        from pathlib import Path
-        calls.append(command)
-        Path(command[command.index("-o")+1]).write_text(json.dumps({"results":[result_for(other), result_for(work)]}), encoding="utf-8")
-        return subprocess.CompletedProcess(command, 0, '{"type":"turn.completed","usage":{"input_tokens":12}}', "")
-    monkeypatch.setattr("recommend_book.classification.runner.subprocess.run", fake)
-    manifest = run_classification([work, other], tmp_path, executable="fixture-executable", batch_size=5)
-    assert manifest["completed"] == 2
-    assert len(calls) == 1
-    assert manifest["usage"]["input_tokens"] == 12
-    assert len(read_results(tmp_path)) == 2
+def test_small_batch_exact_ids_and_full_cache_reuse(monkeypatch,tmp_path):
+    works,ledger,binary,_=allowed_many_fixture(tmp_path)
+    calls=native_many(monkeypatch,works);out=tmp_path/'run'
+    first=run_classification(works,out,executable=str(binary),usage_ledger=ledger,batch_size=5)
+    second=run_classification(works,out,executable=str(binary),usage_ledger=ledger,batch_size=5)
+    assert first['completed']==2 and first['cli_invocations']==1 and len(calls)==1
+    assert first['usage']['input_tokens']==12 and second['reused']==2 and second['cli_invocations']==0
 
 
-def test_tools_are_a_permanent_failed_classification(monkeypatch, tmp_path, work):
-    def fake(command, **kwargs):
-        if "--version" in command:
-            return subprocess.CompletedProcess(command, 0, "fake-1", "")
-        from pathlib import Path
-        Path(command[command.index("-o")+1]).write_text(json.dumps(result_for(work)), encoding="utf-8")
-        return subprocess.CompletedProcess(command, 0, '{"type":"item.completed","item":{"type":"command_execution"}}', "")
-    monkeypatch.setattr("recommend_book.classification.runner.subprocess.run", fake)
-    manifest = run_classification([work], tmp_path, executable="fixture-executable")
-    assert manifest["failed"] == 1
-    assert manifest["attempts"] == 1
-    assert read_results(tmp_path) == []
+@pytest.mark.parametrize('bad',['tool','duplicate'])
+def test_invalid_batch_is_held_whole_without_partial_recovery(monkeypatch,tmp_path,bad):
+    works,ledger,binary,_=allowed_many_fixture(tmp_path)
+    def response(argv,kw,n):
+        value={'results':[unknown_result(works[0]),unknown_result(works[0])]} if bad=='duplicate' else {'results':[unknown_result(w)for w in works]}
+        Path(argv[argv.index('-o')+1]).write_bytes(json.dumps(value).encode())
+        events=event_bytes(value)
+        if bad=='tool':events+=b'{"type":"item.completed","item":{"type":"command_execution"}}\n'
+        return subprocess.CompletedProcess(argv,0,events,b'')
+    calls=native_many(monkeypatch,works,response)
+    report=run_classification(works,tmp_path/'run',executable=str(binary),usage_ledger=ledger,batch_size=5)
+    assert report['failed']==2 and report['cli_invocations']==1 and len(calls)==1
+    assert read_results(tmp_path/'run')==[]
 
 
-def test_batch_rejects_duplicate_ids(monkeypatch, tmp_path, work):
-    other = work.model_copy(deep=True)
-    other.work_id = "work-2"
-    def fake(command, **kwargs):
-        if "--version" in command:
-            return subprocess.CompletedProcess(command, 0, "fake-1", "")
-        from pathlib import Path
-        Path(command[command.index("-o")+1]).write_text(json.dumps({"results":[result_for(work), result_for(work)]}), encoding="utf-8")
-        return subprocess.CompletedProcess(command, 0, "", "")
-    monkeypatch.setattr("recommend_book.classification.runner.subprocess.run", fake)
-    monkeypatch.setattr("recommend_book.classification.runner.time.sleep", lambda _: None)
-    manifest = run_classification([work, other], tmp_path, executable="fixture-executable", batch_size=5)
-    assert manifest["failed"] == 2
-    assert manifest["cli_invocations"] == 3
-    assert read_results(tmp_path) == []
+def test_usage_limit_stops_new_work(monkeypatch,tmp_path):
+    works,ledger,binary,_=allowed_many_fixture(tmp_path)
+    calls=native_many(monkeypatch,works,lambda argv,kw,n:subprocess.CompletedProcess(argv,1,b'',b'usage limit reached'))
+    report=run_classification(works,tmp_path/'run',executable=str(binary),usage_ledger=ledger,concurrency=1)
+    assert report['failed']==1 and report['pending']==1 and report['attempts']==1 and report['stopped'] and len(calls)==1
 
 
-def test_usage_limit_stops_new_work(monkeypatch, tmp_path, work):
-    other = work.model_copy(deep=True)
-    other.work_id = "work-2"
-    def fake(command, **kwargs):
-        if "--version" in command:
-            return subprocess.CompletedProcess(command, 0, "fake-1", "")
-        return subprocess.CompletedProcess(command, 1, "", "usage limit reached")
-    monkeypatch.setattr("recommend_book.classification.runner.subprocess.run", fake)
-    manifest = run_classification([work, other], tmp_path, executable="fixture-executable", concurrency=1)
-    assert manifest["failed"] == 1
-    assert manifest["pending"] == 1
-    assert manifest["attempts"] == 1
-    assert manifest["stopped"] is True
+def test_token_budget_stop_and_resume_reuses_completed(monkeypatch,tmp_path):
+    works,ledger,binary,_=allowed_many_fixture(tmp_path)
+    calls=native_many(monkeypatch,works);out=tmp_path/'run'
+    stopped=run_classification(works,out,executable=str(binary),usage_ledger=ledger,concurrency=1,max_observed_tokens=12)
+    assert stopped['completed']==1 and stopped['pending']==1 and stopped['stop_reasons']==['token_budget']
+    resumed=run_classification(works,out,executable=str(binary),usage_ledger=ledger,concurrency=1)
+    assert resumed['completed']==2 and resumed['reused']==1 and len(calls)==2
 
 
-def test_token_budget_stop_and_resume_reuses_completed(monkeypatch, tmp_path, work):
-    other = work.model_copy(deep=True)
-    other.work_id = "work-2"
-    calls = []
-    def fake(command, **kwargs):
-        if "--version" in command:
-            return subprocess.CompletedProcess(command,0,"fake-1", "")
-        from pathlib import Path
-        current = other if '"work_id": "work-2"' in kwargs["input"] else work
-        calls.append(current.work_id)
-        Path(command[command.index("-o")+1]).write_text(json.dumps(result_for(current)), encoding="utf-8")
-        return subprocess.CompletedProcess(command,0,'{"type":"turn.completed","usage":{"input_tokens":12,"output_tokens":8}}', "")
-    monkeypatch.setattr("recommend_book.classification.runner.subprocess.run",fake)
-    stopped = run_classification([work,other],tmp_path,executable="fixture",concurrency=1,max_observed_tokens=20)
-    assert stopped["completed"] == 1
-    assert stopped["pending"] == 1
-    assert stopped["stop_reasons"] == ["token_budget"]
-    resumed = run_classification([work,other],tmp_path,executable="fixture",concurrency=1)
-    assert resumed["completed"] == 2
-    assert resumed["reused"] == 1
-    assert calls == ["work-1","work-2"]
-
-
-def test_rate_stop_preserves_retryable_job_for_resume(monkeypatch,tmp_path,work):
-    calls = [0]
-    def fake(command, **kwargs):
-        if "--version" in command:
-            return subprocess.CompletedProcess(command,0,"fake-1", "")
-        calls[0] += 1
-        if calls[0] == 1:
-            return subprocess.CompletedProcess(command,1,"", "429 rate limit")
-        from pathlib import Path
-        Path(command[command.index("-o")+1]).write_text(json.dumps(result_for(work)),encoding="utf-8")
-        return subprocess.CompletedProcess(command,0,"", "")
-    monkeypatch.setattr("recommend_book.classification.runner.subprocess.run",fake)
-    stopped = run_classification([work],tmp_path,executable="fixture",stop_on_rate_limit=True)
-    assert stopped["pending"] == 1
-    assert stopped["failed"] == 0
-    assert stopped["stop_reasons"] == ["rate_limit"]
-    resumed = run_classification([work],tmp_path,executable="fixture",stop_on_rate_limit=True)
-    assert resumed["completed"] == 1
-    assert next(iter(resumed["jobs"].values()))["attempts"] == 2
+def test_rate_stop_preserves_retryable_job_for_resume(monkeypatch,tmp_path):
+    works,ledger,binary,_=allowed_many_fixture(tmp_path,1)
+    calls=native_many(monkeypatch,works,lambda argv,kw,n:subprocess.CompletedProcess(argv,1,b'',b'429 rate limit') if n==1 else None)
+    out=tmp_path/'run'
+    stopped=run_classification(works,out,executable=str(binary),usage_ledger=ledger,stop_on_rate_limit=True)
+    assert stopped['pending']==1 and stopped['failed']==0 and stopped['stop_reasons']==['rate_limit']
+    resumed=run_classification(works,out,executable=str(binary),usage_ledger=ledger,stop_on_rate_limit=True)
+    assert resumed['completed']==1 and next(iter(resumed['jobs'].values()))['attempts']==2 and len(calls)==2

@@ -5,10 +5,31 @@ from types import SimpleNamespace
 import pytest
 from recommend_book.models import WorkInput,Evidence
 
+
+@pytest.mark.parametrize('concurrency',[2,True,999])
+def test_current_native_entry_refuses_before_discovery_or_output(tmp_path,monkeypatch,concurrency):
+    repo=next(p for p in Path(__file__).resolve().parents if (p/'pyproject.toml').is_file())
+    path=repo/'scripts/run_autonomous_native_reference.py'
+    spec=importlib.util.spec_from_file_location('blocked_native_entry',path)
+    m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+    calls=[]
+    def forbidden(*args,**kwargs):
+        calls.append(True);raise AssertionError('discovery or subprocess reached')
+    monkeypatch.setattr(m,'resolve_executable',forbidden)
+    monkeypatch.setattr(m,'cli_version',forbidden)
+    monkeypatch.setattr(m.subprocess,'run',forbidden)
+    out=tmp_path/'must-not-exist'
+    with pytest.raises(RuntimeError,match='historical-only.*UsageGuard'):
+        m.run_native(tmp_path/'missing-snapshot',out,concurrency=concurrency)
+    assert not calls and not out.exists()
+
 @pytest.fixture
 def scheduler(monkeypatch,tmp_path):
     repo=next(p for p in Path(__file__).resolve().parents if (p/"config/autonomous-evaluation-v1.json").is_file())
-    path=repo/"scripts/run_autonomous_native_reference.py"
+    path=repo/"data/autonomous-poc-v1/reference/native20-v1/native_runner.py"
+    if not path.is_file():pytest.skip('historical acquired scheduler is not installed; current refusal tests still run')
+    import hashlib
+    assert hashlib.sha256(path.read_bytes()).hexdigest()=='0ac04930ed095a8cbc17714408fa419368194917b9f724085f0c3ca475dd67b0'
     spec=importlib.util.spec_from_file_location("native_scheduler_fixture",path)
     m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
     assert m.ROOT==repo

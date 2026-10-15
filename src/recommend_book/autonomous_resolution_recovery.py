@@ -137,6 +137,8 @@ def audit_failed_partial(directory,role_audit):
 
 
 def recover(original,output,role_audit,terminal_observation,*,batch_size=10,timeout=900):
+    # Keep offline recovery audits and recipes, but never bypass the central usage guard.
+    raise RuntimeError('Archived runner: no fresh calls; guarded path only')
     original=Path(original).resolve();output=Path(output).resolve();role_audit=Path(role_audit).resolve()
     m=strict_json((original/'manifest.json').read_bytes());protected=[original/'inputs.jsonl',original/'schema.json',*m['source_sha256'],*m['execution_artifact_sha256']]
     validate_output_boundary(output,original,role_audit,protected)

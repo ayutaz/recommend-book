@@ -75,18 +75,20 @@ def test_completed_byte_copy_import_attempts_zero_and_future_runner_cli_zero(tmp
     assert 'migration-manifest.json' not in report['output_sha256']
     assert 'manifest.json' not in report['output_sha256']
     import recommend_book.classification.runner as runner
-    monkeypatch.setattr(runner,'resolve_executable',lambda executable:['FAKE'])
+    def prohibited(*a,**k):raise AssertionError('No CLI discovery/version/invocation permitted without a usage ledger')
+    monkeypatch.setattr(runner,'resolve_executable',prohibited)
     monkeypatch.setattr(runner,'cli_version',lambda command:'fake-1')
-    def prohibited(*a,**k):raise AssertionError('No real or fake CLI invocation permitted for cache reuse')
     monkeypatch.setattr(runner.subprocess,'run',prohibited)
-    reused=run_classification(works,out,batch_size=2)
-    assert reused['reused']==2 and reused['cli_invocations']==0 and reused['attempts']==0 and reused['usage']=={}
+    before_current_manifest=(out/'manifest.json').read_bytes()
+    with pytest.raises(ValueError,match='usage ledger'):
+        run_classification(works,out,batch_size=2)
     assert import_manifest.read_bytes()==original_import_bytes
     assert hashlib.sha256(import_manifest.read_bytes()).hexdigest()==original_import_sha
     preserved=json.loads(import_manifest.read_bytes())
     assert preserved['cache_imports']==2 and preserved['cli_invocations']==0 and preserved['usage']=={}
     assert preserved['legacy_source_totals']['usage']=={'input_tokens':17,'output_tokens':11}
-    assert json.loads((out/'manifest.json').read_text())['reused']==2
+    assert (out/'manifest.json').read_bytes()==before_current_manifest
+    assert all(p.read_bytes()==raw for p,raw in before.items())
 
 
 def test_held_whole_batch_known_null_last_valid_attempt_keeps_values(tmp_path):

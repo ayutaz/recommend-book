@@ -1,7 +1,9 @@
-"""Dedicated bounded native task. No world-classification files are changed.
+"""Historical-only native20 scheduler; current live entry is disabled.
 
 Source frozen before execution. Uses the verified pilot input only; never reads
 reference answers until predictions have been written and process exit observed.
+New live native tasks must use the guarded v3 classification runner. The former
+body remains as historical implementation evidence, unreachable through this API.
 """
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime,timezone
@@ -25,6 +27,7 @@ def write(path,value):
 
 
 def run_native(snapshot,output,*,concurrency=2):
+    raise RuntimeError('historical-only native20 CLI disabled; use v3 runner with mandatory UsageGuard and full-payload audit')
     if type(concurrency) is not int or not 1<=concurrency<=2:raise ValueError("native max two slots")
     snapshot=Path(snapshot).resolve();output=Path(output).resolve()
     base=(ROOT/"data/autonomous-poc-v1/reference").resolve()

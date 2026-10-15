@@ -1,6 +1,7 @@
 """Prepare/run the fixed blind AI silver experiment; preserve all prior artifacts."""
 import argparse
 import json
+import hashlib
 from pathlib import Path
 
 from recommend_book.autonomous_silver import (
@@ -30,13 +31,16 @@ def main():
     run.add_argument('--continue-full',action='store_true');run.add_argument('--timeout',type=float,default=900)
     run.add_argument('--max-run-seconds',type=float,default=7200);run.add_argument('--max-observed-tokens',type=int,default=5000000)
     run.add_argument('--executable');run.add_argument('--adjudicate',action='store_true')
+    run.add_argument('--usage-ledger',type=Path,required=True)
+    run.add_argument('--execution-spec',choices=('guarded-v3-baseline','definitions-v3','context-v3'),default='guarded-v3-baseline')
     args=p.parse_args()
     if args.command=='prepare':
         report=prepare_blind_inputs(args.review_pack,args.latest_inputs,args.crosswalk,args.database,args.namespace,baseline_manifest=args.baseline)
         print(json.dumps({k:report[k] for k in ('membership_count','input_changed_count','identity_changed_count','blind_inputs_sha256','source_protected_before_after')},ensure_ascii=False),flush=True);return 0
     namespace,works,prepared=_prepared(args.namespace)
     print(json.dumps({'phase':'pilot_starting','input_sha256':prepared['blind_inputs_sha256'],'selected':args.pilot_count,'maximum_cli_concurrency':4}),flush=True)
-    controls={k:getattr(args,k) for k in ('timeout','max_run_seconds','max_observed_tokens','executable')}
+    controls={k:getattr(args,k) for k in ('timeout','max_run_seconds','max_observed_tokens','executable','usage_ledger','execution_spec')}
+    controls['expected_usage_ledger_sha256']=hashlib.sha256(args.usage_ledger.read_bytes()).hexdigest()
     report=run_blind_lanes(namespace,pilot_count=args.pilot_count,**controls)
     print(json.dumps({'phase':'pilot_terminal',**scalar(report)}),flush=True)
     if not report['successful']:return 2

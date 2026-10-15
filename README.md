@@ -1,26 +1,34 @@
 # recommend-book
 
-2026-10-13更新: [ユーザー工数0の計画](docs/autonomous-completion-plan-v2.md)に従い、資料補充・外部注釈評価・AI審査・推薦比較・ローカル納品を実行しました。新しい本人評価・試読・感想・履歴入力・画面確認は0件。旧人手品質gateの未検証記録を保持します。
+世界の小説を作品単位で管理し、出典・用途条件・根拠付き多ラベル分類を保持するデータ基盤です。原題・翻訳表現・刊行版を分け、関連度、未校正の信頼度、unknown、保留理由を保存します。
 
-[最終実行結果](docs/autonomous-poc-final-report.md)と[工程別の証拠](docs/autonomous-completion-progress.md)に、実行・保留・未検証の範囲を記録しています。分類品質、世界作品の本人への推薦品質、全素材の商用利用・全世界網羅は未検証です。
+更新: 2026-10-15。現在地は[実生成・検証報告](docs/autonomous-next-delivery-report-v3.md)、10万作品以上への実行順序は[計画 v15](docs/autonomous-next-phase-plan-v15.md)を参照してください。[最新推薦画面](data/autonomous-next-v3/database/phase3-personal-poc-with-declared-genres-v2/index.html)は1,989候補・特徴あり1,004件（LLM分類820＋資料記載184）・暫定得点213件です。連載URLとの確定関係は10/335件へ増えましたが、内容特徴に接続した履歴は2/335件のままで、品質改善は未実証です。追加のユーザー作業0を前提とします。Git操作の環境拒否後、通常の作業ブランチ切り替えが成功しました。ソースの反映状況とCIは下記ブランチ先頭に対して確認します。
 
-世界の小説を作品単位で管理し、出典付きの多ラベル分類を作成するデータ基盤です。書誌・原題・翻訳表現・刊行版を分け、元資料と利用条件、根拠、関連度、未校正の信頼度、保留理由を保持します。
+## 現在の結果
 
-データ収集・統合・分類・評価と、保存済みの個人評価を使う推薦PoCを対象とします。初期計画は[世界の小説データセット計画](docs/world-novel-dataset-plan.md)、旧実績は[PoC実行記録](docs/poc-execution-report.md)に保持します。
+| 対象 | 確認済み |
+|---|---|
+| 作品候補 | 2,005件。小説1,273・ライトノベル80・短編528・種別未確定124 |
+| 本分類 | 対象1,862作品、結果保存1,832・保留30・未処理0 |
+| 分類ラベル | 2,131件。採用条件を反映した特徴あり778作品。文体は全1,832作品で不明 |
+| ローカル表示 | 書誌1,870・書名文字類似1,870・分類検索1,807作品。日本語別名検索、AND検索、解除、0件表示を実画面で確認 |
+| 追加の推薦表示 | 1,989候補・特徴あり1,004件。資料記載184件をLLM分類と区別。直前1,961件のうち、特徴なし2件の追加以外は1,959行が完全一致 |
+| 独立資料の別コホート | フランス語原文5作品の編集者ジャンル正例5件中4件を検出。正例限定で、正答率・precision・現72ラベルの品質評価とは別 |
+| 検証 | 完成DBの整合性ok・外部キー違反0、元の3HTML再生成一致。最新ローカル全1,634テスト成功（160.90秒）・依存lock確認成功。最新差分のリモートCIは未実行 |
 
-Windowsの最終テストは1,132件成功、実装170ファイルの前後SHA一致。Windows/UbuntuのCI設定は[CI検証ガイド](docs/ci-validation-guide.md)にあり、GitHub hosted CIは未実行です。旧[完了監査](docs/poc-completion-audit.md)は当時の履歴で、現在のユーザー作業条件はv2計画を適用します。
+[分類DB](data/autonomous-next-v3/database/final-delivery-main-v1/classified-database/dataset.sqlite)と[修正版画面](data/autonomous-next-v3/database/final-delivery-view-v2/site/index.html)はローカルに保存しています。画面はブラウザで直接開けます。検証用HTTPサーバーは終了済みです。取得原物・DB・評価資料を保存する `data/` はGit管理から除外しており、GitHubのcheckoutだけではデータは揃いません。
 
-最終[分類DB](data/autonomous-poc-v1/database/final-v1/dataset.sqlite)は歴史2,020件・3,628ラベル。旧1,941結果と根拠補充した79件の新分類を保存し、作品/版scope矛盾15件を推薦から隔離します。分類blind400件の審査はAI採用候補332（allunknown187）・保留68、名寄せ400ペア＋26未解決は全件処理・保留55・authority採用0。人手gold・意味精度・関連度精度・校正は未検証です。
+## 未完了の範囲
 
-保存済みのなろう評価335件を読み取り専用で使用し、2,005候補から[推薦100件](data/autonomous-poc-v1/delivery-v1/recommendations.html)を生成しました。分類特徴あり1,063件・なし942件、採点可能731件。実画面と別再生成8内容出力のbytes一致を確認しています。確認済み未読は0件で、候補は「読書状態未確認」です。人気順を上回る根拠はなく、worldの比較可能な人気指標がないためpersonalの参考順位を表示します。[納品手順](docs/autonomous-delivery-guide.md)、[8設定比較](docs/autonomous-recommendation-evaluation.md)を参照してください。
+元の「工程4まで」のうち独立した分類精度評価は、適用できる正解データ不足で未完了です。本分類へ適用できる独立専門家正解は0件で、precision・recall・F1・Brier・ECE・信頼度校正は未評価です。限定した別コホートの評価と推薦PoCは実行済みですが、全件AI審査や出力SHAの一致を意味的な分類精度へ読み替えません。今後の改善は計画書の再開条件に従います。新しい本人評価・試読・採点・履歴入力・画面確認は依頼しません。
 
-外部60/180作品の正例検出は24/65、全200正例分母では24/200。専用native20の直接文字列一致は2/40。正例だけの抜粋評価をaccuracy/F1や全分類の合格へ読み替えません。新81根拠の条件履行と、旧WP792/WS40の現在の許諾未再承認を区別し、新79入力に含まれた旧WP7は事後保留に確定しました。[外部評価](docs/autonomous-reference-run.md)、[商用化・拡張の制約](docs/autonomous-commercial-scale-preparation.md)に記録しています。
+読書状態不明を未読へ変換せず、本人の満足度や未読推薦精度の改善を検証済みとは扱いません。翻訳・版の対応は一部に限られ、包括的な商用利用許諾・世界全体の網羅性も未確認です。1万作品以上への拡張とToC公開は実行していません。
 
-Open Library補充後の[変更268作品の固定入力](docs/enrichment-classification-preparation.md)を8並列で分類し、[新分類の推薦への統合](docs/recommendation-overlay-guide.md)と独立監査まで実施しました。旧IDの既読履歴もSQLで検証した対応表から引き継ぎます。[推薦の誤差分析](docs/recommendation-error-analysis.md)では、特徴欠損と大きな同点群、対象分野の実評価不足を分けて記録しています。
+ソースの反映先は作業ブランチ [`feat/world-novel-dataset-poc`](https://github.com/ayutaz/recommend-book/tree/feat/world-novel-dataset-poc) です。`0b2db9e`は既存38コミット時点の記録であり、追加分の反映状況はブランチ履歴と当該先頭のCIで確認します。以前のブランチ切り替え拒否は履歴として保持し、2026-10-15の通常実行では切り替えに成功しました。mainへの直接push・mergeは行いません。
 
 ## 開発環境
 
-Python 3.12以上とuvを使用します。Windows/Python 3.14で検証しています。
+Python 3.12以上とuvを使用します。実行・検証環境はWindows/Python 3.14です。
 
 ```powershell
 uv sync --locked
@@ -28,25 +36,18 @@ uv run pytest -q
 uv run recommend-book --help
 ```
 
-LLM分類には、認証済みのCodex CLIから `gpt-6.1-sol` を使用します。小バッチ・並列実行・上限・キャッシュ・再試行・停止状態を記録します。ライブ分類はアカウントの利用量を消費するため、通常のテストでは固定fixtureを使用します。
+上記は開発用コマンドです。最新ローカル試験1,634成功の記録を利用し、今回の文書更新では再実行していません。LLM分類は認証済みCodex CLIの `gpt-6.1-sol` を使用し、実行条件・入力・原応答・利用量を保存します。主DBの特徴あり778、追加表示のLLM分類820、資料記載ジャンル184は分けて集計します。推薦候補への30特徴作品の追加では分類LLM呼出0、公開メタデータ20 QIDを1リクエスト・再試行0で取得しました。別途French評価はCLI1回・5作品で実行済みです。両者の件数・用途・実行量を混ぜず、資料記載を厳密72分類の品質正解や校正済み確率として扱いません。
 
-## 処理と文書
+## 文書と証跡
 
-| 工程 | 内容・参照先 |
+| 用途 | 参照先 |
 |---|---|
-| 収集・利用条件 | Open Library/Wikidata/NDL等の原物とSHAを保存し、用途別の利用条件を保持。[計画](docs/world-novel-dataset-plan.md)、[実績](docs/poc-execution-report.md) |
-| 作品DB・名寄せ | SQLiteで作品/表現/版・author/series authority・immutable source versionを管理。[出典対応](docs/source-mapping-resolution.md)、[NDLの接続不足](docs/ndl-resolution-coverage.md)、[古典原文の版関係](docs/prose-integration-guide.md)、[2,020作品の単一DB](docs/combined-poc-guide.md)、[分類結果の派生DB保存](docs/classification-database-import-guide.md) |
-| LLM分類 | 6軸72ラベル、根拠・関連度・raw confidence・unknownを保存。[1,000→2,000作品実行](docs/production-classification-guide.md)、[分類の観測](docs/classification-observation-guide.md)、[2,020入力のv2実行](docs/production-v2-run-record.md) |
-| 精度検証 | 独立レビュー・dev/calibration/holdout・根拠支持・校正。[評価手順](docs/evaluation-guide.md)、[固定品質条件](docs/poc-quality-gates-v1.md)、[分布調整した400作品](docs/evaluation-balanced-v1.md)、[校正標本の実行可能性](docs/calibration-feasibility-v1.md)、[実予測からの校正候補診断](docs/calibration-candidate-diagnostic.md) |
-| 自動審査 | [blind分類400件](docs/autonomous-silver-run.md)、[名寄せ400ペア＋26件](docs/autonomous-resolution-run.md)。新しい本人評価0 |
-| 旧人手レビュー資料（履歴） | [72ラベル日本語ガイド](docs/human-taxonomy-v1-guide.md)、[旧名寄せレビュー資料](docs/resolution-review-guide.md)。ユーザー作業の依頼ではない |
-| 書誌補充 | 完全ダンプの候補から264作品・192著者を新DBへ統合。[raw照合・保留・ID crosswalkの検証](docs/openlibrary-enrichment-validation.md) |
-| 個人推薦 | [推薦PoC手順](docs/recommendation-poc-guide.md)、[実行・評価結果](docs/recommendation-poc-run-record.md)、[嗜好の参照adapter](docs/narou-reference-adapter.md)、[世界DB adapter](docs/world-recommendation-adapter.md) |
+| 最新結果・成果物・検証範囲 | [実生成・検証報告 v3](docs/autonomous-next-delivery-report-v3.md) |
+| 最終ゴールへの段階計画・阻害条件・判断条件 | [計画 v15](docs/autonomous-next-phase-plan-v15.md) |
+| 初期設計・当時の調査 | [世界の小説データセット計画](docs/world-novel-dataset-plan.md) |
+| 利用条件と用途の分離 | [利用条件レビュー範囲](docs/source-rights-review-scope-v3.md)、[UsageGuard](docs/usage-guard-v3.md) |
+| DB・分類・参照の実装 | [DB](docs/next-database-v3.md)、[分類](docs/guarded-classification-v3.md)、[外部参照](docs/next-reference-v3.md) |
+| 過去の実行結果 | [v2最終報告](docs/autonomous-poc-final-report.md)、[過去の工程別証拠](docs/autonomous-completion-progress.md)、[v14計画](docs/autonomous-next-phase-plan-v14.md) |
+| CI設定 | [CI検証ガイド](docs/ci-validation-guide.md)。[`0b2db9e`のWindows/Ubuntu CI成功](https://github.com/ayutaz/recommend-book/actions/runs/38668029235)は過去の記録。[作業ブランチのCI一覧](https://github.com/ayutaz/recommend-book/actions?query=branch%3Afeat%2Fworld-novel-dataset-poc)で対象コミットを確認 |
 
-## データと評価の扱い
-
-取得原物・SQLite・固定入力・分類結果・レビュー資料は `data/` に保存し、Git管理から除外しています。ローカルの実取得データを使う手順は実行記録にあり、文書中の件数やSHAはそのスナップショットに対する値です。
-
-利用条件はソースと項目ごとに異なります。メタデータの条件を本文へ広げず、原物・帰属・変更記録・用途・作品別条件を保持します。根拠不足はunknownとし、省略ラベルを負例に変換しません。
-
-Schema・ID・引用所属の機械検証と、作品内容やラベルの意味的な正しさは別に評価します。人手goldがない段階では分類精度と信頼度校正は未評価です。進捗は実行記録と各manifestで確認します。
+過去の件数・完了状態・テスト結果は、それぞれのスナップショットに対する記録です。現在の確定値と混ぜません。メタデータ、説明文、表紙、本文、翻訳の利用条件を分け、根拠不足や未注釈をunknownとして保持します。

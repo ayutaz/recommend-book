@@ -1,0 +1,321 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "work_id": {
+      "type": "string"
+    },
+    "expression_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "target_language": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "taxonomy_version": {
+      "type": "string"
+    },
+    "prompt_version": {
+      "type": "string",
+      "enum": [
+        "3.0-definitions",
+        "3.1-context"
+      ]
+    },
+    "model": {
+      "type": "string"
+    },
+    "cli_version": {
+      "type": "string"
+    },
+    "input_hash": {
+      "type": "string"
+    },
+    "labels": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "label_id": {
+            "type": "string",
+            "enum": [
+              "genre.mystery",
+              "genre.fantasy",
+              "genre.science_fiction",
+              "genre.romance",
+              "genre.historical",
+              "genre.horror",
+              "genre.literary",
+              "genre.thriller",
+              "genre.adventure",
+              "genre.social",
+              "genre.satire",
+              "genre.dystopia",
+              "theme.revenge",
+              "theme.growth",
+              "theme.family",
+              "theme.loss",
+              "theme.class",
+              "theme.ethics",
+              "theme.migration",
+              "theme.identity",
+              "theme.friendship",
+              "theme.power",
+              "theme.war",
+              "theme.memory",
+              "structure.investigation",
+              "structure.journey",
+              "structure.multiple_perspectives",
+              "structure.nonlinear",
+              "structure.ensemble",
+              "structure.frame",
+              "structure.epistolary",
+              "structure.unreliable",
+              "structure.first_person",
+              "structure.third_person",
+              "structure.cyclical",
+              "structure.open_ending",
+              "protagonist.detective",
+              "protagonist.student",
+              "protagonist.child",
+              "protagonist.nonhuman",
+              "protagonist.multiple",
+              "protagonist.adult",
+              "protagonist.elderly",
+              "protagonist.outsider",
+              "protagonist.artist",
+              "protagonist.soldier",
+              "protagonist.caregiver",
+              "protagonist.antihero",
+              "style.concise",
+              "style.lyrical",
+              "style.colloquial",
+              "style.experimental",
+              "style.psychological",
+              "style.ornate",
+              "style.minimalist",
+              "style.dialogue_driven",
+              "style.stream_of_consciousness",
+              "style.descriptive",
+              "style.ironic",
+              "style.archaic",
+              "atmosphere.tense",
+              "atmosphere.dark",
+              "atmosphere.warm",
+              "atmosphere.humorous",
+              "atmosphere.bittersweet",
+              "atmosphere.melancholic",
+              "atmosphere.hopeful",
+              "atmosphere.uneasy",
+              "atmosphere.wonder",
+              "atmosphere.tranquil",
+              "atmosphere.intense",
+              "atmosphere.absurd"
+            ]
+          },
+          "axis": {
+            "type": "string",
+            "enum": [
+              "genre",
+              "theme",
+              "structure",
+              "protagonist",
+              "style",
+              "atmosphere"
+            ]
+          },
+          "decision": {
+            "type": "string",
+            "enum": [
+              "present",
+              "absent",
+              "unknown"
+            ]
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "work",
+              "original",
+              "expression",
+              "translation"
+            ]
+          },
+          "expression_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "relevance": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 1
+          },
+          "raw_confidence": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 1
+          },
+          "calibrated_confidence": {
+            "type": "null"
+          },
+          "calibration_status": {
+            "type": "string",
+            "enum": [
+              "uncalibrated"
+            ]
+          },
+          "calibration_version": {
+            "type": "null"
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "evidence_id": {
+                  "type": "string"
+                },
+                "locator": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "quote": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "summary": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "directness": {
+                  "type": "string",
+                  "enum": [
+                    "direct",
+                    "indirect"
+                  ]
+                }
+              },
+              "required": [
+                "evidence_id",
+                "locator",
+                "quote",
+                "summary",
+                "directness"
+              ]
+            }
+          },
+          "missing_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "spoiler": {
+            "type": "string",
+            "enum": [
+              "none",
+              "premise",
+              "plot",
+              "ending"
+            ]
+          }
+        },
+        "required": [
+          "label_id",
+          "axis",
+          "decision",
+          "scope",
+          "expression_id",
+          "relevance",
+          "raw_confidence",
+          "calibrated_confidence",
+          "calibration_status",
+          "calibration_version",
+          "evidence",
+          "missing_reason",
+          "spoiler"
+        ]
+      }
+    },
+    "missing_axes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "axis": {
+            "type": "string",
+            "enum": [
+              "genre",
+              "theme",
+              "structure",
+              "protagonist",
+              "style",
+              "atmosphere"
+            ]
+          },
+          "decision": {
+            "type": "string",
+            "enum": [
+              "unknown"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "axis",
+          "decision",
+          "reason"
+        ]
+      }
+    },
+    "conflicts": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "needs_human_review": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "work_id",
+    "expression_id",
+    "target_language",
+    "taxonomy_version",
+    "prompt_version",
+    "model",
+    "cli_version",
+    "input_hash",
+    "labels",
+    "missing_axes",
+    "conflicts",
+    "needs_human_review"
+  ],
+  "$id": "recommend-book/classification-v3"
+}
