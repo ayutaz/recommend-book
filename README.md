@@ -51,6 +51,7 @@ data/autonomous-next-v3/database/phase3-personal-poc-with-declared-genres-v2/ind
 追加の試読・採点・正解データ作成を利用者へ依頼しない方針です。
 
 - [実行計画](docs/autonomous-next-phase-plan-v15.md)：優先順・完了条件・判断が必要になる事項
+- [品質評価仕様](docs/quality-evaluation-protocol-v1.md)：主要3ジャンル・名寄せの評価設計と外部注釈の依頼条件
 - [初期設計](docs/world-novel-dataset-plan.md)：対象データ・分類・評価の設計
 - [利用条件の確認範囲](docs/source-rights-review-scope-v3.md)：資料と用途ごとの確認方針
 - [CI検証ガイド](docs/ci-validation-guide.md)：テストと実データ検証の範囲
