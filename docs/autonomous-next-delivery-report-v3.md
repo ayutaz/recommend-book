@@ -1,6 +1,6 @@
 # 世界小説PoCの実生成・検証結果 v3
 
-2026-10-15更新。新しい本人作業・評価・履歴入力は0件。最新追加表示は1,989候補・特徴あり1,004件（LLM分類820＋資料記載184）・暫定得点213件。特徴1,000件の運用目標に到達した。連載URLと原HTMLの確定関係は2→10件、内容特徴がある履歴は2/335件のまま。独立精度・校正・推薦品質の不足は残り、PoC全体の完了とは扱わない。元の「工程4まで」の未達も保持する。実行順序は[計画 v15](autonomous-next-phase-plan-v15.md)を参照する。
+2026-10-15更新。新しい本人作業・評価・履歴入力は0件。最新表示は1,999候補・特徴あり1,008件（LLM分類824＋資料記載184）・暫定得点214件。新規10小説を分類・審査し、推薦用特徴を4作品追加した。採用率40%で残り26作品の投入を停止した。連載URLと原HTMLの確定関係は10件、内容特徴がある履歴は2/335件のまま。独立精度・校正・推薦品質の不足は残り、PoC全体の完了とは扱わない。元の「工程4まで」の未達も保持する。実行順序は[計画 v15](autonomous-next-phase-plan-v15.md)を参照する。
 
 実装は[PR #2](https://github.com/ayutaz/recommend-book/pull/2)でmainへ統合済み。その実装版の[Windows/Ubuntu CI](https://github.com/ayutaz/recommend-book/actions/runs/38701147898)は成功。README整理もPR #3で統合した。以下の過去の節で「未実行」「次」とある記述は、各節のスナップショットに対する記録として読む。
 
@@ -8,7 +8,34 @@
 
 [更新経路の統合検証](dataset-update-verification-v1.md)は、合成2作品で実DB・用途判定・推薦処理を接続し、訂正・再投入・再オープン・取込例外rollback・統合取消・利用許可の撤回を確認した。候補・推薦件数は2→2→1→2→1、旧snapshotは保持。関連98試験は成功。内容特徴の再分類・クラッシュ復旧・実作品での品質検証ではない。[公開評点の調査](public-rating-evaluation-feasibility-v1.md)は3候補で許諾未確定、評点取得・実評価0。独立注釈なしの[品質監査](../data/autonomous-next-v3/evaluation/phase4-quality-readiness-v1/readiness.json)はhuman_validation_pending/uncalibratedを確認した。
 
-## 最新追加：診断・履歴接続の追加確認・拡張条件
+## 最新追加：新規小説の実分類・審査・採用
+
+今回の「3まで進めて」は、PR #7の候補固定、新しい処理版への接続、少数作品の全工程実行を対象とする。今回も本人作業・外部委託・支出は0である。
+
+保存済み資料から準備した55作品のうち、最新表示と重複する19作品を分類前に除外し、新しい小説36作品を固定した。最初の10作品は9原言語を含む便宜標本であり、世界小説の代表標本ではない。[候補選定](pilot-candidate-selection-v1.md)と[新規処理版](native-snapshot-runtime-v1.md)に出典・用途・版・検証境界を記載した。
+
+| 工程 | 実際の結果 | 区別するもの |
+|---|---|---|
+| 分類 | 本物のSol CLI 2呼出、10完了・失敗0・再試行0、約205.5秒 | 分類語彙72種類に対し、10作品で出力したラベル判定は延べ64件。独立精度の測定ではない |
+| AI審査 | 別のSol CLI 1呼出で10作品・64ラベルを確認。uncertain 4作品、held 0 | あらすじだけでは文芸的処理、主人公の疎外、軍人の主人公性を断定できない4ケース。人手正解や名寄せ承認ではない |
+| DB採用 | 原分類10件を新しい補助DBへ保存。機械的特徴採用7作品、分類内矛盾保留3作品。審査uncertain 4作品は一部重複。採用処理約12.4秒 | frozen DBの既存policyではuncertainの特徴が残る。推薦表示では作品全体の特徴を別policyで除く |
+| 追加投入判定 | 推薦用特徴は4/10作品・28ラベルで採用率40%。目標70%未達のため残り26作品は分類・審査とも未実行 | 分類完了率100%を採用率や精度へ読み替えない。件数合わせの収集・同じ分類の再試行はしない |
+
+分類はinput 60,357 / output 16,449 token、審査はinput 47,612 / output 1,467 token。合計input+output 125,885 token、実分類・審査の呼出3回。reasoning tokenはoutputの内数として扱い、二重加算しない。実装・調査・会話・開発用サブエージェントの利用量を含む総量ではなく、API請求額への換算もしない。
+
+真正な実行記録は[初回10件の終端](../data/autonomous-next-v3/preparation/phase7-world-native-snapshot-runtime-v2/terminal-first10/adoption-arguments.json)、[実審査](../data/autonomous-next-v3/evaluation/phase7-world-pilot-review-first10-v1/quality-adoption-review.json)、[補助DBの採用記録](../data/autonomous-next-v3/database/phase7-world-pilot-first10-v1/adoption-observation.json)に保存した。旧DB・台帳・原proof・本人profileを上書きしていない。独立人手精度・校正・内容接続2/335・本人向け改善の未評価を維持する。
+
+実際の[推薦画面](../data/autonomous-next-v3/database/phase7-world-pilot-delivery-v1/index.html)は1,999候補・特徴あり1,008件・暫定得点214件。旧1,989行のscore・内容を保ち、新規10行のうち4行に特徴、1行に暫定得点を追加した。全1,999行の読書状態はunknownであり、未読保証はしない。Chromeで新規作品検索1件、該当なし0件、家族ラベル105件、採点あり214件、解除後1,999件、固定revision・履歴・CC BY-SA・改変表示を実確認した。[ブラウザ記録](../data/autonomous-next-v3/evaluation/phase7-world-pilot-v1/browser-observation.json)には確認範囲を保存した。ローカルファイル直接表示はブラウザのURL方針で拒否されたため、公開HTML二つだけを返すloopbackプレビューで確認し、検証後に自分のタブとserverを閉じた。
+
+実データの[撤回用表示](../data/autonomous-next-v3/database/phase7-world-pilot-withdrawn-v1/report.json)は1,998件＝旧1,989件＋新規書誌9件。対象作品は検索でも0件となり、元の表示へ戻すと1,999件・対象1件へ復旧した。元台帳を変更せず撤回用台帳を別作成し、全projectionの利用を取り消した。台帳全体のSHAが変わるため、元のnative結果10件はすべて拒否され、新規9件は特徴・得点なしとなる。対象外9作品の旧分類だけを維持できるとは主張しない。旧1,989行と元の表示・DBは不変である。
+
+[実際の公開前中断](../data/autonomous-next-v3/evaluation/phase7-real-publication-recovery-v3/interruption.json)では、本物の採用済み10件を検証してcheckpointを保存したworker PID 99888を、表示生成前に親から強制終了した。新しいプロセスの[再開](../data/autonomous-next-v3/evaluation/phase7-real-publication-recovery-v3/publication-process-exit.json)は同じ本番builderを終了0で実行し、分類・審査をやり直さず最初の1,999件表示を生成した。追加モデル呼出0、run・DB不変、残り26件未実行。Windowsのvenv launcherとinterpreterのPID差で失敗したv2試行は別namespaceで保持し、実interpreterを直接起動したv3で確認した。これは採用後・表示前の境界の復旧であり、任意のモデル生成途中の復旧保証ではない。
+
+[工程別観測](../data/autonomous-next-v3/evaluation/phase7-world-pilot-v1/stage-observation.json)では、固定10入力の読取・復元約0.0006秒、原物を含む用途再照合約1.35秒、正確なDB projection・既存表示との重複再照合約0.043秒を、読み取り専用の一度の再現処理で計測した。元の候補準備のwall timeは個別計測しておらず、これらを当時の準備時間や新規ネット取得時間としない。実分類約205.5秒、実審査のプロセス観測約43秒、DB採用約12.4秒、実表示builder約58.0秒を分離して記録した。分類runの保存量1,972,896 bytes、審査821,833 bytes、補助DBと採用記録5,350,881 bytes、統合表示3,281,000 bytes、撤回表示2,870,812 bytes。共有raw・準備runtime・開発作業はこの保存量に含めない。採用4作品に対する分類・審査の観測利用量は31,471.25 token/作品だが、小標本・別工程の集計であり10万件へ単純外挿しない。
+
+候補不足と今回の採用率未達により、**1万作品の一括処理は引き続きNO GO**。実際に推薦へ追加できた作品と保留理由を確認してから、根拠と採用方針の改善を次の小バッチで検証する。
+
+## 前回追加：診断・履歴接続の追加確認・拡張条件
 
 続く「3まで進めて」は、最新計画の診断・修正、条件付き推薦比較、1万作品への拡張条件確認を対象に実施した。以下は準備だけの工程と区別した実行結果であり、1万作品の処理完了ではない。
 

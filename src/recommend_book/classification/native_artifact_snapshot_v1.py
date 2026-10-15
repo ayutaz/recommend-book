@@ -13,6 +13,53 @@ def _identity(path):
     return info.st_dev, info.st_ino, info.st_size
 
 
+class CommandArtifactSnapshot:
+    """One explicit publication scope; no cache or authorization survives close."""
+
+    def __init__(self, command):
+        if not command:
+            raise ValueError("A command is required")
+        self.command = list(command)
+        aliases = [Path(command[0]).absolute()]
+        if len(command) > 1:
+            aliases.append(Path(command[1]).absolute())
+        self.resolved = {path: path.resolve(strict=True) for path in aliases}
+        self.snapshots, self.identities = {}, {}
+        for path in dict.fromkeys(self.resolved.values()):
+            self.identities[path] = _identity(path)
+            self.snapshots[path] = path.read_bytes()
+            if _identity(path) != self.identities[path]:
+                raise ValueError("Executable source changed during snapshot")
+        self.hashes = {str(path): hashlib.sha256(value).hexdigest() for path, value in self.snapshots.items()}
+        self.receipt_count = 0
+        self.closed = False
+
+    def check_receipt(self, command, expected):
+        if self.closed:
+            raise ValueError("Executable snapshot scope is closed")
+        if list(command) != self.command or expected != self.hashes:
+            raise ValueError("Executable receipt differs from fixed bytes")
+        self.receipt_count += 1
+
+    def close(self):
+        if self.closed:
+            raise ValueError("Executable snapshot scope is closed")
+        self.closed = True
+        if not self.receipt_count:
+            raise ValueError("At least one expected receipt is required")
+        if any(path.resolve(strict=True) != target for path, target in self.resolved.items()):
+            raise ValueError("Executable source alias changed before batch completion")
+        for path, value in self.snapshots.items():
+            if _identity(path) != self.identities[path] or path.read_bytes() != value or _identity(path) != self.identities[path]:
+                raise ValueError("Executable source changed before batch completion")
+        report = {"version": "native-artifact-snapshot-v1", "executable_sha256": self.hashes,
+                  "receipt_count": self.receipt_count, "content_reads": len(self.snapshots) * 2,
+                  "content_bytes_read": sum(map(len, self.snapshots.values())) * 2,
+                  "bytes_hashed": sum(map(len, self.snapshots.values())), "result_adoption_authorized": False}
+        self.snapshots.clear()
+        return report
+
+
 def verify_command_receipts(command, expected_receipts):
     """Compare all receipts to one byte snapshot, then reread content to close.
 
@@ -23,33 +70,7 @@ def verify_command_receipts(command, expected_receipts):
     """
     if not command or not expected_receipts:
         raise ValueError("A command and at least one expected receipt are required")
-    aliases = [Path(command[0]).absolute()]
-    if len(command) > 1:
-        aliases.append(Path(command[1]).absolute())
-    resolved = {path: path.resolve(strict=True) for path in aliases}
-    paths = list(resolved.values())
-    paths = list(dict.fromkeys(paths))
-    snapshots = {}
-    identities = {}
-    for path in paths:
-        identities[path] = _identity(path)
-        snapshots[path] = path.read_bytes()
-        if _identity(path) != identities[path]:
-            raise ValueError("Executable source changed during snapshot")
-    hashes = {str(path): hashlib.sha256(value).hexdigest() for path, value in snapshots.items()}
-    receipt_count = 0
+    snapshot = CommandArtifactSnapshot(command)
     for expected in expected_receipts:
-        if expected != hashes:
-            raise ValueError("Executable receipt differs from fixed bytes")
-        receipt_count += 1
-    if not receipt_count:
-        raise ValueError("At least one expected receipt is required")
-    if any(path.resolve(strict=True) != target for path, target in resolved.items()):
-        raise ValueError("Executable source alias changed before batch completion")
-    for path, value in snapshots.items():
-        if _identity(path) != identities[path] or path.read_bytes() != value or _identity(path) != identities[path]:
-            raise ValueError("Executable source changed before batch completion")
-    return {"version": "native-artifact-snapshot-v1", "executable_sha256": hashes,
-            "receipt_count": receipt_count, "content_reads": len(paths) * 2,
-            "content_bytes_read": sum(map(len, snapshots.values())) * 2,
-            "bytes_hashed": sum(map(len, snapshots.values())), "result_adoption_authorized": False}
+        snapshot.check_receipt(command, expected)
+    return snapshot.close()
