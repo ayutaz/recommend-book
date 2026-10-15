@@ -8,6 +8,20 @@
 
 [更新経路の統合検証](dataset-update-verification-v1.md)は、合成2作品で実DB・用途判定・推薦処理を接続し、訂正・再投入・再オープン・取込例外rollback・統合取消・利用許可の撤回を確認した。候補・推薦件数は2→2→1→2→1、旧snapshotは保持。関連98試験は成功。内容特徴の再分類・クラッシュ復旧・実作品での品質検証ではない。[公開評点の調査](public-rating-evaluation-feasibility-v1.md)は3候補で許諾未確定、評点取得・実評価0。独立注釈なしの[品質監査](../data/autonomous-next-v3/evaluation/phase4-quality-readiness-v1/readiness.json)はhuman_validation_pending/uncalibratedを確認した。
 
+## 最新追加：直近1〜3の検証・評価整理・診断準備
+
+「3まで進めて、PRはそちらの判断でマージしていいです」の対象は次の3項目である。後述する当初の3項目や、1万作品以上への拡張とは区別する。
+
+| 項目 | 結果と証拠 | 限界 |
+|---|---|---|
+| 更新・再開・撤回表示 | [検証説明](content-update-verification-v1.md)、[最終04記録](../data/content-update-verification-v1-20261015-04/verification.json)。内容訂正による旧結果/キャッシュ拒否、実プロセス中断2境界、既採用の保持、重複採用0、撤回後HTML 2→0カード | 合成入力・模擬CLI応答。実モデル途中の停止や単一run混在採用の修正ではない。台帳変更で無関係な旧分類も保留になる。新しいブラウザ確認は含めない |
+| 本人向け推薦の現在評価 | [評価説明](personal-recommendation-current-assessment-v1.md)、[集約記録](../data/autonomous-next-v3/evaluation/phase5-personal-recommendation-status-v1/report.json)。既存335評点・保存比較を再利用し、支持213件の理由と欠損1,776件を確認 | 内容接続2/335のまま。新しい比較0、改善未証明、実候補の既読除外0。未接続を未読・負例にしない |
+| 診断の参照準備 | [準備説明](codex-diagnostic-preparation-v1.md)、[最終v3記録](../data/autonomous-next-v3/evaluation/phase5-codex-diagnostic-preparation-v3/report.json)。分類20作品/74ラベル、名寄せ3組。外部pin指定で37ファイル・112行を検証 | status=notrun、execution_allowed=false。新規診断・分類・統合・採用0。利用目的と作品/版の対応の確認が必要な参照資料であり、人手goldではない |
+
+新規の関連試験は更新8件、診断準備18件が成功し、推薦の既存3試験も成功した。これは各担当の実行記録であり、この合計を新しい全件試験結果とはしない。原DB・原分類・過去台帳・表示候補数は変更していない。追加費用・外部連絡・追加の本人作業・実モデル呼出はいずれも0。成果は[PR #5](https://github.com/ayutaz/recommend-book/pull/5)へ集約し、最終コミットのWindows/Ubuntu CI確認後に許可済みのマージを行う。
+
+次は準備対象の根拠・版の不一致を局所確認し、条件が成立するものだけ診断・修正する。独立精度や本人向け改善の未達は維持し、件数拡張前に採用率・処理時間・利用量を確認する。
+
 ## 当初の「まずは3まで」に対する確認
 
 最終ゴールの拡張計画とは分け、依頼時の3項目を以下で確認する。10万作品への拡張や72ラベルの品質合格を、この3項目の成立へ読み替えない。
