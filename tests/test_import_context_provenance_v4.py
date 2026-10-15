@@ -48,4 +48,3 @@ def test_nonbaseline_freeze_context_reaches_import_helper(tmp_path):
     assert "schemas/classification-provenance-v4.schema.json" in artifact_names
     assert "src/recommend_book/classification/prompt_v3.py" in artifact_names
     assert "src/recommend_book/classification/specs.py" in artifact_names
-

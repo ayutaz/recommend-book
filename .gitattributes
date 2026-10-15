@@ -1,4 +1,5 @@
 # Frozen Python source hashes must survive Windows and Unix checkouts unchanged.
 *.py text eol=lf
+schemas/classification-provenance-v4.schema.json text eol=lf
 # Preserve the exact mixed line endings pinned by the real recovery checkpoint.
 scripts/verify_world_pilot_recovery_v2.py -text whitespace=cr-at-eol

@@ -76,7 +76,8 @@ def validate_reviews(value, records):
                 raise ValueError('Review finding label/reason binding differs')
 
 
-def execute(args):
+def execute(args, *, instructions=INSTRUCTIONS, extra_source_paths=(),
+            protocol='complete-input-native-output-internal-review-v1'):
     runtime = args.runtime_root.resolve(strict=True)
     sys.path.insert(0, str(runtime / 'src'))
     from recommend_book.models import WorkInput
@@ -100,7 +101,7 @@ def execute(args):
         path = Path(path).resolve(strict=True)
         protected[str(path)] = sha(path)
         return path
-    for path in (args.ordered_inputs, args.terminal_proof, args.execution_context_manifest, args.ledger, run/'manifest.json', run/'results.jsonl', Path(__file__)):
+    for path in (args.ordered_inputs, args.terminal_proof, args.execution_context_manifest, args.ledger, run/'manifest.json', run/'results.jsonl', Path(__file__), *extra_source_paths):
         pin(path)
     with guard.native_scopes.validation():
         for key, state in manifest['jobs'].items():
@@ -142,7 +143,7 @@ def execute(args):
     taxonomy = load_taxonomy()
     payload = {'taxonomy': taxonomy, 'works': [{'work': r['work'].model_dump(mode='json')} for r in records]}
     native_payload = [r['result'] for r in records]
-    prompt = (INSTRUCTIONS + '\nBEGIN_LOCAL_DATA_JSON\n' + json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(',', ':')) +
+    prompt = (instructions + '\nBEGIN_LOCAL_DATA_JSON\n' + json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(',', ':')) +
         '\nEND_LOCAL_DATA_JSON\nBEGIN_AUTHENTIC_NATIVE_CLASSIFICATIONS_JSON\n' +
         json.dumps(native_payload, ensure_ascii=False, sort_keys=True, separators=(',', ':')) + '\nEND_AUTHENTIC_NATIVE_CLASSIFICATIONS_JSON\n').encode('utf-8')
     (args.output/'review.stdin.utf8').write_bytes(prompt)
@@ -150,9 +151,9 @@ def execute(args):
     prompt_receipt = guard.assert_prompt_allowed(prompt, [r['work'] for r in records],
         'external_llm', expected_prompt_sha256=prompt_sha)
     save(args.output/'exact-review-prompt-receipt.json', prompt_receipt.model_dump(mode='json'))
-    admission = {'protocol': 'complete-input-native-output-internal-review-v1',
+    admission = {'protocol': protocol,
         'purpose': 'external_llm', 'prompt_sha256': prompt_sha, 'approved_exact_prompt_sha256': prompt_sha,
-        'instruction_sha256': hashlib.sha256(INSTRUCTIONS.encode()).hexdigest(),
+        'instruction_sha256': hashlib.sha256(instructions.encode()).hexdigest(),
         'input_hashes': [input_hash(r['work']) for r in records],
         'native_output_value_sha256': [model_hash(r['result']) for r in records],
         'taxonomy_sha256': model_hash(taxonomy), 'usage_ledger_sha256': args.ledger_sha256,
@@ -194,7 +195,11 @@ def execute(args):
     closing = snapshot.close()
     if any(sha(path) != digest for path, digest in protected.items()):
         raise ValueError('Review sources changed before publication')
-    audit = {'version': 'world-pilot-independent-source-review-v1', 'run_id': manifest['run_id'],
+    review_version = (protocol.replace('complete-input-native-output-internal-review',
+                                        'world-pilot-independent-source-review')
+                      if protocol.startswith('complete-input-native-output-internal-review-')
+                      else protocol)
+    audit = {'version': review_version, 'protocol': protocol, 'run_id': manifest['run_id'],
         'reviews': binding['value']['reviews'], 'prompt_sha256': prompt_sha,
         'native_review_process_pid': child.pid, 'exit_code': child.returncode,
         'observed_usage': binding['events']['usage'], 'final_value_sha256': binding['final_value_sha256'],
