@@ -1,0 +1,2 @@
+# Frozen Python source hashes must survive Windows and Unix checkouts unchanged.
+*.py text eol=lf

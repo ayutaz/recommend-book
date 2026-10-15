@@ -96,15 +96,29 @@ def allowed_fixture(tmp_path):
     return work, ledger, binary, payload
 
 
-def approve_native_recipes(ledger,payload):
+def test_world_fixture_does_not_read_downloaded_native_codebooks(monkeypatch, tmp_path):
+    original = Path.read_bytes
+
+    def forbid_codebook(path):
+        if 'research-codebook' in path.parts:
+            pytest.fail('World classification fixture read a downloaded native codebook')
+        return original(path)
+
+    monkeypatch.setattr(Path, 'read_bytes', forbid_codebook)
+    allowed_fixture(tmp_path)
+
+
+def approve_native_recipes(ledger,payload,*,execution_specs=None):
     import hashlib
-    from recommend_book.classification.runner import build_run_config,ROOT
-    from recommend_book.classification.specs import SPEC_NAMES
+    from recommend_book.classification.runner import build_run_config
+    from recommend_book.classification.specs import SPEC_NAMES, NATIVE_SPECS
+    from recommend_book.classification import native_attempt
     from recommend_book.classification import load_taxonomy
     from recommend_book.jobs import canonical_json
-    verifier = ROOT / 'src/recommend_book/classification/native_attempt.py'
+    verifier = Path(native_attempt.__file__).resolve()
     payload['execution_recipes'] = {}
-    for spec in SPEC_NAMES:
+    specs = execution_specs if execution_specs is not None else tuple(s for s in SPEC_NAMES if s not in NATIVE_SPECS)
+    for spec in specs:
         for batch in (1,5):
             config = build_run_config('gpt-6.1-sol','fake-1',load_taxonomy(),batch,execution_spec=spec)
             payload['execution_recipes'][hashlib.sha256(canonical_json(config).encode()).hexdigest()] = {
@@ -112,7 +126,7 @@ def approve_native_recipes(ledger,payload):
     ledger.write_text(json.dumps(payload),encoding='utf-8')
 
 
-def allowed_many_fixture(tmp_path,count=2):
+def allowed_many_fixture(tmp_path,count=2,*,execution_specs=None):
     """Real independent CC0 raw identities, immutable DB rows and per-field proof."""
     import hashlib
     from recommend_book.database import DatasetDB
@@ -138,7 +152,7 @@ def allowed_many_fixture(tmp_path,count=2):
         db.ingest(records);works = db.work_inputs()
     payload['inputs'] = {model_hash(w):build_input_entry(w,{ref:source_binding(dbpath,ref)for ref in w.source_record_ids})for w in works}
     ledger = tmp_path / 'ledger-many.json'
-    approve_native_recipes(ledger,payload)
+    approve_native_recipes(ledger,payload,execution_specs=execution_specs)
     binary = tmp_path / 'native-fixture.exe';binary.write_bytes(b'unit-test native binary')
     return works,ledger,binary,payload
 

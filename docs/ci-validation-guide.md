@@ -20,6 +20,10 @@ Python / uv の導入には公式 `astral-sh/setup-uv` を使い、action を完
 
 ## fixture と実通信の境界
 
+2026-10-15追記: 分類の共通fixtureは、使用するexecution specだけを台帳へ登録する。通常のworld分類テストからnative研究資料の取得済みキャッシュを参照しない。native providerのテストではコード・schema・設定を`tmp_path`の小さなプロジェクトへコピーし、明示した合成コードブック3件を置く。実際のguard・原物hash・実行recipe照合は残し、資料改変後に旧recipeで実行できないことも検証する。Git対象外の本文・PDF・私有データをCI用に追加したり、検証をskipして成功扱いにしたりしない。
+
+固定したPythonコードの原bytes SHAをWindows checkoutでも保つため、`.gitattributes`で`*.py text eol=lf`を指定する。改行変換でhash不一致になった場合に、検証側で任意のbytesを許可したり、過去の固定SHAを置換したりしない。
+
 2026-10-12 の既存テストを静的に確認した結果は次のとおり。
 
 | 対象 | テストで使うもの |

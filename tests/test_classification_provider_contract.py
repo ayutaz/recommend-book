@@ -1,6 +1,7 @@
 """Provider schema compatibility and permanent configuration failure boundaries."""
 import json
 from pathlib import Path
+import shutil
 import subprocess
 
 from jsonschema import Draft202012Validator
@@ -10,6 +11,30 @@ from recommend_book.classification.runner import run_classification
 from recommend_book.classification.specs import get_spec
 from test_classification_guarded import allowed_many_fixture, event_bytes
 from test_classification_specs import native_result
+
+
+@pytest.fixture
+def native_codebook_runtime(tmp_path, monkeypatch):
+    """Bind real guard/config code to synthetic sources in an isolated project."""
+    from recommend_book.classification import runner
+
+    original = runner.ROOT
+    project = tmp_path / 'synthetic-project'
+    for folder in ('src', 'schemas', 'config', 'scripts'):
+        shutil.copytree(original / folder, project / folder,
+                        ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+    for name in ('pyproject.toml', 'uv.lock'):
+        shutil.copy2(original / name, project / name)
+    codebook = project / 'data/autonomous-next-v3/reference/research-codebook'
+    codebook.mkdir(parents=True)
+    for name, raw in {
+        'native-v3-source-contract.json': b'{"fixture_only":true}',
+        'keywords.xml': b'<fixture-only/>',
+        'book.pdf': b'%PDF-fixture-only-not-source-material',
+    }.items():
+        (codebook / name).write_bytes(raw)
+    monkeypatch.setattr(runner, 'ROOT', project)
+    return codebook
 
 
 # Exact public diagnostic from the stopped native run, without work text or IDs.
@@ -97,8 +122,8 @@ def install_responder(monkeypatch, works, *, profile, failure=None, stderr=b"", 
 
 
 @pytest.mark.parametrize("profile", ["native-definitions-v3", "native-context-v3"])
-def test_actual_native_batch_schema_passes_strict_provider_type_requirement(monkeypatch, tmp_path, profile):
-    works, ledger, binary, _ = allowed_many_fixture(tmp_path, count=5)
+def test_actual_native_batch_schema_passes_strict_provider_type_requirement(monkeypatch, tmp_path, profile, native_codebook_runtime):
+    works, ledger, binary, _ = allowed_many_fixture(tmp_path, count=5, execution_specs=(profile,))
     calls = install_responder(monkeypatch, works, profile=profile, strict_schema=True)
     manifest = run_classification(works, tmp_path / "run", concurrency=1, batch_size=5,
         executable=str(binary), usage_ledger=ledger, execution_spec=profile)
@@ -106,8 +131,8 @@ def test_actual_native_batch_schema_passes_strict_provider_type_requirement(monk
 
 
 @pytest.mark.parametrize("stderr", [b"", b"CLI progress: waiting for server\r\n"])
-def test_provider_schema_rejection_stops_next_batch_and_preserves_actual_failure(monkeypatch, tmp_path, stderr):
-    works, ledger, binary, _ = allowed_many_fixture(tmp_path, count=10)
+def test_provider_schema_rejection_stops_next_batch_and_preserves_actual_failure(monkeypatch, tmp_path, stderr, native_codebook_runtime):
+    works, ledger, binary, _ = allowed_many_fixture(tmp_path, count=10, execution_specs=('native-definitions-v3',))
     calls = install_responder(monkeypatch, works, profile="native-definitions-v3",
         failure=PROVIDER_ERROR, stderr=stderr)
     output = tmp_path / "run"
@@ -129,8 +154,8 @@ def test_provider_schema_rejection_stops_next_batch_and_preserves_actual_failure
     assert sum(state["status"] == "not_submitted" for state in manifest["jobs"].values()) == 5
 
 
-def test_general_cli_exit_remains_local_failure_and_does_not_stop_unrelated_batch(monkeypatch, tmp_path):
-    works, ledger, binary, _ = allowed_many_fixture(tmp_path, count=10)
+def test_general_cli_exit_remains_local_failure_and_does_not_stop_unrelated_batch(monkeypatch, tmp_path, native_codebook_runtime):
+    works, ledger, binary, _ = allowed_many_fixture(tmp_path, count=10, execution_specs=('native-definitions-v3',))
     calls = install_responder(monkeypatch, works, profile="native-definitions-v3",
         failure={"message": "Unexpected child process exit; no provider schema rejection"})
     manifest = run_classification(works, tmp_path / "run", concurrency=1, batch_size=5,
@@ -139,3 +164,16 @@ def test_general_cli_exit_remains_local_failure_and_does_not_stop_unrelated_batc
     assert manifest["completed"] == 5 and manifest["failed"] == 5 and manifest["pending"] == 0
     assert {state["error_category"] for state in manifest["jobs"].values() if state["status"] == "held"} == {"cli_exit"}
     assert manifest["retries"] == 0
+
+
+def test_changed_synthetic_codebook_requires_new_execution_recipe(monkeypatch, tmp_path, native_codebook_runtime):
+    from recommend_book.usage_guard import UsageDenied
+
+    works, ledger, binary, _ = allowed_many_fixture(tmp_path, count=5,
+        execution_specs=('native-definitions-v3',))
+    (native_codebook_runtime / 'book.pdf').write_bytes(b'changed fixture source')
+    calls = install_responder(monkeypatch, works, profile='native-definitions-v3')
+    with pytest.raises(UsageDenied):
+        run_classification(works, tmp_path / 'run', concurrency=1, batch_size=5,
+            executable=str(binary), usage_ledger=ledger, execution_spec='native-definitions-v3')
+    assert calls == []
