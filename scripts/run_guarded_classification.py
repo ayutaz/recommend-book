@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 from recommend_book.classification.runner import build_run_config,immutable_bytes,immutable_json,run_classification,validate_controls
-from recommend_book.classification.specs import get_spec,SPEC_NAMES
+from recommend_book.classification.specs import ALL_SPEC_NAMES,get_spec
 from recommend_book.classification import input_hash,load_taxonomy
 from recommend_book.jobs import canonical_json
 from recommend_book.models import WorkInput
@@ -115,7 +115,7 @@ def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__);sub=parser.add_subparsers(dest='command',required=True)
     prep=sub.add_parser('prepare');prep.add_argument('--inputs',type=Path,required=True);prep.add_argument('--usage-ledger',type=Path,required=True)
     prep.add_argument('--namespace',type=Path,required=True);prep.add_argument('--cli-version',required=True)
-    prep.add_argument('--execution-spec',choices=SPEC_NAMES,default='guarded-v3-baseline');prep.add_argument('--batch-size',type=int,default=5)
+    prep.add_argument('--execution-spec',choices=ALL_SPEC_NAMES,default='guarded-v3-baseline');prep.add_argument('--batch-size',type=int,default=5)
     prep.add_argument('--concurrency',type=int,default=2);prep.add_argument('--timeout',type=float,default=900)
     prep.add_argument('--max-run-seconds',type=float,default=1800);prep.add_argument('--max-observed-tokens',type=int,default=500000)
     run=sub.add_parser('run',help='root launches only after independent fixed-context audit');run.add_argument('--namespace',type=Path,required=True)

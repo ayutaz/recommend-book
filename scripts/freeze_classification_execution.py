@@ -11,6 +11,7 @@ import shutil
 import uuid
 
 from recommend_book.classification.runner import build_run_config, validate_controls
+from recommend_book.classification.specs import get_spec
 from recommend_book.classification.validation import ROOT
 from recommend_book.models import WorkInput
 
@@ -47,7 +48,8 @@ def strict_json(raw):
 
 def freeze_execution(input_path, output_dir, *, model, cli_version, batch_size=1,
                      concurrency=2, timeout=900, max_run_seconds=None,
-                     max_observed_tokens=None, stop_on_rate_limit=False):
+                     max_observed_tokens=None, stop_on_rate_limit=False,
+                     execution_spec=None):
     validate_controls(batch_size=batch_size, concurrency=concurrency, timeout=timeout,
                       max_run_seconds=max_run_seconds, max_observed_tokens=max_observed_tokens)
     if not isinstance(model, str) or not model.strip() or not isinstance(cli_version, str) or not cli_version.strip():
@@ -61,8 +63,19 @@ def freeze_execution(input_path, output_dir, *, model, cli_version, batch_size=1
         raise ValueError("Output already exists")
     if output.is_relative_to(input_path.parent):
         raise ValueError("Output cannot be inside the input directory")
+    artifact_names = list(ARTIFACTS)
+    spec = get_spec(execution_spec, root=ROOT) if execution_spec is not None else None
+    if spec is not None and execution_spec != "guarded-v3-baseline":
+        # Keep the historical default artifact set unchanged. A future spec
+        # freezes its actual prompt/schema plus the registry that binds it.
+        extras = [spec.prompt_path, spec.schema_path,
+                  ROOT / "src/recommend_book/classification/specs.py"]
+        for path in extras:
+            relative = path.resolve(strict=True).relative_to(ROOT).as_posix()
+            if relative not in artifact_names:
+                artifact_names.append(relative)
     paths = {"input": input_path, "input_manifest": input_manifest,
-             **{name: (ROOT / name).resolve(strict=True) for name in ARTIFACTS}}
+             **{name: (ROOT / name).resolve(strict=True) for name in artifact_names}}
     initial = {name: path.read_bytes() for name, path in paths.items()}
     manifest = strict_json(initial["input_manifest"])
     if not isinstance(manifest, dict):
@@ -78,10 +91,17 @@ def freeze_execution(input_path, output_dir, *, model, cli_version, batch_size=1
     if len(set(identities)) != len(identities):
         raise ValueError("Duplicate work/expression identity")
     taxonomy = strict_json(initial["config/taxonomy.json"])
-    config = build_run_config(model, cli_version, taxonomy, batch_size)
-    for key, artifact in (("schema_hash", "schemas/classification.schema.json"),
-                          ("prompt_hash", "src/recommend_book/classification/prompt.py"),
-                          ("validation_hash", "src/recommend_book/classification/validation.py")):
+    config = build_run_config(model, cli_version, taxonomy, batch_size,
+                              execution_spec=execution_spec) if execution_spec is not None else build_run_config(model, cli_version, taxonomy, batch_size)
+    bindings = (("schema_hash", "schemas/classification.schema.json"),
+                ("prompt_hash", "src/recommend_book/classification/prompt.py"),
+                ("validation_hash", "src/recommend_book/classification/validation.py"))
+    if spec is not None and execution_spec != "guarded-v3-baseline":
+        bindings = (("schema_hash", spec.schema_path.resolve().relative_to(ROOT).as_posix()),
+                    ("prompt_hash", spec.prompt_path.resolve().relative_to(ROOT).as_posix()),
+                    ("spec_hash", "src/recommend_book/classification/specs.py"),
+                    ("validation_hash", "src/recommend_book/classification/validation.py"))
+    for key, artifact in bindings:
         if config[key] != sha(initial[artifact]):
             raise ValueError("Config artifact changed during preparation")
     controls = {"batch_size": batch_size, "concurrency": concurrency, "timeout": timeout,
@@ -98,8 +118,8 @@ def freeze_execution(input_path, output_dir, *, model, cli_version, batch_size=1
                              "processing_context": manifest.get("processing_context"),
                              "work_expression_count": len(identities)},
         "execution_context": {"run_config": config, "controls": controls,
-                              "artifact_count": len(ARTIFACTS),
-                              "artifact_sha256": {name: sha(initial[name]) for name in ARTIFACTS},
+                              "artifact_count": len(artifact_names),
+                              "artifact_sha256": {name: sha(initial[name]) for name in artifact_names},
                               "code_root": str(ROOT.resolve())},
         "source_files_unchanged_before_publish": True,
     }
@@ -108,7 +128,7 @@ def freeze_execution(input_path, output_dir, *, model, cli_version, batch_size=1
     stage.mkdir()
     try:
         copies = {"inputs/ordered.jsonl": initial["input"], "inputs/manifest.json": initial["input_manifest"],
-                  **{f"artifacts/{name}": initial[name] for name in ARTIFACTS}}
+                  **{f"artifacts/{name}": initial[name] for name in artifact_names}}
         for relative, raw in copies.items():
             target = stage / relative
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -121,7 +141,8 @@ def freeze_execution(input_path, output_dir, *, model, cli_version, batch_size=1
                 raise ValueError("Staged copy changed during preparation")
         if (stage / "manifest.json").read_bytes() != manifest_bytes:
             raise ValueError("Staged manifest changed during preparation")
-        final_config = build_run_config(model, cli_version, taxonomy, batch_size)
+        final_config = build_run_config(model, cli_version, taxonomy, batch_size,
+                                        execution_spec=execution_spec) if execution_spec is not None else build_run_config(model, cli_version, taxonomy, batch_size)
         final = {name: path.read_bytes() for name, path in paths.items()}
         if final != initial or final_config != config:
             raise ValueError("Source or config changed during preparation")
@@ -151,11 +172,12 @@ def main(argv=None):
     parser.add_argument("--max-run-seconds", type=float)
     parser.add_argument("--max-observed-tokens", type=int)
     parser.add_argument("--stop-on-rate-limit", action="store_true")
+    parser.add_argument("--execution-spec")
     args = parser.parse_args(argv)
     report = freeze_execution(args.input, args.output, model=args.model, cli_version=args.cli_version,
                               batch_size=args.batch_size, concurrency=args.concurrency, timeout=args.timeout,
                               max_run_seconds=args.max_run_seconds, max_observed_tokens=args.max_observed_tokens,
-                              stop_on_rate_limit=args.stop_on_rate_limit)
+                              stop_on_rate_limit=args.stop_on_rate_limit, execution_spec=args.execution_spec)
     print(json.dumps({"execution_state": report["execution_state"], "output": str(args.output),
                       "work_expression_count": report["input_provenance"]["work_expression_count"]}))
 

@@ -12,8 +12,12 @@ from . import native_v3
 from .validation import ROOT, validate_result as historical_validate
 
 EXPERIMENT_CANDIDATES = ("definitions-v3", "context-v3")
+PROVENANCE_SPECS = ("provenance-v4",)
 NATIVE_SPECS = ("native-definitions-v3", "native-context-v3")
+# Keep the historical public tuple stable for consumers that enumerate the
+# original v3 families. New future-only recipes use ALL_SPEC_NAMES.
 SPEC_NAMES = ("guarded-v3-baseline", *EXPERIMENT_CANDIDATES, *NATIVE_SPECS)
+ALL_SPEC_NAMES = (*SPEC_NAMES, *PROVENANCE_SPECS)
 _HISTORICAL_SINGLE = historical_prompt.build_prompt
 _HISTORICAL_BATCH = historical_prompt.build_batch_prompt
 _V3_SINGLE = prompt_v3.build_prompt
@@ -74,12 +78,13 @@ class ExecutionSpec:
 
 def get_spec(name, *, root=None):
     root = Path(root) if root is not None else ROOT
-    if name not in SPEC_NAMES:
+    if name not in ALL_SPEC_NAMES:
         raise ValueError("Unknown classification execution spec: " + str(name))
     baseline = name == "guarded-v3-baseline"
     if name in NATIVE_SPECS:
         return ExecutionSpec(name,native_v3.VERSIONS[name],
             root / "src/recommend_book/classification/native_v3.py",root / "schemas/native-protagonist-v3.schema.json")
+    schema_name = "classification-provenance-v4.schema.json" if name in PROVENANCE_SPECS else ("classification.schema.json" if baseline else "classification-v3.schema.json")
     return ExecutionSpec(name, "1.0" if baseline else prompt_v3.VERSIONS[name],
         root / "src/recommend_book/classification" / ("prompt.py" if baseline else "prompt_v3.py"),
-        root / "schemas" / ("classification.schema.json" if baseline else "classification-v3.schema.json"))
+        root / "schemas" / schema_name)

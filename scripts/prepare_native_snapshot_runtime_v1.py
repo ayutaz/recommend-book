@@ -207,10 +207,14 @@ def preflight(output, inputs, ledger_path, cli_version, execution_spec, run_name
     freeze_spec = importlib.util.spec_from_file_location('new_execution_freeze', runtime / 'scripts/freeze_classification_execution.py')
     freeze = importlib.util.module_from_spec(freeze_spec)
     freeze_spec.loader.exec_module(freeze)
-    freeze.build_run_config = lambda model,version,taxonomy,batch_size: build_run_config(model,version,taxonomy,batch_size,execution_spec=execution_spec)
+    frozen_spec = execution_spec
+    def frozen_config(model, version, taxonomy, batch_size, *, execution_spec=None):
+        return build_run_config(model, version, taxonomy, batch_size, execution_spec=frozen_spec)
+    freeze.build_run_config = frozen_config
     context = output / ('execution-context-' + run_name)
     freeze.freeze_execution(selected / 'ordered.jsonl',context,model='gpt-6.1-sol',cli_version=cli_version,
-        batch_size=5,concurrency=2,timeout=900,max_run_seconds=1800,max_observed_tokens=500000,stop_on_rate_limit=True)
+        batch_size=5,concurrency=2,timeout=900,max_run_seconds=1800,max_observed_tokens=500000,
+        stop_on_rate_limit=True,execution_spec=execution_spec)
     command = resolve_executable()
     report = {'version':'native-snapshot-preflight-v1','stage':'prepared_not_started','namespace':str(namespace),
         'preparation_sha256':sha((namespace / 'preparation-manifest.json').read_bytes()),'config':config,'config_sha256':config_sha,
