@@ -1,0 +1,1391 @@
+{
+  "version": "1.0",
+  "status": "provisional_until_pilot_freeze",
+  "axes": [
+    {
+      "axis_id": "genre",
+      "label": "genre",
+      "scope": "work_or_expression"
+    },
+    {
+      "axis_id": "theme",
+      "label": "theme",
+      "scope": "work_or_expression"
+    },
+    {
+      "axis_id": "structure",
+      "label": "structure",
+      "scope": "work_or_expression"
+    },
+    {
+      "axis_id": "protagonist",
+      "label": "protagonist",
+      "scope": "work_or_expression"
+    },
+    {
+      "axis_id": "style",
+      "label": "style",
+      "scope": "original_or_explicit_expression"
+    },
+    {
+      "axis_id": "atmosphere",
+      "label": "atmosphere",
+      "scope": "work_or_expression"
+    }
+  ],
+  "labels": [
+    {
+      "label_id": "genre.mystery",
+      "axis": "genre",
+      "label": "Mystery",
+      "definition": "An investigation or unresolved puzzle drives the narrative.",
+      "include": [
+        "Active investigation, clues, crime-solving"
+      ],
+      "exclude": [
+        "Crime merely mentioned without investigative plot"
+      ],
+      "examples": [
+        "A detective follows clues to identify a murderer"
+      ],
+      "parent_id": "axis.genre",
+      "primary": true,
+      "subaxis": null
+    },
+    {
+      "label_id": "genre.fantasy",
+      "axis": "genre",
+      "label": "Fantasy",
+      "definition": "Supernatural or magical rules shape the fictional world.",
+      "include": [
+        "Magic, mythical beings or impossible worlds essential to plot"
+      ],
+      "exclude": [
+        "Metaphorical magic or ordinary speculation"
+      ],
+      "examples": [
+        "A mage crosses a kingdom ruled by dragons"
+      ],
+      "parent_id": "axis.genre",
+      "primary": true,
+      "subaxis": null
+    },
+    {
+      "label_id": "genre.science_fiction",
+      "axis": "genre",
+      "label": "Science fiction",
+      "definition": "Speculative science or technology structures the story.",
+      "include": [
+        "Space exploration, future technology or scientifically framed speculation"
+      ],
+      "exclude": [
+        "Any futuristic date without scientific speculation"
+      ],
+      "examples": [
+        "An astronaut encounters an artificial intelligence"
+      ],
+      "parent_id": "axis.genre",
+      "primary": true,
+      "subaxis": null
+    },
+    {
+      "label_id": "genre.romance",
+      "axis": "genre",
+      "label": "Romance",
+      "definition": "The development of a love relationship is a central plot.",
+      "include": [
+        "Courtship and relationship formation drive major stakes"
+      ],
+      "exclude": [
+        "A peripheral romantic relationship"
+      ],
+      "examples": [
+        "Two rivals gradually fall in love"
+      ],
+      "parent_id": "axis.genre",
+      "primary": true,
+      "subaxis": null
+    },
+    {
+      "label_id": "genre.historical",
+      "axis": "genre",
+      "label": "Historical fiction",
+      "definition": "A reconstructed past period centrally shapes the story.",
+      "include": [
+        "Past institutions/events shape fictional characters and conflicts"
+      ],
+      "exclude": [
+        "Old publication date alone"
+      ],
+      "examples": [
+        "A fictional family struggles during a documented revolution"
+      ],
+      "parent_id": "axis.genre",
+      "primary": true,
+      "subaxis": null
+    },
+    {
+      "label_id": "genre.horror",
+      "axis": "genre",
+      "label": "Horror",
+      "definition": "Fear or dread is a deliberate central effect.",
+      "include": [
+        "Threatening uncanny forces or terrifying sustained experiences"
+      ],
+      "exclude": [
+        "Violence without an intended fear effect"
+      ],
+      "examples": [
+        "A haunted home gradually terrorizes its inhabitants"
+      ],
+      "parent_id": "axis.genre",
+      "primary": true,
+      "subaxis": null
+    },
+    {
+      "label_id": "genre.literary",
+      "axis": "genre",
+      "label": "Literary fiction",
+      "definition": "Foregrounds complex interiority, language or social interpretation.",
+      "include": [
+        "Narrative treatment explicitly prioritizes literary exploration"
+      ],
+      "exclude": [
+        "Prestige, nationality or publication imprint alone"
+      ],
+      "examples": [
+        "An excerpt foregrounds layered psychological interpretation"
+      ],
+      "parent_id": "axis.genre",
+      "primary": false,
+      "subaxis": null
+    },
+    {
+      "label_id": "genre.thriller",
+      "axis": "genre",
+      "label": "Thriller",
+      "definition": "Sustained urgent suspense drives consequential danger.",
+      "include": [
+        "Escalating threat, pursuit or time-critical jeopardy"
+      ],
+      "exclude": [
+        "A single dangerous incident"
+      ],
+      "examples": [
+        "A witness is pursued before exposing a conspiracy"
+      ],
+      "parent_id": "axis.genre",
+      "primary": true,
+      "subaxis": null
+    },
+    {
+      "label_id": "genre.adventure",
+      "axis": "genre",
+      "label": "Adventure",
+      "definition": "A sequence of risky external exploits drives the plot.",
+      "include": [
+        "Exploration, daring action or survival exploits"
+      ],
+      "exclude": [
+        "Travel as background detail"
+      ],
+      "examples": [
+        "An expedition navigates dangerous uncharted terrain"
+      ],
+      "parent_id": "axis.genre",
+      "primary": false,
+      "subaxis": null
+    },
+    {
+      "label_id": "genre.social",
+      "axis": "genre",
+      "label": "Social fiction",
+      "definition": "Social institutions and conditions form the central conflict.",
+      "include": [
+        "Institutions, collective inequity and societal critique drive plot"
+      ],
+      "exclude": [
+        "Any mention of a society"
+      ],
+      "examples": [
+        "Tenants organize against an exploitative landlord"
+      ],
+      "parent_id": "axis.genre",
+      "primary": false,
+      "subaxis": null
+    },
+    {
+      "label_id": "genre.satire",
+      "axis": "genre",
+      "label": "Satire",
+      "definition": "Ridicule exposes social or institutional folly.",
+      "include": [
+        "Ironic exaggeration aimed at a recognizable target"
+      ],
+      "exclude": [
+        "Humor without a critical target"
+      ],
+      "examples": [
+        "Absurd bureaucratic rules expose governmental incompetence"
+      ],
+      "parent_id": "axis.genre",
+      "primary": false,
+      "subaxis": null
+    },
+    {
+      "label_id": "genre.dystopia",
+      "axis": "genre",
+      "label": "Dystopia",
+      "definition": "An imagined oppressive social order structures the story.",
+      "include": [
+        "Systemic coercive future or alternative social order"
+      ],
+      "exclude": [
+        "An unhappy individual in an otherwise ordinary world"
+      ],
+      "examples": [
+        "A surveillance state controls every citizen's choices"
+      ],
+      "parent_id": "axis.genre",
+      "primary": false,
+      "subaxis": null
+    },
+    {
+      "label_id": "theme.revenge",
+      "axis": "theme",
+      "label": "Revenge",
+      "definition": "Retaliation for a wrong is a central concern.",
+      "include": [
+        "Retaliatory motive examined over the story"
+      ],
+      "exclude": [
+        "A fleeting angry reaction"
+      ],
+      "examples": [
+        "A survivor plans retribution for a betrayal"
+      ],
+      "parent_id": "axis.theme",
+      "primary": true,
+      "subaxis": null
+    },
+    {
+      "label_id": "theme.growth",
+      "axis": "theme",
+      "label": "Growth",
+      "definition": "Personal maturation or change is explored.",
+      "include": [
+        "Learning, identity development or sustained transformation"
+      ],
+      "exclude": [
+        "A protagonist merely ages"
+      ],
+      "examples": [
+        "A sheltered teenager learns responsibility"
+      ],
+      "parent_id": "axis.theme",
+      "primary": true,
+      "subaxis": null
+    },
+    {
+      "label_id": "theme.family",
+      "axis": "theme",
+      "label": "Family",
+      "definition": "Family relationships and obligations are examined.",
+      "include": [
+        "Kinship conflicts, loyalty, estrangement or intergenerational ties"
+      ],
+      "exclude": [
+        "Family listed only as biographical context"
+      ],
+      "examples": [
+        "Siblings reconcile over caring for their parent"
+      ],
+      "parent_id": "axis.theme",
+      "primary": true,
+      "subaxis": null
+    },
+    {
+      "label_id": "theme.loss",
+      "axis": "theme",
+      "label": "Loss",
+      "definition": "Grief or separation and its consequences are explored.",
+      "include": [
+        "Bereavement, irreversible deprivation or sustained absence"
+      ],
+      "exclude": [
+        "A death mentioned without thematic treatment"
+      ],
+      "examples": [
+        "A widower learns to live with grief"
+      ],
+      "parent_id": "axis.theme",
+      "primary": true,
+      "subaxis": null
+    },
+    {
+      "label_id": "theme.class",
+      "axis": "theme",
+      "label": "Class",
+      "definition": "Socioeconomic hierarchy and inequality are explored.",
+      "include": [
+        "Class barriers, labor relations or wealth hierarchy"
+      ],
+      "exclude": [
+        "Rich/poor character descriptors alone"
+      ],
+      "examples": [
+        "A worker confronts entrenched class privilege"
+      ],
+      "parent_id": "axis.theme",
+      "primary": true,
+      "subaxis": null
+    },
+    {
+      "label_id": "theme.ethics",
+      "axis": "theme",
+      "label": "Ethics",
+      "definition": "Moral choices and responsibilities are examined.",
+      "include": [
+        "Competing duties and explicit moral dilemmas"
+      ],
+      "exclude": [
+        "A clearly good or bad character with no moral inquiry"
+      ],
+      "examples": [
+        "A doctor must choose between conflicting duties"
+      ],
+      "parent_id": "axis.theme",
+      "primary": true,
+      "subaxis": null
+    },
+    {
+      "label_id": "theme.migration",
+      "axis": "theme",
+      "label": "Migration",
+      "definition": "Displacement or migration and belonging are examined.",
+      "include": [
+        "Migration experience, exile and cross-border belonging"
+      ],
+      "exclude": [
+        "Foreign setting or author's nationality alone"
+      ],
+      "examples": [
+        "A displaced family negotiates a new homeland"
+      ],
+      "parent_id": "axis.theme",
+      "primary": true,
+      "subaxis": null
+    },
+    {
+      "label_id": "theme.identity",
+      "axis": "theme",
+      "label": "Identity",
+      "definition": "The construction or uncertainty of identity is examined.",
+      "include": [
+        "Self-definition, conflicting identities or recognition"
+      ],
+      "exclude": [
+        "Any character introduction"
+      ],
+      "examples": [
+        "A person struggles between inherited and chosen identities"
+      ],
+      "parent_id": "axis.theme",
+      "primary": false,
+      "subaxis": null
+    },
+    {
+      "label_id": "theme.friendship",
+      "axis": "theme",
+      "label": "Friendship",
+      "definition": "Friendship and mutual trust are explored.",
+      "include": [
+        "Friendship development, loyalty or rupture"
+      ],
+      "exclude": [
+        "Companions merely share a scene"
+      ],
+      "examples": [
+        "Two friends rebuild trust after a betrayal"
+      ],
+      "parent_id": "axis.theme",
+      "primary": false,
+      "subaxis": null
+    },
+    {
+      "label_id": "theme.power",
+      "axis": "theme",
+      "label": "Power",
+      "definition": "Acquiring, maintaining or resisting power is examined.",
+      "include": [
+        "Authority, domination or political control as a sustained concern"
+      ],
+      "exclude": [
+        "Any powerful character"
+      ],
+      "examples": [
+        "A ruler's ambition corrodes alliances"
+      ],
+      "parent_id": "axis.theme",
+      "primary": false,
+      "subaxis": null
+    },
+    {
+      "label_id": "theme.war",
+      "axis": "theme",
+      "label": "War",
+      "definition": "Armed conflict and its human consequences are examined.",
+      "include": [
+        "Warfare, militarization or trauma in sustained treatment"
+      ],
+      "exclude": [
+        "A battle as a passing adventure event"
+      ],
+      "examples": [
+        "Soldiers struggle with the consequences of conflict"
+      ],
+      "parent_id": "axis.theme",
+      "primary": false,
+      "subaxis": null
+    },
+    {
+      "label_id": "theme.memory",
+      "axis": "theme",
+      "label": "Memory",
+      "definition": "Remembering, forgetting or contested recollection is examined.",
+      "include": [
+        "Memory shapes identity, relationships or interpretations"
+      ],
+      "exclude": [
+        "A flashback used only for exposition"
+      ],
+      "examples": [
+        "Conflicting recollections reshape a family's past"
+      ],
+      "parent_id": "axis.theme",
+      "primary": false,
+      "subaxis": null
+    },
+    {
+      "label_id": "structure.investigation",
+      "axis": "structure",
+      "label": "Investigation plot",
+      "definition": "A question is pursued through discovery and inference.",
+      "include": [
+        "Evidence gathering and solution-seeking organize plot"
+      ],
+      "exclude": [
+        "A detective role without an investigative plot"
+      ],
+      "examples": [
+        "Characters test clues to resolve a disappearance"
+      ],
+      "parent_id": "structure.plot",
+      "primary": true,
+      "subaxis": "plot"
+    },
+    {
+      "label_id": "structure.journey",
+      "axis": "structure",
+      "label": "Journey plot",
+      "definition": "Movement through successive places structures progression.",
+      "include": [
+        "A goal-oriented quest or consequential travel arc"
+      ],
+      "exclude": [
+        "A single commute or incidental movement"
+      ],
+      "examples": [
+        "Travel through successive regions advances a quest"
+      ],
+      "parent_id": "structure.plot",
+      "primary": true,
+      "subaxis": "plot"
+    },
+    {
+      "label_id": "structure.multiple_perspectives",
+      "axis": "structure",
+      "label": "Multiple perspectives",
+      "definition": "Distinct focalizing viewpoints structure narration.",
+      "include": [
+        "Repeated narration from different consciousnesses"
+      ],
+      "exclude": [
+        "Many characters viewed by one focalizer"
+      ],
+      "examples": [
+        "Chapters alternate viewpoints of three protagonists"
+      ],
+      "parent_id": "structure.narration",
+      "primary": true,
+      "subaxis": "narration"
+    },
+    {
+      "label_id": "structure.nonlinear",
+      "axis": "structure",
+      "label": "Nonlinear narration",
+      "definition": "Narrative order departs substantially from chronology.",
+      "include": [
+        "Recurring time shifts or rearranged chronology"
+      ],
+      "exclude": [
+        "A brief explanatory memory alone"
+      ],
+      "examples": [
+        "Alternating past and present strands reconstruct an event"
+      ],
+      "parent_id": "structure.narration",
+      "primary": true,
+      "subaxis": "narration"
+    },
+    {
+      "label_id": "structure.ensemble",
+      "axis": "structure",
+      "label": "Ensemble plot",
+      "definition": "Several interdependent major character arcs structure plot.",
+      "include": [
+        "Multiple substantially developed arcs share narrative focus"
+      ],
+      "exclude": [
+        "Large background cast"
+      ],
+      "examples": [
+        "Several households' storylines intersect"
+      ],
+      "parent_id": "structure.plot",
+      "primary": false,
+      "subaxis": "plot"
+    },
+    {
+      "label_id": "structure.frame",
+      "axis": "structure",
+      "label": "Frame narration",
+      "definition": "An enclosing story introduces or contextualizes an inner story.",
+      "include": [
+        "A sustained framing situation around embedded narrative"
+      ],
+      "exclude": [
+        "An isolated anecdote"
+      ],
+      "examples": [
+        "A traveler recounts a story within another narrative"
+      ],
+      "parent_id": "structure.narration",
+      "primary": false,
+      "subaxis": "narration"
+    },
+    {
+      "label_id": "structure.epistolary",
+      "axis": "structure",
+      "label": "Epistolary narration",
+      "definition": "Letters or documents principally deliver the narrative.",
+      "include": [
+        "Correspondence, diaries or records form the main telling"
+      ],
+      "exclude": [
+        "A letter appears as a minor prop"
+      ],
+      "examples": [
+        "A story unfolds through exchanged letters"
+      ],
+      "parent_id": "structure.narration",
+      "primary": false,
+      "subaxis": "narration"
+    },
+    {
+      "label_id": "structure.unreliable",
+      "axis": "structure",
+      "label": "Unreliable narration",
+      "definition": "Narration is demonstrably misleading or limited in a consequential way.",
+      "include": [
+        "Evidence contradicts or problematizes narrator account"
+      ],
+      "exclude": [
+        "First person alone or presumed dishonesty"
+      ],
+      "examples": [
+        "A narrator's account conflicts with later documented events"
+      ],
+      "parent_id": "structure.narration",
+      "primary": false,
+      "subaxis": "narration"
+    },
+    {
+      "label_id": "structure.first_person",
+      "axis": "structure",
+      "label": "First-person narration",
+      "definition": "A character narrates using first-person perspective.",
+      "include": [
+        "Excerpt shows sustained I/we narration"
+      ],
+      "exclude": [
+        "Synopsis uses I or a first-person quotation only"
+      ],
+      "examples": [
+        "The protagonist recounts events as 'I'"
+      ],
+      "parent_id": "structure.narration",
+      "primary": false,
+      "subaxis": "narration"
+    },
+    {
+      "label_id": "structure.third_person",
+      "axis": "structure",
+      "label": "Third-person narration",
+      "definition": "Narrator principally refers to characters in third person.",
+      "include": [
+        "Narrative excerpt uses he/she/they or names as telling stance"
+      ],
+      "exclude": [
+        "Synopsis grammar alone"
+      ],
+      "examples": [
+        "An excerpt narrates a character's thoughts in third person"
+      ],
+      "parent_id": "structure.narration",
+      "primary": false,
+      "subaxis": "narration"
+    },
+    {
+      "label_id": "structure.cyclical",
+      "axis": "structure",
+      "label": "Cyclical structure",
+      "definition": "The ending returns consequentially to an initial situation.",
+      "include": [
+        "Explicit narrative return or repetition connecting start and end"
+      ],
+      "exclude": [
+        "A repeated motif without structural return"
+      ],
+      "examples": [
+        "The closing scene repeats the opening with changed meaning"
+      ],
+      "parent_id": "structure.plot",
+      "primary": false,
+      "subaxis": "plot"
+    },
+    {
+      "label_id": "structure.open_ending",
+      "axis": "structure",
+      "label": "Open ending",
+      "definition": "Major narrative questions remain deliberately unresolved at the close.",
+      "include": [
+        "Supplied ending material leaves central outcomes unresolved"
+      ],
+      "exclude": [
+        "Incomplete source material or unanswered minor detail"
+      ],
+      "examples": [
+        "The final scene leaves the central choice unsettled"
+      ],
+      "parent_id": "structure.plot",
+      "primary": false,
+      "subaxis": "plot"
+    },
+    {
+      "label_id": "protagonist.detective",
+      "axis": "protagonist",
+      "label": "Detective protagonist",
+      "definition": "A central character acts as an investigator.",
+      "include": [
+        "Professional or amateur investigator is a protagonist"
+      ],
+      "exclude": [
+        "Detective appears only in a supporting role"
+      ],
+      "examples": [
+        "A private investigator leads the story"
+      ],
+      "parent_id": "axis.protagonist",
+      "primary": true,
+      "subaxis": null
+    },
+    {
+      "label_id": "protagonist.student",
+      "axis": "protagonist",
+      "label": "Student protagonist",
+      "definition": "A central character has an explicit student role.",
+      "include": [
+        "Protagonist attends an educational institution"
+      ],
+      "exclude": [
+        "Youth inferred to be a student"
+      ],
+      "examples": [
+        "A university student narrates their campus life"
+      ],
+      "parent_id": "axis.protagonist",
+      "primary": true,
+      "subaxis": null
+    },
+    {
+      "label_id": "protagonist.child",
+      "axis": "protagonist",
+      "label": "Child protagonist",
+      "definition": "A central character is explicitly a child.",
+      "include": [
+        "Specified childhood or unambiguous child age"
+      ],
+      "exclude": [
+        "Short stature or youthful behavior alone"
+      ],
+      "examples": [
+        "An eight-year-old child leads the story"
+      ],
+      "parent_id": "axis.protagonist",
+      "primary": false,
+      "subaxis": null
+    },
+    {
+      "label_id": "protagonist.nonhuman",
+      "axis": "protagonist",
+      "label": "Nonhuman protagonist",
+      "definition": "A central character is explicitly nonhuman.",
+      "include": [
+        "Animal, robot or supernatural being is central focal character"
+      ],
+      "exclude": [
+        "A human likened metaphorically to an animal"
+      ],
+      "examples": [
+        "A sentient robot seeks its origin"
+      ],
+      "parent_id": "axis.protagonist",
+      "primary": false,
+      "subaxis": null
+    },
+    {
+      "label_id": "protagonist.multiple",
+      "axis": "protagonist",
+      "label": "Multiple protagonists",
+      "definition": "Several central characters share protagonist status.",
+      "include": [
+        "Explicit parallel central arcs or co-protagonists"
+      ],
+      "exclude": [
+        "A large cast without shared centrality"
+      ],
+      "examples": [
+        "Three siblings each lead an interwoven plot"
+      ],
+      "parent_id": "axis.protagonist",
+      "primary": false,
+      "subaxis": null
+    },
+    {
+      "label_id": "protagonist.adult",
+      "axis": "protagonist",
+      "label": "Adult protagonist",
+      "definition": "A central character is explicitly an adult.",
+      "include": [
+        "Specified adult age or clear adult status"
+      ],
+      "exclude": [
+        "Employment alone if age remains unclear"
+      ],
+      "examples": [
+        "A forty-year-old narrator revisits their childhood"
+      ],
+      "parent_id": "axis.protagonist",
+      "primary": false,
+      "subaxis": null
+    },
+    {
+      "label_id": "protagonist.elderly",
+      "axis": "protagonist",
+      "label": "Elderly protagonist",
+      "definition": "A central character is explicitly in later life.",
+      "include": [
+        "Explicit old age or specified elderly age"
+      ],
+      "exclude": [
+        "A grandparent role alone"
+      ],
+      "examples": [
+        "An eighty-year-old protagonist prepares a final journey"
+      ],
+      "parent_id": "axis.protagonist",
+      "primary": false,
+      "subaxis": null
+    },
+    {
+      "label_id": "protagonist.outsider",
+      "axis": "protagonist",
+      "label": "Outsider protagonist",
+      "definition": "A central character occupies explicit social outsider status.",
+      "include": [
+        "Exclusion or marginal social position shapes central role"
+      ],
+      "exclude": [
+        "A foreign name or assumed nationality"
+      ],
+      "examples": [
+        "An ostracized newcomer seeks acceptance"
+      ],
+      "parent_id": "axis.protagonist",
+      "primary": false,
+      "subaxis": null
+    },
+    {
+      "label_id": "protagonist.artist",
+      "axis": "protagonist",
+      "label": "Artist protagonist",
+      "definition": "A central character practices an artistic vocation.",
+      "include": [
+        "Writer, musician, performer or visual artist as central role"
+      ],
+      "exclude": [
+        "Art appreciated as a casual hobby"
+      ],
+      "examples": [
+        "A painter's creative struggle drives the narrative"
+      ],
+      "parent_id": "axis.protagonist",
+      "primary": false,
+      "subaxis": null
+    },
+    {
+      "label_id": "protagonist.soldier",
+      "axis": "protagonist",
+      "label": "Soldier protagonist",
+      "definition": "A central character has an explicit military role.",
+      "include": [
+        "Active or former soldier with a central narrative role"
+      ],
+      "exclude": [
+        "Participation in conflict as a civilian"
+      ],
+      "examples": [
+        "A conscript narrates their deployment"
+      ],
+      "parent_id": "axis.protagonist",
+      "primary": false,
+      "subaxis": null
+    },
+    {
+      "label_id": "protagonist.caregiver",
+      "axis": "protagonist",
+      "label": "Caregiver protagonist",
+      "definition": "A central character has a sustained caregiving role.",
+      "include": [
+        "Caregiving obligations are explicitly central"
+      ],
+      "exclude": [
+        "A single helpful action"
+      ],
+      "examples": [
+        "A nurse cares for a chronically ill relative"
+      ],
+      "parent_id": "axis.protagonist",
+      "primary": false,
+      "subaxis": null
+    },
+    {
+      "label_id": "protagonist.antihero",
+      "axis": "protagonist",
+      "label": "Antihero protagonist",
+      "definition": "A central character lacks conventional heroic virtues in a consequential way.",
+      "include": [
+        "Explicit morally compromised conduct structures protagonist role"
+      ],
+      "exclude": [
+        "Imperfection alone or villain as a minor character"
+      ],
+      "examples": [
+        "A self-serving protagonist pursues success through deception"
+      ],
+      "parent_id": "axis.protagonist",
+      "primary": false,
+      "subaxis": null
+    },
+    {
+      "label_id": "style.concise",
+      "axis": "style",
+      "label": "Concise prose",
+      "definition": "The supplied prose uses economical phrasing.",
+      "include": [
+        "Excerpt shows compact direct clauses and little elaboration"
+      ],
+      "exclude": [
+        "Short synopsis or brief input length"
+      ],
+      "examples": [
+        "An excerpt uses short direct sentences with sparse modifiers"
+      ],
+      "parent_id": "axis.style",
+      "primary": true,
+      "subaxis": null
+    },
+    {
+      "label_id": "style.lyrical",
+      "axis": "style",
+      "label": "Lyrical prose",
+      "definition": "The supplied prose emphasizes rhythm and evocative imagery.",
+      "include": [
+        "Excerpt contains sustained musical or poetic language"
+      ],
+      "exclude": [
+        "Synopsis describes the work as beautiful without prose evidence"
+      ],
+      "examples": [
+        "An excerpt develops rhythmic nature imagery"
+      ],
+      "parent_id": "axis.style",
+      "primary": true,
+      "subaxis": null
+    },
+    {
+      "label_id": "style.colloquial",
+      "axis": "style",
+      "label": "Colloquial prose",
+      "definition": "The supplied narration uses conversational register.",
+      "include": [
+        "Excerpt shows informal idiom in the narration"
+      ],
+      "exclude": [
+        "Dialogue alone when narratorial prose is formal"
+      ],
+      "examples": [
+        "Narration uses everyday contractions and casual idiom"
+      ],
+      "parent_id": "axis.style",
+      "primary": true,
+      "subaxis": null
+    },
+    {
+      "label_id": "style.experimental",
+      "axis": "style",
+      "label": "Experimental prose",
+      "definition": "The supplied prose departs markedly from conventional presentation.",
+      "include": [
+        "Excerpt shows sustained syntactic, typographic or linguistic experimentation"
+      ],
+      "exclude": [
+        "Unusual plot alone"
+      ],
+      "examples": [
+        "An excerpt abandons conventional syntax for fragmented patterns"
+      ],
+      "parent_id": "axis.style",
+      "primary": false,
+      "subaxis": null
+    },
+    {
+      "label_id": "style.psychological",
+      "axis": "style",
+      "label": "Psychological focus",
+      "definition": "The supplied prose foregrounds detailed inner experience.",
+      "include": [
+        "Excerpt develops mental processes and introspection"
+      ],
+      "exclude": [
+        "Synopsis reports emotions without prose treatment"
+      ],
+      "examples": [
+        "A passage closely tracks shifting contradictory thoughts"
+      ],
+      "parent_id": "axis.style",
+      "primary": true,
+      "subaxis": null
+    },
+    {
+      "label_id": "style.ornate",
+      "axis": "style",
+      "label": "Ornate prose",
+      "definition": "The supplied prose uses elaborate syntax and dense embellishment.",
+      "include": [
+        "Excerpt has sustained complex clauses and rich modifiers"
+      ],
+      "exclude": [
+        "One decorative adjective"
+      ],
+      "examples": [
+        "A passage layers long clauses and luxuriant description"
+      ],
+      "parent_id": "axis.style",
+      "primary": false,
+      "subaxis": null
+    },
+    {
+      "label_id": "style.minimalist",
+      "axis": "style",
+      "label": "Minimalist prose",
+      "definition": "The supplied prose withholds exposition and relies on sparse detail.",
+      "include": [
+        "Excerpt shows deliberate omission and suggestive spare narration"
+      ],
+      "exclude": [
+        "Conciseness alone without meaningful withholding"
+      ],
+      "examples": [
+        "A spare exchange leaves motivations unstated"
+      ],
+      "parent_id": "axis.style",
+      "primary": false,
+      "subaxis": null
+    },
+    {
+      "label_id": "style.dialogue_driven",
+      "axis": "style",
+      "label": "Dialogue-driven prose",
+      "definition": "Conversation carries much of the supplied narrative passage.",
+      "include": [
+        "Substantial excerpt develops events through spoken exchanges"
+      ],
+      "exclude": [
+        "A single quoted line in a synopsis"
+      ],
+      "examples": [
+        "A long scene progresses almost entirely through dialogue"
+      ],
+      "parent_id": "axis.style",
+      "primary": false,
+      "subaxis": null
+    },
+    {
+      "label_id": "style.stream_of_consciousness",
+      "axis": "style",
+      "label": "Stream of consciousness",
+      "definition": "The supplied prose follows associative thought flow.",
+      "include": [
+        "Excerpt shows unfiltered shifting thought and associations"
+      ],
+      "exclude": [
+        "Any interior monologue with orderly exposition"
+      ],
+      "examples": [
+        "A passage moves associatively through sensations and memories"
+      ],
+      "parent_id": "axis.style",
+      "primary": false,
+      "subaxis": null
+    },
+    {
+      "label_id": "style.descriptive",
+      "axis": "style",
+      "label": "Descriptive prose",
+      "definition": "Detailed sensory description dominates supplied narration.",
+      "include": [
+        "Excerpt substantially develops observed sensory particulars"
+      ],
+      "exclude": [
+        "A synopsis inventories settings"
+      ],
+      "examples": [
+        "A passage meticulously describes a room's sights and smells"
+      ],
+      "parent_id": "axis.style",
+      "primary": false,
+      "subaxis": null
+    },
+    {
+      "label_id": "style.ironic",
+      "axis": "style",
+      "label": "Ironic prose",
+      "definition": "The supplied prose maintains a consequential ironic stance.",
+      "include": [
+        "Excerpt creates discernible gaps between saying and meaning"
+      ],
+      "exclude": [
+        "Sarcastic character dialogue alone"
+      ],
+      "examples": [
+        "Narration praises a failure with clearly undermining context"
+      ],
+      "parent_id": "axis.style",
+      "primary": false,
+      "subaxis": null
+    },
+    {
+      "label_id": "style.archaic",
+      "axis": "style",
+      "label": "Archaic register",
+      "definition": "The supplied prose uses historically marked language.",
+      "include": [
+        "Excerpt shows sustained obsolete diction or syntax"
+      ],
+      "exclude": [
+        "Historical setting alone"
+      ],
+      "examples": [
+        "Narration consistently uses obsolete forms of address"
+      ],
+      "parent_id": "axis.style",
+      "primary": false,
+      "subaxis": null
+    },
+    {
+      "label_id": "atmosphere.tense",
+      "axis": "atmosphere",
+      "label": "Tense atmosphere",
+      "definition": "Supplied evidence creates sustained pressure or suspense.",
+      "include": [
+        "Passages or explicit narrative description support mounting unease"
+      ],
+      "exclude": [
+        "A lone danger with no sustained atmosphere"
+      ],
+      "examples": [
+        "A pursued character anticipates imminent discovery"
+      ],
+      "parent_id": "axis.atmosphere",
+      "primary": true,
+      "subaxis": null
+    },
+    {
+      "label_id": "atmosphere.dark",
+      "axis": "atmosphere",
+      "label": "Dark atmosphere",
+      "definition": "Supplied evidence supports bleak or oppressive affect.",
+      "include": [
+        "Persistent dread, harshness or hopelessness"
+      ],
+      "exclude": [
+        "Nighttime setting alone"
+      ],
+      "examples": [
+        "Narration sustains an oppressive sense of despair"
+      ],
+      "parent_id": "axis.atmosphere",
+      "primary": true,
+      "subaxis": null
+    },
+    {
+      "label_id": "atmosphere.warm",
+      "axis": "atmosphere",
+      "label": "Warm atmosphere",
+      "definition": "Supplied evidence supports tenderness and emotional welcome.",
+      "include": [
+        "Supportive interactions or consistently comforting affect"
+      ],
+      "exclude": [
+        "A happy ending alone"
+      ],
+      "examples": [
+        "Characters care tenderly for each other through hardship"
+      ],
+      "parent_id": "axis.atmosphere",
+      "primary": true,
+      "subaxis": null
+    },
+    {
+      "label_id": "atmosphere.humorous",
+      "axis": "atmosphere",
+      "label": "Humorous atmosphere",
+      "definition": "Supplied evidence supports a recurring comic effect.",
+      "include": [
+        "Comic situations, phrasing or explicit sustained humorous tone"
+      ],
+      "exclude": [
+        "One character smiles"
+      ],
+      "examples": [
+        "Absurd misunderstandings recur with comic narration"
+      ],
+      "parent_id": "axis.atmosphere",
+      "primary": true,
+      "subaxis": null
+    },
+    {
+      "label_id": "atmosphere.bittersweet",
+      "axis": "atmosphere",
+      "label": "Bittersweet atmosphere",
+      "definition": "Joy and sorrow coexist in the supplied emotional treatment.",
+      "include": [
+        "Mixed tenderness, regret and qualified happiness"
+      ],
+      "exclude": [
+        "Any sad event alongside an unrelated happy event"
+      ],
+      "examples": [
+        "A reunion brings joy while exposing irrevocable loss"
+      ],
+      "parent_id": "axis.atmosphere",
+      "primary": false,
+      "subaxis": null
+    },
+    {
+      "label_id": "atmosphere.melancholic",
+      "axis": "atmosphere",
+      "label": "Melancholic atmosphere",
+      "definition": "Reflective sadness or wistfulness pervades supplied material.",
+      "include": [
+        "Sustained sorrow, longing or contemplation of loss"
+      ],
+      "exclude": [
+        "A tragic event alone"
+      ],
+      "examples": [
+        "A narrator wistfully recalls a lost home"
+      ],
+      "parent_id": "axis.atmosphere",
+      "primary": false,
+      "subaxis": null
+    },
+    {
+      "label_id": "atmosphere.hopeful",
+      "axis": "atmosphere",
+      "label": "Hopeful atmosphere",
+      "definition": "Supplied evidence supports anticipation of possibility or renewal.",
+      "include": [
+        "Sustained affirmative expectation amid circumstances"
+      ],
+      "exclude": [
+        "Success in a single incident"
+      ],
+      "examples": [
+        "Characters retain faith in rebuilding their lives"
+      ],
+      "parent_id": "axis.atmosphere",
+      "primary": false,
+      "subaxis": null
+    },
+    {
+      "label_id": "atmosphere.uneasy",
+      "axis": "atmosphere",
+      "label": "Uneasy atmosphere",
+      "definition": "Supplied evidence supports pervasive uncertainty or discomfort.",
+      "include": [
+        "Subtle disquiet and unsettled perception"
+      ],
+      "exclude": [
+        "Reader uncertainty due to missing input"
+      ],
+      "examples": [
+        "Ordinary surroundings repeatedly feel subtly wrong"
+      ],
+      "parent_id": "axis.atmosphere",
+      "primary": false,
+      "subaxis": null
+    },
+    {
+      "label_id": "atmosphere.wonder",
+      "axis": "atmosphere",
+      "label": "Wonder atmosphere",
+      "definition": "Supplied evidence supports awe or astonishment.",
+      "include": [
+        "Evocative encounters with extraordinary beauty or possibility"
+      ],
+      "exclude": [
+        "Fantasy genre alone"
+      ],
+      "examples": [
+        "An explorer marvels at a vast unfamiliar world"
+      ],
+      "parent_id": "axis.atmosphere",
+      "primary": false,
+      "subaxis": null
+    },
+    {
+      "label_id": "atmosphere.tranquil",
+      "axis": "atmosphere",
+      "label": "Tranquil atmosphere",
+      "definition": "Supplied evidence supports sustained calm and repose.",
+      "include": [
+        "Quiet unhurried emotional treatment"
+      ],
+      "exclude": [
+        "Low action count alone"
+      ],
+      "examples": [
+        "A passage dwells calmly on daily garden life"
+      ],
+      "parent_id": "axis.atmosphere",
+      "primary": false,
+      "subaxis": null
+    },
+    {
+      "label_id": "atmosphere.intense",
+      "axis": "atmosphere",
+      "label": "Emotionally intense atmosphere",
+      "definition": "Supplied evidence foregrounds strong sustained emotional charge.",
+      "include": [
+        "Extended urgent emotional conflict or passion"
+      ],
+      "exclude": [
+        "A single exclamation"
+      ],
+      "examples": [
+        "A confrontation unfolds through sustained anguish and urgency"
+      ],
+      "parent_id": "axis.atmosphere",
+      "primary": false,
+      "subaxis": null
+    },
+    {
+      "label_id": "atmosphere.absurd",
+      "axis": "atmosphere",
+      "label": "Absurd atmosphere",
+      "definition": "Supplied evidence supports pervasive incongruity or irrationality.",
+      "include": [
+        "Repeated inexplicable situations treated as a narrative mood"
+      ],
+      "exclude": [
+        "A factual inconsistency in input data"
+      ],
+      "examples": [
+        "Characters navigate a world of nonsensical yet ordinary rules"
+      ],
+      "parent_id": "axis.atmosphere",
+      "primary": false,
+      "subaxis": null
+    }
+  ],
+  "contradictions": [
+    {
+      "label_ids": [
+        "style.minimalist",
+        "style.ornate"
+      ],
+      "condition": "same_evidence_locator",
+      "action": "record_conflict_and_request_review",
+      "reason": "Sparse and elaborately embellished treatment of the same passage needs scope explanation; different passages may coexist."
+    }
+  ],
+  "semantics": {
+    "omitted_label": "unknown_unassessed",
+    "unknown": "insufficient_or_conflicting_evidence",
+    "absent": "requires_explicit_counterevidence_or_comprehensive_material",
+    "quality_gate": "primary labels only; requires human evaluation",
+    "relevance_anchors": {
+      "1": "core",
+      "0.25": "peripheral",
+      "0.5": "clear element",
+      "0.75": "major"
+    }
+  },
+  "hierarchy": [
+    {
+      "node_id": "axis.genre",
+      "parent_id": null
+    },
+    {
+      "node_id": "axis.theme",
+      "parent_id": null
+    },
+    {
+      "node_id": "axis.structure",
+      "parent_id": null
+    },
+    {
+      "node_id": "axis.protagonist",
+      "parent_id": null
+    },
+    {
+      "node_id": "axis.style",
+      "parent_id": null
+    },
+    {
+      "node_id": "axis.atmosphere",
+      "parent_id": null
+    },
+    {
+      "node_id": "structure.plot",
+      "parent_id": "axis.structure"
+    },
+    {
+      "node_id": "structure.narration",
+      "parent_id": "axis.structure"
+    }
+  ]
+}

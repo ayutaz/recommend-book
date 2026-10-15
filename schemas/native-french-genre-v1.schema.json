@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:recommend-book:native-french-genre-v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["work_id", "expression_id", "input_hash", "model", "cli_version", "prompt_version", "task_version", "genres"],
+  "properties": {
+    "work_id": {"type": "string", "minLength": 1},
+    "expression_id": {"type": "string", "minLength": 1},
+    "input_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "model": {"type": "string", "minLength": 1},
+    "cli_version": {"type": "string", "minLength": 1},
+    "prompt_version": {"type": "string", "const": "1.0-native-french-genre"},
+    "task_version": {"type": "string", "const": "native-french-genre-v1"},
+    "genres": {
+      "type": "array", "minItems": 4, "maxItems": 4,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["label", "state", "evidence", "unknown_reason"],
+        "properties": {
+          "label": {"type": "string", "enum": ["adventure", "crime-fiction", "education", "fantastic"]},
+          "state": {"type": "string", "enum": ["present", "unknown"]},
+          "unknown_reason": {"type": ["string", "null"]},
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "object", "additionalProperties": false,
+              "required": ["evidence_id", "locator", "quote"],
+              "properties": {
+                "evidence_id": {"type": "string", "minLength": 1},
+                "locator": {"type": "string", "minLength": 1},
+                "quote": {"type": "string", "minLength": 1}
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
