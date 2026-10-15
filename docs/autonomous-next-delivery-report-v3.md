@@ -4,7 +4,23 @@
 
 実装は[PR #2](https://github.com/ayutaz/recommend-book/pull/2)でmainへ統合済み。その実装版の[Windows/Ubuntu CI](https://github.com/ayutaz/recommend-book/actions/runs/38701147898)は成功。README整理もPR #3で統合した。以下の過去の節で「未実行」「次」とある記述は、各節のスナップショットに対する記録として読む。
 
-主要3ジャンル・名寄せについて、[品質評価仕様](quality-evaluation-protocol-v1.md)、標本設計、注釈CSV、20作品・40組の外部試行の見積条件を準備した。適合する独立正負gold0・品質未測定は変わらない。今回の準備では分類・DB生成・全件試験・外部連絡・支出は0。件数・定義SHA・リンク・統計計算を確認した[ローカル検証記録](../data/autonomous-next-v3/evaluation/phase3-quality-evaluation-preparation-v1/verification.json)を保存した。
+主要3ジャンル・名寄せの[品質評価仕様](quality-evaluation-protocol-v1.md)は、ユーザー指定により追加費用0・外部委託なし・Codex中心へ変更した。見積照会の許可は撤回され、問い合わせ送信・発注・支出は0。既存資料の適合正負gold0・独立精度未測定は変わらない。Codex診断はllm/silverとして区別する。旧仕様準備時の[ローカル検証記録](../data/autonomous-next-v3/evaluation/phase3-quality-evaluation-preparation-v1/verification.json)は過去の版として保持する。
+
+[更新経路の統合検証](dataset-update-verification-v1.md)は、合成2作品で実DB・用途判定・推薦処理を接続し、訂正・再投入・再オープン・取込例外rollback・統合取消・利用許可の撤回を確認した。候補・推薦件数は2→2→1→2→1、旧snapshotは保持。関連98試験は成功。内容特徴の再分類・クラッシュ復旧・実作品での品質検証ではない。[公開評点の調査](public-rating-evaluation-feasibility-v1.md)は3候補で許諾未確定、評点取得・実評価0。独立注釈なしの[品質監査](../data/autonomous-next-v3/evaluation/phase4-quality-readiness-v1/readiness.json)はhuman_validation_pending/uncalibratedを確認した。
+
+## 最新追加：直近1〜3の検証・評価整理・診断準備
+
+「3まで進めて、PRはそちらの判断でマージしていいです」の対象は次の3項目である。後述する当初の3項目や、1万作品以上への拡張とは区別する。
+
+| 項目 | 結果と証拠 | 限界 |
+|---|---|---|
+| 更新・再開・撤回表示 | [検証説明](content-update-verification-v1.md)、[最終04記録](../data/content-update-verification-v1-20261015-04/verification.json)。内容訂正による旧結果/キャッシュ拒否、実プロセス中断2境界、既採用の保持、重複採用0、撤回後HTML 2→0カード | 合成入力・模擬CLI応答。実モデル途中の停止や単一run混在採用の修正ではない。台帳変更で無関係な旧分類も保留になる。新しいブラウザ確認は含めない |
+| 本人向け推薦の現在評価 | [評価説明](personal-recommendation-current-assessment-v1.md)、[集約記録](../data/autonomous-next-v3/evaluation/phase5-personal-recommendation-status-v1/report.json)。既存335評点・保存比較を再利用し、支持213件の理由と欠損1,776件を確認 | 内容接続2/335のまま。新しい比較0、改善未証明、実候補の既読除外0。未接続を未読・負例にしない |
+| 診断の参照準備 | [準備説明](codex-diagnostic-preparation-v1.md)、[最終v3記録](../data/autonomous-next-v3/evaluation/phase5-codex-diagnostic-preparation-v3/report.json)。分類20作品/74ラベル、名寄せ3組。外部pin指定で37ファイル・112行を検証 | status=notrun、execution_allowed=false。新規診断・分類・統合・採用0。利用目的と作品/版の対応の確認が必要な参照資料であり、人手goldではない |
+
+新規の関連試験は更新8件、診断準備18件が成功し、推薦の既存3試験も成功した。これは各担当の実行記録であり、この合計を新しい全件試験結果とはしない。原DB・原分類・過去台帳・表示候補数は変更していない。追加費用・外部連絡・追加の本人作業・実モデル呼出はいずれも0。成果は[PR #5](https://github.com/ayutaz/recommend-book/pull/5)へ集約し、最終コミットのWindows/Ubuntu CI確認後に許可済みのマージを行う。
+
+次は準備対象の根拠・版の不一致を局所確認し、条件が成立するものだけ診断・修正する。独立精度や本人向け改善の未達は維持し、件数拡張前に採用率・処理時間・利用量を確認する。
 
 ## 当初の「まずは3まで」に対する確認
 

@@ -44,14 +44,20 @@ data/autonomous-next-v3/database/phase3-personal-poc-with-declared-genres-v2/ind
 
 ## 次に進めること
 
-1. 主要ジャンルと作品の名寄せについて、独立した正解データを用意して品質を評価する。
-2. 読書履歴と内容特徴の接続を改善し、固定した条件で推薦方式を比較する。
-3. 差分更新・訂正・誤統合の取消・撤回を確認し、品質と処理量を見ながら1万→3万→10万作品へ拡張する。
+1. 準備済みの分類20作品・名寄せ3組について、根拠と作品・翻訳・版の対応を確認し、修正できるものだけ診断・反映する。
+2. 新しい根拠で読書履歴と内容特徴を接続できた場合だけ、固定条件で推薦方式を比較する。
+3. 品質の未評価範囲と、少量処理での時間・利用量を確認し、1万作品への拡張条件を決める。
+
+直近は合成データで旧分類の失効・中断再開・撤回後のHTML更新を検証し、既存335評点の評価を整理しました。[更新検証](docs/content-update-verification-v1.md)、[推薦の現在評価](docs/personal-recommendation-current-assessment-v1.md)、[診断準備](docs/codex-diagnostic-preparation-v1.md)に結果と限界を記録しています。実作品の追加診断・修正はこれからです。
+
+その後、確認できた品質の範囲と処理量を見ながら1万→3万→10万作品へ拡張します。
 
 追加の試読・採点・正解データ作成を利用者へ依頼しない方針です。
 
+追加費用をかけず、既存データ・利用条件を満たす無料公開資料・Codexだけで進めます。外部委託やデータ購入は行いません。Codexによる評価と、独立した人手による精度検証は区別します。
+
 - [実行計画](docs/autonomous-next-phase-plan-v15.md)：優先順・完了条件・判断が必要になる事項
-- [品質評価仕様](docs/quality-evaluation-protocol-v1.md)：主要3ジャンル・名寄せの評価設計と外部注釈の依頼条件
+- [品質評価仕様](docs/quality-evaluation-protocol-v1.md)：主要3ジャンル・名寄せを追加費用なしで評価する方針と限界
 - [初期設計](docs/world-novel-dataset-plan.md)：対象データ・分類・評価の設計
 - [利用条件の確認範囲](docs/source-rights-review-scope-v3.md)：資料と用途ごとの確認方針
 - [CI検証ガイド](docs/ci-validation-guide.md)：テストと実データ検証の範囲
