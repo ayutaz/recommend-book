@@ -1,0 +1,350 @@
+{
+  "version": "quality-evaluation-v1",
+  "prepared_on": "2026-10-15",
+  "status": "specification_ready_annotations_not_acquired",
+  "execution_authorized": false,
+  "user_annotation_work_required": 0,
+  "annotation_source": "external_independent_humans_or_compatible_preexisting_human_annotations",
+  "external_contact_sent": false,
+  "paid_order_placed": false,
+  "taxonomy": {
+    "path": "config/taxonomy.json",
+    "version": "1.0",
+    "sha256": "688f8e1a0921bcbafabbbf54d99b9039bce8c525ea7e7147bdb01821b449084e",
+    "initial_label_ids": [
+      "genre.mystery",
+      "genre.fantasy",
+      "genre.science_fiction"
+    ],
+    "all_72_labels_validated": false
+  },
+  "targets": {
+    "genre_precision": 0.85,
+    "genre_recall": 0.65,
+    "high_confidence_positive_precision": 0.95,
+    "automatic_same_precision": 0.99,
+    "raw_high_confidence_threshold": 0.95,
+    "unchanged_from_existing_plan": true
+  },
+  "available_gold": {
+    "current_genre_explicit_positive_and_negative_pairs": 0,
+    "independent_identity_pairs": 0,
+    "calibration_items": 0,
+    "quality_measured": false
+  },
+  "candidate_inventory": {
+    "status": "sizing_only_not_a_frozen_evaluation_frame",
+    "database_path": "data/autonomous-next-v3/database/final-delivery-main-v1/classified-database/dataset.sqlite",
+    "database_full_hash_computed": false,
+    "selected_work_ids": 1862,
+    "selected_work_kind_counts": {
+      "novel": 1176,
+      "light_novel": 80,
+      "short_story": 508,
+      "unknown": 98
+    },
+    "novel_or_light_novel_candidates": 1256,
+    "novel_or_light_novel_predicted_present_work_ids": {
+      "genre.mystery": 92,
+      "genre.fantasy": 135,
+      "genre.science_fiction": 78
+    },
+    "present_counts_are_human_gold": false,
+    "active_same_unique_pairs": 877,
+    "active_same_by_method": {
+      "rule": 282,
+      "source_mapping": 595
+    },
+    "active_same_edge_components": 765,
+    "independent_author_series_groups_verified": false,
+    "genre_count_query": "SELECT l.label_id, COUNT(DISTINCT i.work_id) FROM next_classification_labels l JOIN next_classification_inputs i ON i.job_key=l.job_key JOIN works w ON w.work_id=i.work_id WHERE l.axis='genre' AND l.decision='present' AND w.work_kind IN ('novel','light_novel') GROUP BY l.label_id",
+    "identity_frame_query": "SELECT left_work_id,right_work_id,method FROM resolution_decisions WHERE active=1 AND undone=0 AND status='same'"
+  },
+  "genre_sampling": {
+    "status": "designed_not_sampled",
+    "pilot_dev_work_n": 20,
+    "labels_per_work": 3,
+    "full_phase_candidate_work_target": 300,
+    "partition_targets": {
+      "dev": 60,
+      "calibration": 60,
+      "holdout": 180
+    },
+    "pilot_returned_to_holdout": false,
+    "old_balanced400_pack_modified": false,
+    "group_keys": [
+      "canonical_work",
+      "author_authority",
+      "series"
+    ],
+    "group_overlap_between_partitions_allowed": false,
+    "seed": 1729,
+    "impossible_group_quotas": "revise_design_before_freeze_never_split_groups",
+    "frame_and_inclusion_probabilities_frozen": false,
+    "supplemented_diagnostics_pooled_with_operational_metrics": false,
+    "unknown_is_negative": false,
+    "minimum_positive_support_reporting": 20,
+    "world_population_representative": false,
+    "truth_levels_separately_reported": [
+      "work",
+      "evidence"
+    ],
+    "holdout_claim": "new_human_gold_for_existing_predictions_not_unseen_work_generalization"
+  },
+  "identity_sampling": {
+    "status": "designed_not_sampled",
+    "pilot_dev_pair_n": 40,
+    "operational_same_audit_pair_target_max": 400,
+    "operational_sampling": "simple_random_sample_without_replacement_from_post_pilot_frozen_active_same_frame",
+    "challenge_pair_n": 100,
+    "challenge_pair_kind_targets": {
+      "original_translation": 20,
+      "translation_edition": 20,
+      "same_title_different_work": 20,
+      "volume_series": 20,
+      "short_story_collection_adaptation": 20
+    },
+    "pilot_and_test_work_group_overlap_allowed": false,
+    "audit_and_challenge_metrics_pooled": false,
+    "operational_recall_evaluable": false,
+    "candidate_generation_recall_evaluable": false,
+    "cluster_gold_available": false
+  },
+  "annotation": {
+    "independent_reviewers_per_item": 2,
+    "disagreement_adjudication": "third_reviewer",
+    "human_assessors_see_model_decisions": false,
+    "llm_generated_gold_allowed": false,
+    "genre_decisions": [
+      "present",
+      "absent",
+      "unknown"
+    ],
+    "identity_decisions": [
+      "same",
+      "different",
+      "uncertain"
+    ],
+    "work_truth_requires_read_work_or_sufficient_independent_documented_sources": true,
+    "missing_synopsis_mentions_prove_absence": false,
+    "template_paths": [
+      "docs/templates/quality-genre-annotations-v1.csv",
+      "docs/templates/quality-identity-annotations-v1.csv"
+    ],
+    "templates_contain_annotations": false,
+    "csv_direct_import_supported": false,
+    "identity_levels": [
+      "work",
+      "expression",
+      "edition"
+    ],
+    "private_rating_history_shared": false,
+    "same_translation_reprint_expression_identity": "verify_individually_not_automatically_different"
+  },
+  "metrics": {
+    "confidence_level": 0.95,
+    "wilson_sides": 2,
+    "wilson_z": 1.959963984540054,
+    "cluster_bootstrap_replicates": 300,
+    "seed": 1729,
+    "point_target_and_interval_supported_target_reported_separately": true,
+    "intervals_support_simultaneous_worldwide_claim": false,
+    "unknown_gold_excluded_from_correctness_denominator_but_reported": true,
+    "unknown_or_missing_prediction_on_positive_gold": "false_negative",
+    "calibration_scope_min_items": 40,
+    "calibration_band_min_items": 20,
+    "calibration_fit_partition": "calibration",
+    "confidence_estimand": "correctness_of_emitted_present_or_absent_decision_not_probability_of_present",
+    "calibration_scopes_require_matching": [
+      "label",
+      "original_language",
+      "evidence_kind",
+      "model",
+      "prompt_version",
+      "taxonomy_version",
+      "cli_version",
+      "target_language"
+    ],
+    "relevance_missing_value": null,
+    "true_negative_rule": "gold_absent_and_prediction_absent_only",
+    "abstain_on_negative_counts_as_true_negative": false,
+    "report_required_supplemental_counts": [
+      "explicit_fn",
+      "abstain_on_positive",
+      "abstain_on_negative",
+      "tn"
+    ],
+    "supplemental_count_export_implemented_in_this_change": false
+  },
+  "sample_size_examples": [
+    {
+      "successes": 90,
+      "denominator": 100,
+      "proportion": 0.9,
+      "wilson95": [
+        0.8256343384950865,
+        0.9447708629393249
+      ],
+      "observed_quality_result": false
+    },
+    {
+      "successes": 180,
+      "denominator": 200,
+      "proportion": 0.9,
+      "wilson95": [
+        0.8505941875672826,
+        0.9343295513309041
+      ],
+      "observed_quality_result": false
+    },
+    {
+      "successes": 75,
+      "denominator": 100,
+      "proportion": 0.75,
+      "wilson95": [
+        0.656955364519384,
+        0.8245478863771232
+      ],
+      "observed_quality_result": false
+    },
+    {
+      "successes": 95,
+      "denominator": 100,
+      "proportion": 0.95,
+      "wilson95": [
+        0.8882495307680808,
+        0.9784563208456319
+      ],
+      "observed_quality_result": false
+    },
+    {
+      "successes": 198,
+      "denominator": 200,
+      "proportion": 0.99,
+      "wilson95": [
+        0.9642782382838231,
+        0.9972533418664555
+      ],
+      "observed_quality_result": false
+    },
+    {
+      "successes": 300,
+      "denominator": 300,
+      "proportion": 1.0,
+      "wilson95": [
+        0.9873570287754538,
+        0.9999999999999998
+      ],
+      "observed_quality_result": false
+    },
+    {
+      "successes": 381,
+      "denominator": 381,
+      "proportion": 1.0,
+      "wilson95": [
+        0.9900180743715453,
+        0.9999999999999999
+      ],
+      "observed_quality_result": false
+    },
+    {
+      "successes": 400,
+      "denominator": 400,
+      "proportion": 1.0,
+      "wilson95": [
+        0.9904877056657034,
+        0.9999999999999999
+      ],
+      "observed_quality_result": false
+    }
+  ],
+  "quote_preparation": {
+    "status": "request_spec_prepared_not_sent_actual_quotes_absent",
+    "currency": "JPY",
+    "hypothetical_hourly_rate_bounds": [
+      3000,
+      8000
+    ],
+    "hourly_rate_is_verified_market_price": false,
+    "genre_pilot": {
+      "work_n": 20,
+      "reviewer_n": 2,
+      "minutes_per_work_per_reviewer_bounds": [
+        20,
+        40
+      ],
+      "adjudication_hours_bounds": [
+        4,
+        8
+      ],
+      "setup_hours_bounds": [
+        2,
+        4
+      ]
+    },
+    "identity_pilot": {
+      "pair_n": 40,
+      "reviewer_n": 2,
+      "minutes_per_pair_per_reviewer_bounds": [
+        5,
+        10
+      ],
+      "adjudication_hours_bounds": [
+        2,
+        4
+      ],
+      "setup_hours_bounds": [
+        1,
+        2
+      ]
+    },
+    "excluded_costs": [
+      "full_novel_reading",
+      "paid_materials",
+      "translation",
+      "tax"
+    ],
+    "conditions_before_order": [
+      "source_access_and_usage_review",
+      "actual_quote",
+      "explicit_external_contact_authorization",
+      "explicit_spending_authorization"
+    ],
+    "required_annotation_rights": [
+      "AI_analysis",
+      "commercial_use",
+      "redistribution"
+    ],
+    "original_material_rights_transferred_by_annotation_contract": false
+  },
+  "evidence_paths": [
+    "data/autonomous-next-v3/evaluation/world-main-underwood-feasibility-v1/report.md",
+    "data/autonomous-next-v3/evaluation/world-main-lto-reference-feasibility-v1/report.md",
+    "data/autonomous-next-v3/evaluation/phase3-declared-genre-lto-overlap-v1/report.md",
+    "data/autonomous-next-v3/evaluation/phase3-reference-route-v1/report.md",
+    "data/autonomous-next-v3/evaluation/phase3-french-native-pilot-v1/report.json"
+  ],
+  "primary_sources_rechecked": [
+    {
+      "url": "https://github.com/cligs/textbox/blob/1b91e940475c8a7e866457a3953fed5edb0a29f1/french/roman19/readme.md",
+      "checked_on": "2026-10-15",
+      "purpose": "native_genres_and_material_specific_license_scope"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/tedunderwood/fiction/v0.2/meta/datadictionary.csv",
+      "checked_on": "2026-10-15",
+      "purpose": "native_tag_provenance_and_control_tags"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/theme-ontology/theming/master/LICENSE-EXCEPTION.md",
+      "checked_on": "2026-10-15",
+      "purpose": "description_license_exception"
+    },
+    {
+      "url": "https://www.itl.nist.gov/div898/handbook/prc/section2/prc241.htm",
+      "checked_on": "2026-10-15",
+      "purpose": "wilson_two_sided_interval_formula"
+    }
+  ],
+  "next_decision": "authorize_external_quote_contact_then_review_actual_scope_and_cost_before_any_paid_order"
+}

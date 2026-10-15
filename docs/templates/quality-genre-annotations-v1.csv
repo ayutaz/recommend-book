@@ -1,0 +1,1 @@
+annotation_id,work_id,expression_id,edition_id,partition,reviewer_id,truth_level,label_id,decision,relevance,evidence_ids,work_truth_sources,has_read_work,sufficient_documentation,unknown_reason,started_at,finished_at,active_minutes,model_prediction_seen,adjudicator_id,adjudication_reason
