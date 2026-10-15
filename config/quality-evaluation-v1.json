@@ -1,10 +1,10 @@
 {
   "version": "quality-evaluation-v1",
   "prepared_on": "2026-10-15",
-  "status": "specification_ready_annotations_not_acquired",
+  "status": "free_codex_evaluation_policy_prepared_human_gold_unavailable",
   "execution_authorized": false,
   "user_annotation_work_required": 0,
-  "annotation_source": "external_independent_humans_or_compatible_preexisting_human_annotations",
+  "annotation_source": "free_permitted_public_sources_and_codex_only_optional_user_annotations",
   "external_contact_sent": false,
   "paid_order_placed": false,
   "taxonomy": {
@@ -61,7 +61,7 @@
     "identity_frame_query": "SELECT left_work_id,right_work_id,method FROM resolution_decisions WHERE active=1 AND undone=0 AND status='same'"
   },
   "genre_sampling": {
-    "status": "designed_not_sampled",
+    "status": "small_codex_diagnostic_pilot_designed_not_run_human_sampling_not_required",
     "pilot_dev_work_n": 20,
     "labels_per_work": 3,
     "full_phase_candidate_work_target": 300,
@@ -89,10 +89,11 @@
       "work",
       "evidence"
     ],
-    "holdout_claim": "new_human_gold_for_existing_predictions_not_unseen_work_generalization"
+    "holdout_claim": "codex_review_on_saved_sources_is_diagnostic_not_independent_human_validation",
+    "full_phase_status": "conditional_future_design_not_a_required_batch_or_paid_human_pack"
   },
   "identity_sampling": {
-    "status": "designed_not_sampled",
+    "status": "small_codex_diagnostic_pilot_designed_not_run_human_sampling_not_required",
     "pilot_dev_pair_n": 40,
     "operational_same_audit_pair_target_max": 400,
     "operational_sampling": "simple_random_sample_without_replacement_from_post_pilot_frozen_active_same_frame",
@@ -111,8 +112,8 @@
     "cluster_gold_available": false
   },
   "annotation": {
-    "independent_reviewers_per_item": 2,
-    "disagreement_adjudication": "third_reviewer",
+    "independent_reviewers_per_item": null,
+    "disagreement_adjudication": "codex_diagnostic_review_not_independent_human_gold",
     "human_assessors_see_model_decisions": false,
     "llm_generated_gold_allowed": false,
     "genre_decisions": [
@@ -139,7 +140,11 @@
       "edition"
     ],
     "private_rating_history_shared": false,
-    "same_translation_reprint_expression_identity": "verify_individually_not_automatically_different"
+    "same_translation_reprint_expression_identity": "verify_individually_not_automatically_different",
+    "template_role": "optional_future_user_human_annotations_not_required_and_never_filled_by_codex_as_human",
+    "user_annotation_required": false,
+    "codex_provenance": "llm",
+    "codex_results_are_human_gold": false
   },
   "metrics": {
     "confidence_level": 0.95,
@@ -258,65 +263,6 @@
       "observed_quality_result": false
     }
   ],
-  "quote_preparation": {
-    "status": "request_spec_prepared_not_sent_actual_quotes_absent",
-    "currency": "JPY",
-    "hypothetical_hourly_rate_bounds": [
-      3000,
-      8000
-    ],
-    "hourly_rate_is_verified_market_price": false,
-    "genre_pilot": {
-      "work_n": 20,
-      "reviewer_n": 2,
-      "minutes_per_work_per_reviewer_bounds": [
-        20,
-        40
-      ],
-      "adjudication_hours_bounds": [
-        4,
-        8
-      ],
-      "setup_hours_bounds": [
-        2,
-        4
-      ]
-    },
-    "identity_pilot": {
-      "pair_n": 40,
-      "reviewer_n": 2,
-      "minutes_per_pair_per_reviewer_bounds": [
-        5,
-        10
-      ],
-      "adjudication_hours_bounds": [
-        2,
-        4
-      ],
-      "setup_hours_bounds": [
-        1,
-        2
-      ]
-    },
-    "excluded_costs": [
-      "full_novel_reading",
-      "paid_materials",
-      "translation",
-      "tax"
-    ],
-    "conditions_before_order": [
-      "source_access_and_usage_review",
-      "actual_quote",
-      "explicit_external_contact_authorization",
-      "explicit_spending_authorization"
-    ],
-    "required_annotation_rights": [
-      "AI_analysis",
-      "commercial_use",
-      "redistribution"
-    ],
-    "original_material_rights_transferred_by_annotation_contract": false
-  },
   "evidence_paths": [
     "data/autonomous-next-v3/evaluation/world-main-underwood-feasibility-v1/report.md",
     "data/autonomous-next-v3/evaluation/world-main-lto-reference-feasibility-v1/report.md",
@@ -346,5 +292,30 @@
       "purpose": "wilson_two_sided_interval_formula"
     }
   ],
-  "next_decision": "authorize_external_quote_contact_then_review_actual_scope_and_cost_before_any_paid_order"
+  "next_decision": "none_for_ordinary_free_codex_work_no_external_quote_or_order_route",
+  "external_spend_budget_jpy": 0,
+  "outsourcing_allowed": false,
+  "dataset_purchase_allowed": false,
+  "external_quote_contact_allowed": false,
+  "prior_quote_contact_permission": "revoked_by_user_2026-10-15_before_any_message_was_sent",
+  "free_evaluation_policy": {
+    "allowed_actors": [
+      "codex",
+      "user_if_voluntarily_providing_annotations"
+    ],
+    "user_work_required": 0,
+    "allowed_materials": "existing_cached_sources_and_free_public_material_with_verified_usage_conditions",
+    "paid_api_allowed": false,
+    "outsourced_annotation_allowed": false,
+    "data_purchase_allowed": false,
+    "codex_scope": "evidence_faithfulness_identity_conflicts_reproducibility_reference_consistency_and_uncertainty",
+    "codex_output_namespace": "llm_or_silver_never_human_gold",
+    "unknown_is_negative": false,
+    "human_accuracy_recall_f1_or_probability_calibration_claimed_from_codex_reviews": false,
+    "human_gold_missing_blocks_regular_development": false,
+    "reclassify_unchanged_inputs_or_repeat_existing_reviews": false,
+    "initial_work_n_max": 20,
+    "initial_identity_pair_n_max": 40,
+    "full_design_counts_are_quality_support_examples_not_automatic_execution_orders": true
+  }
 }

@@ -4,7 +4,9 @@
 
 実装は[PR #2](https://github.com/ayutaz/recommend-book/pull/2)でmainへ統合済み。その実装版の[Windows/Ubuntu CI](https://github.com/ayutaz/recommend-book/actions/runs/38701147898)は成功。README整理もPR #3で統合した。以下の過去の節で「未実行」「次」とある記述は、各節のスナップショットに対する記録として読む。
 
-主要3ジャンル・名寄せについて、[品質評価仕様](quality-evaluation-protocol-v1.md)、標本設計、注釈CSV、20作品・40組の外部試行の見積条件を準備した。適合する独立正負gold0・品質未測定は変わらない。今回の準備では分類・DB生成・全件試験・外部連絡・支出は0。件数・定義SHA・リンク・統計計算を確認した[ローカル検証記録](../data/autonomous-next-v3/evaluation/phase3-quality-evaluation-preparation-v1/verification.json)を保存した。
+主要3ジャンル・名寄せの[品質評価仕様](quality-evaluation-protocol-v1.md)は、ユーザー指定により追加費用0・外部委託なし・Codex中心へ変更した。見積照会の許可は撤回され、問い合わせ送信・発注・支出は0。既存資料の適合正負gold0・独立精度未測定は変わらない。Codex診断はllm/silverとして区別する。旧仕様準備時の[ローカル検証記録](../data/autonomous-next-v3/evaluation/phase3-quality-evaluation-preparation-v1/verification.json)は過去の版として保持する。
+
+[更新経路の統合検証](dataset-update-verification-v1.md)は、合成2作品で実DB・用途判定・推薦処理を接続し、訂正・再投入・再オープン・取込例外rollback・統合取消・利用許可の撤回を確認した。候補・推薦件数は2→2→1→2→1、旧snapshotは保持。関連98試験は成功。内容特徴の再分類・クラッシュ復旧・実作品での品質検証ではない。[公開評点の調査](public-rating-evaluation-feasibility-v1.md)は3候補で許諾未確定、評点取得・実評価0。独立注釈なしの[品質監査](../data/autonomous-next-v3/evaluation/phase4-quality-readiness-v1/readiness.json)はhuman_validation_pending/uncalibratedを確認した。
 
 ## 当初の「まずは3まで」に対する確認
 
