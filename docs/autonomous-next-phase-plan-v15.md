@@ -33,8 +33,8 @@
 | 保存・表示 | 資料記載184件・205タグ。直近は補助SQLite3本へ30件32タグを追加し、画面・出典を実確認 | 元の主DBの特徴778件は不変。新しい28候補と既存特徴なし2件の追加。データ本体はGit対象外 |
 | 更新経路 | 合成入力の訂正・cache拒否に加え、実10小説の採用後・表示前の強制終了から再開。全表示の撤回1,999→1,998→復旧1,999をブラウザ確認 | 実モデル途中の停止・任意障害復旧は未検証。台帳変更で新規10件のnative結果すべてが保留になる制約は維持 |
 | 公開評点 | 3候補の用途条件と比較仕様を整理。取得0・実評価0 | 今回の用途に使える無料評点は未確定。同じ3候補の探索を反復せず、新しい根拠がある場合だけ再検討 |
-| Git | 計画更新は[PR #7](https://github.com/ayutaz/recommend-book/pull/7)までmainへ統合済み。新規小バッチの実装は作業ブランチで進行中 | 次の追加もブランチとPRを使い、最終版CI確認後に許可済みのマージを行う。過去版のCIで代用しない |
-| 試験 | PR #6の[最終版CI](https://github.com/ayutaz/recommend-book/actions/runs/38714753599)はWindows 1,684成功・2skip、Ubuntu 1,683成功・3skip。新規診断・接続確認・hash試験は両OSで成功 | skipは過去scheduler不在の2件とUbuntuでのWindows専用lock試験。実作品の分類精度や本人向け改善の証明ではない。文書更新だけでローカル全件試験を繰り返さない |
+| Git | 新規小バッチの成果を[PR #8](https://github.com/ayutaz/recommend-book/pull/8)へ集約。統合状態と最終版CIはPRで確認できる | ブランチとPRを使い、最終版CI確認後に許可済みのマージを行う。過去版のCIで代用しない |
+| 試験 | 新規経路と既存snapshotの対象34試験、既存の終端前採用拒否15試験が成功。今回のWindows/Ubuntu全件試験は[PR #8](https://github.com/ayutaz/recommend-book/pull/8)で確認する | fixture・実データ・ブラウザ確認を区別する。CIは実作品の分類精度や本人向け改善の証明ではない。文書更新だけでローカル全件試験を繰り返さない |
 
 [実生成・検証報告](autonomous-next-delivery-report-v3.md)と[最新表示の集計](../data/autonomous-next-v3/database/phase7-world-pilot-delivery-v1/report.json)を現在値の根拠にする。元の工程1〜4のうち、独立精度評価の未達は維持する。
 
