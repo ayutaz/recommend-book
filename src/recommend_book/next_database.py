@@ -402,10 +402,7 @@ def import_next_classifications(*, source_database, ordered_inputs, run_dir,
     protected_paths={source,inputs,inputs.with_name('manifest.json'),context_path,migration_path,proof_path,profile,Path(__file__).resolve()}
     if review_path:
         protected_paths.add(review_path)
-    context = helper.read_json(context_path)
-    run_config = context['execution_context']['run_config']
-    artifact_names = helper.artifact_names_for_config(run_config)
-    protected = helper._protected(protected_paths,run,context_path,artifact_names)
+    protected = helper._protected(protected_paths,run,context_path)
     before = {str(path): _sha(path) for path in protected}
     run_inventory = helper._inventory(run)
     proof = helper.read_json(proof_path)
@@ -413,14 +410,14 @@ def import_next_classifications(*, source_database, ordered_inputs, run_dir,
         execution_context_manifest=context_path, migration_manifest=migration_path, cli_profile=profile)
     if proof['exit_code'] != 0:
         raise ValueError('Successful terminal exit zero required')
+    context = helper.read_json(context_path)
     from recommend_book.classification.runner import build_run_config
     from recommend_book.classification.specs import get_spec
     spec_name = context['execution_context']['run_config'].get('execution_spec')
     if not spec_name:
         raise ValueError('Explicit next execution spec required')
     spec = get_spec(spec_name)
-    helper.build_run_config = lambda model,version,taxonomy,batch,**kwargs: build_run_config(
-        model,version,taxonomy,batch,execution_spec=spec_name)
+    helper.build_run_config = lambda model,version,taxonomy,batch: build_run_config(model,version,taxonomy,batch,execution_spec=spec_name)
     helper.validate_result = spec.validate_result
     config, taxonomy = helper.check_context(context,inputs)
     for relative, digest in context['output_sha256'].items():

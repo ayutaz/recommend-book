@@ -24,6 +24,7 @@ ARTIFACTS = (
     'src/recommend_book/classification/runner.py', 'src/recommend_book/models.py',
     'src/recommend_book/jobs.py', 'pyproject.toml', 'uv.lock',
 )
+_ORIGINAL_BUILD_RUN_CONFIG = build_run_config
 
 DDL = (
     '''CREATE TABLE classification_runs (
@@ -151,7 +152,11 @@ def artifact_names_for_config(config):
 
 
 def _protected(files, run_dir, context_manifest, artifact_names=None):
-    artifact_names = ARTIFACTS if artifact_names is None else tuple(artifact_names)
+    if artifact_names is None:
+        context = read_json(context_manifest)
+        artifact_names = artifact_names_for_config(context['execution_context']['run_config'])
+    else:
+        artifact_names = tuple(artifact_names)
     return set(files) | _inventory(run_dir) | {
         (ROOT / name).resolve(strict=True) for name in artifact_names
     } | {contained(context_manifest.parent, 'artifacts/' + name) for name in artifact_names} | {
@@ -233,10 +238,18 @@ def check_context(context, ordered_inputs):
         if file_sha(ROOT / name) != expected:
             raise ValueError('Current execution artifact differs: ' + name)
     taxonomy = read_json(ROOT / 'config/taxonomy.json')
-    expected_config = (build_run_config(config['model'], config['cli_version'], taxonomy, config['batch_size'],
-                                        execution_spec=config['execution_spec'])
-                       if config.get('execution_spec') is not None else
-                       build_run_config(config['model'], config['cli_version'], taxonomy, config['batch_size']))
+    spec_name = config.get('execution_spec')
+    if build_run_config is _ORIGINAL_BUILD_RUN_CONFIG:
+        expected_config = (_ORIGINAL_BUILD_RUN_CONFIG(
+            config['model'], config['cli_version'], taxonomy, config['batch_size'],
+            execution_spec=spec_name) if spec_name is not None else
+            _ORIGINAL_BUILD_RUN_CONFIG(config['model'], config['cli_version'], taxonomy, config['batch_size']))
+    else:
+        # Adoption callers inject a fixed four-argument builder to bind the
+        # runtime recipe. Preserve that compatibility while the default path
+        # verifies the explicit execution_spec above.
+        expected_config = build_run_config(
+            config['model'], config['cli_version'], taxonomy, config['batch_size'])
     if config != expected_config:
         raise ValueError('Current run configuration differs')
     return config, taxonomy
@@ -474,10 +487,15 @@ def import_classifications(source_db, ordered_inputs, run_dir, execution_context
             raise ValueError('Protected source artifact changed before publication')
         if _protected(files, run_dir, execution_context_manifest, artifact_names) != protected:
             raise ValueError('Protected source inventory changed before publication')
-        expected_config = (build_run_config(config['model'], config['cli_version'], taxonomy, config['batch_size'],
-                                            execution_spec=config['execution_spec'])
-                           if config.get('execution_spec') is not None else
-                           build_run_config(config['model'], config['cli_version'], taxonomy, config['batch_size']))
+        spec_name = config.get('execution_spec')
+        if build_run_config is _ORIGINAL_BUILD_RUN_CONFIG:
+            expected_config = (_ORIGINAL_BUILD_RUN_CONFIG(
+                config['model'], config['cli_version'], taxonomy, config['batch_size'],
+                execution_spec=spec_name) if spec_name is not None else
+                _ORIGINAL_BUILD_RUN_CONFIG(config['model'], config['cli_version'], taxonomy, config['batch_size']))
+        else:
+            expected_config = build_run_config(
+                config['model'], config['cli_version'], taxonomy, config['batch_size'])
         if config != expected_config:
             raise ValueError('Current configuration changed before publication')
         if (file_sha(stage / 'dataset.sqlite') != report['output_sha256']['dataset.sqlite'] or
