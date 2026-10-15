@@ -17,8 +17,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SPEC_NAME = 'native-french-genre-v1'
 EXPECTED_INPUT_SHA = '68fd322d3df1226ed981100f27602d0fa8e65e9ab3a7686c3408a6a860483e7a'
 BASE_HASHES = {
-    'src/recommend_book/classification/specs.py': '3d636e6df6238dabc8fedf863ca450e59fd3a67e00ca58b3e98051d364e3f92d',
-    'src/recommend_book/classification/runner.py': '7159af45334bda86a12d36b7733a64907b17d584b933c402d3d5cbf4c0a3e1b4',
+    'src/recommend_book/classification/specs.py': 'ebe104c481d357b9e1f7c9263904a84efb3c25c8343f0476bb48e523033afb75',
+    'src/recommend_book/classification/runner.py': 'b3784bf88b4172aac38a2ce3c9e599831bd282eb5cae1facb7bf45a843c4cacf',
 }
 PRIMARY = {
     'cligs_readme': ('data/autonomous-next-v3/reference/external-genre/raw/c0a32ba2d951f05775d1c2dbaa9992c7d6b98f2dbeffd028c80bd9679d2fbc21', 'c0a32ba2d951f05775d1c2dbaa9992c7d6b98f2dbeffd028c80bd9679d2fbc21'),

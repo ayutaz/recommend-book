@@ -12,6 +12,7 @@ import sqlite3
 import uuid
 
 from recommend_book.classification.runner import build_run_config
+from recommend_book.classification.specs import get_spec
 from recommend_book.classification.validation import ROOT, input_hash, validate_result
 from recommend_book.database import DatasetDB
 from recommend_book.jobs import canonical_json, job_key
@@ -129,10 +130,31 @@ def _inventory(root):
     return paths
 
 
-def _protected(files, run_dir, context_manifest):
+def artifact_names_for_config(config):
+    """Return the source artifacts bound by a saved execution recipe.
+
+    The ten historical artifacts are the default contract.  Future specs add
+    only the files resolved by the local spec registry; the prepared manifest
+    is deliberately not used as an authority for this set.
+    """
+    spec_name = config.get('execution_spec')
+    if spec_name is None or spec_name == 'guarded-v3-baseline':
+        return ARTIFACTS
+    spec = get_spec(spec_name, root=ROOT)
+    names = list(ARTIFACTS)
+    for path in (spec.prompt_path, spec.schema_path,
+                 ROOT / 'src/recommend_book/classification/specs.py'):
+        name = path.resolve(strict=True).relative_to(ROOT).as_posix()
+        if name not in names:
+            names.append(name)
+    return tuple(names)
+
+
+def _protected(files, run_dir, context_manifest, artifact_names=None):
+    artifact_names = ARTIFACTS if artifact_names is None else tuple(artifact_names)
     return set(files) | _inventory(run_dir) | {
-        (ROOT / name).resolve(strict=True) for name in ARTIFACTS
-    } | {contained(context_manifest.parent, 'artifacts/' + name) for name in ARTIFACTS} | {
+        (ROOT / name).resolve(strict=True) for name in artifact_names
+    } | {contained(context_manifest.parent, 'artifacts/' + name) for name in artifact_names} | {
         (ROOT / 'src/recommend_book' / name).resolve(strict=True)
         for name in ('database.py', 'normalization.py', 'resolution.py')
     } | {contained(context_manifest.parent, 'inputs/' + name) for name in ('ordered.jsonl', 'manifest.json')} | {Path(__file__).resolve()}
@@ -196,20 +218,26 @@ def check_proof(proof, *, source_db, ordered_inputs, run_dir, execution_context_
 
 def check_context(context, ordered_inputs):
     scope = context['execution_context']
-    if scope.get('artifact_count') != len(ARTIFACTS) or set(scope['artifact_sha256']) != set(ARTIFACTS):
-        raise ValueError('Exactly ten execution artifacts required')
+    config = scope['run_config']
+    artifact_names = artifact_names_for_config(config)
+    if (scope.get('artifact_count') != len(artifact_names) or
+            set(scope['artifact_sha256']) != set(artifact_names)):
+        raise ValueError('Execution artifact inventory differs from the saved recipe')
     if context['input_provenance']['input_sha256'] != file_sha(ordered_inputs):
         raise ValueError('Prepared execution input SHA mismatch')
-    expected_copies = {'inputs/ordered.jsonl', 'inputs/manifest.json'} | {'artifacts/' + name for name in ARTIFACTS}
+    expected_copies = {'inputs/ordered.jsonl', 'inputs/manifest.json'} | {'artifacts/' + name for name in artifact_names}
     if set(context.get('output_sha256', {})) != expected_copies:
         raise ValueError('Prepared artifact copy inventory differs')
-    for name in ARTIFACTS:
+    for name in artifact_names:
         expected = scope['artifact_sha256'][name]
         if file_sha(ROOT / name) != expected:
             raise ValueError('Current execution artifact differs: ' + name)
-    config = scope['run_config']
     taxonomy = read_json(ROOT / 'config/taxonomy.json')
-    if config != build_run_config(config['model'], config['cli_version'], taxonomy, config['batch_size']):
+    expected_config = (build_run_config(config['model'], config['cli_version'], taxonomy, config['batch_size'],
+                                        execution_spec=config['execution_spec'])
+                       if config.get('execution_spec') is not None else
+                       build_run_config(config['model'], config['cli_version'], taxonomy, config['batch_size']))
+    if config != expected_config:
         raise ValueError('Current run configuration differs')
     return config, taxonomy
 
@@ -371,16 +399,17 @@ def import_classifications(source_db, ordered_inputs, run_dir, execution_context
         raise ValueError('Output must be new and outside all protected input directories')
     files = {source_db, ordered_inputs, ordered_inputs.with_name('manifest.json'), execution_context_manifest,
              migration_manifest, terminal_proof, cli_profile}
-    protected = _protected(files, run_dir, execution_context_manifest)
+    context = read_json(execution_context_manifest)
+    artifact_names = artifact_names_for_config(context['execution_context']['run_config'])
+    protected = _protected(files, run_dir, execution_context_manifest, artifact_names)
     initial = {str(p): file_sha(p) for p in sorted(protected)}
     inventory = _inventory(run_dir)
     proof = read_json(terminal_proof)
     check_proof(proof, source_db=source_db, ordered_inputs=ordered_inputs, run_dir=run_dir,
                 execution_context_manifest=execution_context_manifest, migration_manifest=migration_manifest,
                 cli_profile=cli_profile)
-    context = read_json(execution_context_manifest)
     config, taxonomy = check_context(context, ordered_inputs)
-    for name in ARTIFACTS:
+    for name in artifact_names:
         if file_sha(contained(execution_context_manifest.parent, 'artifacts/' + name)) != context['execution_context']['artifact_sha256'][name]:
             raise ValueError('Archived execution artifact differs: ' + name)
     for name, expected_sha in context['output_sha256'].items():
@@ -443,9 +472,13 @@ def import_classifications(source_db, ordered_inputs, run_dir, execution_context
             raise ValueError('Protected source WAL changed before publication')
         if _inventory(run_dir) != inventory or any(not Path(p).is_file() or file_sha(p) != checksum for p, checksum in initial.items()):
             raise ValueError('Protected source artifact changed before publication')
-        if _protected(files, run_dir, execution_context_manifest) != protected:
+        if _protected(files, run_dir, execution_context_manifest, artifact_names) != protected:
             raise ValueError('Protected source inventory changed before publication')
-        if config != build_run_config(config['model'], config['cli_version'], taxonomy, config['batch_size']):
+        expected_config = (build_run_config(config['model'], config['cli_version'], taxonomy, config['batch_size'],
+                                            execution_spec=config['execution_spec'])
+                           if config.get('execution_spec') is not None else
+                           build_run_config(config['model'], config['cli_version'], taxonomy, config['batch_size']))
+        if config != expected_config:
             raise ValueError('Current configuration changed before publication')
         if (file_sha(stage / 'dataset.sqlite') != report['output_sha256']['dataset.sqlite'] or
             (stage / 'manifest.json').read_bytes() != report_bytes):

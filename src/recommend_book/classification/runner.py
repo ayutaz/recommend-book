@@ -251,6 +251,8 @@ def build_run_config(model: str, cli_version: str, taxonomy: dict, batch_size: i
             "src/recommend_book/classification/prompt_v3.py", "src/recommend_book/classification/native_v3.py",
             "src/recommend_book/classification/native_attempt.py", "src/recommend_book/cli.py",
             "scripts/run_guarded_classification.py", "pyproject.toml", "uv.lock", "config/sources.json", "config/taxonomy.json")
+        if execution_spec == "provenance-v4":
+            dependencies = (*dependencies, "schemas/classification-provenance-v4.schema.json")
         config["dependency_sha256"] = {p:hashlib.sha256((ROOT / p).read_bytes()).hexdigest() for p in dependencies}
         if execution_spec.startswith('native-'):
             codebook = 'data/autonomous-next-v3/reference/research-codebook/'

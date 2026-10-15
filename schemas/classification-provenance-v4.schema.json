@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Future provenance-v4 transport schema. Taxonomy IDs and semantic grounding are validated by ExecutionSpec after this transport validation.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "work_id": {"type": "string"},
+    "expression_id": {"type": ["string", "null"]},
+    "target_language": {"type": ["string", "null"]},
+    "taxonomy_version": {"type": "string"},
+    "prompt_version": {"const": "4.0-provenance"},
+    "model": {"type": "string"},
+    "cli_version": {"type": "string"},
+    "input_hash": {"type": "string"},
+    "labels": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "label_id": {"type": "string"},
+          "axis": {"type": "string", "enum": ["genre", "theme", "structure", "protagonist", "style", "atmosphere"]},
+          "decision": {"type": "string", "enum": ["present", "absent", "unknown"]},
+          "scope": {"type": "string", "enum": ["work", "original", "expression", "translation"]},
+          "expression_id": {"type": ["string", "null"]},
+          "relevance": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+          "raw_confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+          "calibrated_confidence": {"type": "null"},
+          "calibration_status": {"const": "uncalibrated"},
+          "calibration_version": {"type": "null"},
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "evidence_id": {"type": "string"},
+                "locator": {"type": ["string", "null"]},
+                "quote": {"type": ["string", "null"]},
+                "summary": {"type": ["string", "null"]},
+                "directness": {"type": "string", "enum": ["direct", "indirect"]}
+              },
+              "required": ["evidence_id", "locator", "quote", "summary", "directness"]
+            }
+          },
+          "missing_reason": {"type": ["string", "null"]},
+          "spoiler": {"type": "string", "enum": ["none", "premise", "plot", "ending"]}
+        },
+        "required": ["label_id", "axis", "decision", "scope", "expression_id", "relevance", "raw_confidence", "calibrated_confidence", "calibration_status", "calibration_version", "evidence", "missing_reason", "spoiler"]
+      }
+    },
+    "missing_axes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "axis": {"type": "string", "enum": ["genre", "theme", "structure", "protagonist", "style", "atmosphere"]},
+          "decision": {"const": "unknown"},
+          "reason": {"type": "string"}
+        },
+        "required": ["axis", "decision", "reason"]
+      }
+    },
+    "conflicts": {"type": "array", "items": {"type": "string"}},
+    "needs_human_review": {"type": "boolean"}
+  },
+  "required": ["work_id", "expression_id", "target_language", "taxonomy_version", "prompt_version", "model", "cli_version", "input_hash", "labels", "missing_axes", "conflicts", "needs_human_review"]
+}
