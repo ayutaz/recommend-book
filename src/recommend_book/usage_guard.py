@@ -266,6 +266,13 @@ class UsageGuard:
             self._raw_identity(record, raw)
             records[ref] = record
             proofs.extend([binding['record_sha256'], record.raw_sha256])
+        for record in records.values():
+            if record.source == 'standardebooks':
+                bridge = record.extra['authority_bridge']
+                if not any(r.source == 'wikidata' and r.provider_id == 'wikidata' and r.record_kind == 'work'
+                           and r.source_id == bridge['wikidata_work_id'] and r.raw_path == bridge['target_raw_path']
+                           and r.raw_sha256 == bridge['target_raw_sha256'] for r in records.values()):
+                    raise ValueError('Standard Ebooks work authority not bound in complete input')
         for field in METADATA_FIELDS:
             value, binding = getattr(work, field), entry['metadata'][field]
             if model_hash(value) != binding['value_sha256']:
@@ -488,6 +495,12 @@ class UsageGuard:
         artifacts = ledger.get('official_conditions', {}).get(policy.policy_id, [])
         if not artifacts:
             raise ValueError('current official conditions artifact absent: ' + policy.policy_id)
+        if policy.policy_id == 'standardebooks-editorial-cc0':
+            from recommend_book.ingestion.standardebooks import ABOUT_URL, MANUAL_URL
+            if (policy.source, policy.provider_id, policy.license) != ('standardebooks', 'standardebooks', 'CC0-1.0') or set(policy.fields) != {'bibliographic', 'synopsis'}:
+                raise ValueError('Standard Ebooks editorial policy scope differs')
+            if {a['source_url'] for a in artifacts} != {ABOUT_URL, MANUAL_URL}:
+                raise ValueError('both Standard Ebooks primary scope artifacts required')
         for artifact in artifacts:
             if artifact['source_url'] not in policy.evidence_urls or not artifact.get('verified_at'):
                 raise ValueError('official source/date not bound to policy')
@@ -495,7 +508,7 @@ class UsageGuard:
             now = datetime.now(timezone.utc)
             if verified.tzinfo is None or verified > now or (now - verified).days > 7:
                 raise ValueError('official condition check is not current timezone-qualified date')
-            if artifact['raw_sha256'] in proofs:
+            if artifact['raw_sha256'] in proofs and policy.policy_id != 'standardebooks-editorial-cc0':
                 continue  # verified earlier in this same admission call
             path = Path(artifact['raw_path'])
             path = path if path.is_absolute() else self.root / path
@@ -506,6 +519,10 @@ class UsageGuard:
             clauses = {'wikidata-cc0': ('cc0',), 'openlibrary-metadata': ('public domain',),
                        'wikipedia-screened-prose': ('attribution', 'sharealike'),
                        'wikipedia-bibliography': ('attribution', 'sharealike')}.get(policy.policy_id)
+            if policy.policy_id == 'standardebooks-editorial-cc0':
+                clauses = (('content produced by or for standard ebooks', 'cc0 1.0 universal public domain dedication', 'https://creativecommons.org/publicdomain/zero/1.0/')
+                           if artifact['source_url'] == ABOUT_URL else
+                           ('dc:description', 'under no circumstances can a producer copy and paste from wikipedia', 'cc0 public domain dedication'))
             if clauses is None or not all(clause in text for clause in clauses):
                 raise ValueError('required primary license clauses not reproduced')
             proofs.append(artifact['raw_sha256'])
@@ -567,6 +584,14 @@ class UsageGuard:
                 for q in qids('P179'):
                     self._linked_label(record, q, proofs)
                 values = {'; '.join(labels)} if labels else {None}
+        elif record.source == 'standardebooks':
+            from recommend_book.ingestion.standardebooks import verify_record
+            reproduced = verify_record(record, raw)
+            if field not in ('title', 'authors'):
+                raise ValueError('Standard Ebooks metadata scope supports title/author only')
+            values = {reproduced.titles[0].value} if field == 'title' else {reproduced.contributors[0].name}
+            locator = '/opf:package/opf:metadata/' + ('dc:title' if field == 'title' else 'dc:creator')
+            proofs.append(record.extra['authority_bridge']['target_raw_sha256'])
         elif record.source == 'openlibrary':
             doc = json.loads(raw.rstrip(b'\r\n').split(b'\t', 4)[-1])
             locator = field
@@ -587,7 +612,13 @@ class UsageGuard:
         return {'source_id': record.source_id, 'raw_sha256': record.raw_sha256, 'locator': locator, 'value_sha256': model_hash(item)}
 
     def _raw_evidence(self, record, evidence, proofs):
-        if record.source == 'wikidata':
+        if record.source == 'standardebooks':
+            from recommend_book.ingestion.standardebooks import verify_record
+            reproduced = verify_record(record, Path(record.raw_path).read_bytes())
+            if evidence != reproduced.evidence[0]:
+                raise ValueError('Standard Ebooks evidence not reproduced by editorial description')
+            proofs.append(record.extra['authority_bridge']['target_raw_sha256'])
+        elif record.source == 'wikidata':
             entity = json.loads(Path(record.raw_path).read_bytes())['entities'][record.source_id]
             def refs(prop):
                 return [v['id'] for v in claim_values(entity, prop) if isinstance(v, dict) and 'id' in v]
@@ -631,7 +662,10 @@ class UsageGuard:
             raise ValueError('source evidence raw recipe unsupported')
 
     def _raw_identity(self, record, payload):
-        if record.source == 'wikidata':
+        if record.source == 'standardebooks':
+            from recommend_book.ingestion.standardebooks import verify_record
+            verify_record(record, payload)
+        elif record.source == 'wikidata':
             entity = json.loads(payload).get('entities', {}).get(record.source_id)
             if not entity or entity.get('id') != record.source_id:
                 raise ValueError('Wikidata raw identity differs')
