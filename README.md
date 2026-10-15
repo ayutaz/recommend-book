@@ -44,11 +44,13 @@ data/autonomous-next-v3/database/phase3-personal-poc-with-declared-genres-v2/ind
 
 ## 次に進めること
 
-1. 準備済みの分類20作品・名寄せ3組について、根拠と作品・翻訳・版の対応を確認し、修正できるものだけ診断・反映する。
-2. 新しい根拠で読書履歴と内容特徴を接続できた場合だけ、固定条件で推薦方式を比較する。
-3. 品質の未評価範囲と、少量処理での時間・利用量を確認し、1万作品への拡張条件を決める。
+1. 用途確認できる無料書誌から、小説・ライトノベルの不足候補と国・年代などの欠損を補う。現在の種別上の候補は最大1,353件で、1万件には少なくとも8,647件不足している。
+2. 個別作品・原連載を明示する新しい根拠が得られた対象だけ、分類・名寄せ・履歴接続を更新する。内容接続が増えた場合だけ推薦を再比較する。
+3. 新しい処理版を固定し、100件以下で収集から採用・表示までの時間と利用量を測ってから、大量処理の可否を判断する。
 
-直近は合成データで旧分類の失効・中断再開・撤回後のHTML更新を検証し、既存335評点の評価を整理しました。[更新検証](docs/content-update-verification-v1.md)、[推薦の現在評価](docs/personal-recommendation-current-assessment-v1.md)、[診断準備](docs/codex-diagnostic-preparation-v1.md)に結果と限界を記録しています。実作品の追加診断・修正はこれからです。
+前回は合成データで旧分類の失効・中断再開・撤回後のHTML更新を検証し、既存335評点の評価を整理しました。[更新検証](docs/content-update-verification-v1.md)、[推薦の現在評価](docs/personal-recommendation-current-assessment-v1.md)、[診断準備](docs/codex-diagnostic-preparation-v1.md)に結果と限界を記録しています。
+
+続く[20作品・名寄せ3組の照合](docs/bounded-scope-repair-v1.md)では、採用できる修正は0で保留を維持しました。[履歴側1作品の追加確認](docs/personal-content-pilot-v1.md)もシリーズと原連載の対応が未解決で、新規接続は0です。[拡張条件の実測](docs/scaling-readiness-v1.md)により、現時点で1万作品の一括処理は開始しない判断としました。
 
 その後、確認できた品質の範囲と処理量を見ながら1万→3万→10万作品へ拡張します。
 
