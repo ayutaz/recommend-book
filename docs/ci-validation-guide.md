@@ -4,6 +4,17 @@
 
 ## 最新の実装版の確認（2026-10-16）
 
+[PR #13](https://github.com/ayutaz/recommend-book/pull/13)の最終実装head `fe45415`に対する[CI run 38854021948](https://github.com/ayutaz/recommend-book/actions/runs/38854021948)は両OSで成功した。現在件数での更新検査と、唯一の著者が挿絵担当を兼ねる形式を含む。
+
+| OS | 結果 | pytestの時間 |
+|---|---|---:|
+| Ubuntu / Python 3.14 | 1,765 passed・7 skipped | 43.54秒 |
+| Windows / Python 3.14 | 1,766 passed・6 skipped | 291.32秒 |
+
+両OSのskipは旧取得済みscheduler依存2件、非配布のローカルOPF4件。UbuntuはWindows専用lock1件を追加する。新しい実OPF10件はローカルで確認したが、完全入力の名寄せ・用途条件が成立せず、新しいモデル・表示生成は実行していない。fixture CI成功を分類精度・推薦改善に置き換えない。push/PRの重複を避けるためcommitにskip指定を付け、最終headへ明示的なworkflow dispatchを1回実行した。先行head `547745e`のrun `38853387465`も成功したが、著者役割の追加修正後は上の最終版を証拠とする。後続はMarkdownのみでコード差分0を確認する。
+
+## 前回の実装版（phase10）
+
 [PR #12](https://github.com/ayutaz/recommend-book/pull/12)の実装head `d12228f`に対する[CI run 38829155501](https://github.com/ayutaz/recommend-book/actions/runs/38829155501)は両OSで成功した。編集紹介文の更新・追加表示・用途検査・撤回経路と、題名・著者役割の取込み形式を含む。
 
 | OS | 結果 | pytestの時間 |
