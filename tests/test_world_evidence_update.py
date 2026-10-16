@@ -21,6 +21,42 @@ def supplement():
             'feature_provenance': {'theme.family': [{'scope': 'work', 'evidence_id': 'se:1'}]}}
 
 
+def public_delivery(rows):
+    return {'ranking': rows, 'audit': {
+        'input_candidates': len(rows),
+        'eligible_n': len(rows),
+        'catalogue_candidate_n': len(rows),
+        'catalogue_feature_bearing_n': sum(bool(row['content_labels']) for row in rows),
+        'supported_n': sum(row['score'] is not None for row in rows),
+    }}
+
+
+def test_validate_baseline_accepts_current_sized_public_delivery():
+    rows = [baseline(f'work-{index}') for index in range(2026)]
+    rows[10]['content_labels'] = []
+    rows[20]['score'] = 0.75
+    result = update.validate_baseline(public_delivery(rows))
+    assert result == {
+        'input_candidates': 2026,
+        'eligible_n': 2026,
+        'catalogue_candidate_n': 2026,
+        'catalogue_feature_bearing_n': 2025,
+        'supported_n': 1,
+    }
+
+
+def test_validate_baseline_rejects_public_audit_mismatch_and_duplicate_identity():
+    rows = [baseline('first'), baseline('second')]
+    delivery = public_delivery(rows)
+    delivery['audit']['catalogue_feature_bearing_n'] += 1
+    with pytest.raises(ValueError, match='catalogue_feature_bearing_n'):
+        update.validate_baseline(delivery)
+
+    duplicate_rows = [baseline('same'), baseline('same')]
+    with pytest.raises(ValueError, match='Duplicate baseline candidate identity'):
+        update.validate_baseline(public_delivery(duplicate_rows))
+
+
 def test_combination_uses_binary_union_and_keeps_both_admissions():
     old, added = baseline(), supplement()
     combined = update.combine_candidate(old, added, old_id='existing', supplement_id='supplement')
