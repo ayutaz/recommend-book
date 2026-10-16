@@ -43,6 +43,14 @@ def test_explicit_main_title_and_known_secondary_author_roles():
     assert result['title'] == 'Book' and result['author'] == 'Author'
 
 
+def test_unique_author_can_also_be_explicit_illustrator():
+    text = OPF.replace('</metadata>', '<meta refines="#author" property="role">ill</meta></metadata>')
+    assert parse_opf(text.encode())['author'] == 'Author'
+    without_author = text.replace('<meta refines="#author" property="role">aut</meta>', '')
+    with pytest.raises(ValueError, match='one explicit Standard Ebooks author'):
+        parse_opf(without_author.encode())
+
+
 @pytest.mark.parametrize('titles', [
     TYPED_TITLES.replace('>subtitle</meta>', '>main</meta>'),
     TYPED_TITLES.replace('<meta property="title-type" refines="#subtitle">subtitle</meta>', ''),
