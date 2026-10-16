@@ -59,7 +59,7 @@ def parse_opf(payload):
         _, title = one('dc:title')
     author_node, author = one('dc:creator')
     author_roles = [n.text for n in metadata.findall('opf:meta', NS) if n.get('property') == 'role' and n.get('refines') == '#' + str(author_node.get('id'))]
-    if author_roles.count('aut') != 1 or len(author_roles) != len(set(author_roles)) or not set(author_roles) <= {'aut', 'wpr', 'ann', 'dto'} or one('dc:publisher')[1] != 'Standard Ebooks':
+    if author_roles.count('aut') != 1 or len(author_roles) != len(set(author_roles)) or not set(author_roles) <= {'aut', 'wpr', 'ann', 'dto', 'ill'} or one('dc:publisher')[1] != 'Standard Ebooks':
         raise ValueError('one explicit Standard Ebooks author/publisher required')
     if not one('dc:language')[1].startswith('en-') and one('dc:language')[1] != 'en':
         raise ValueError('only English editorial descriptions supported')

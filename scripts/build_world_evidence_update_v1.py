@@ -32,6 +32,37 @@ def save(path, value):
         stream.write(encoded(value))
 
 
+def validate_baseline(delivery):
+    """Validate a public delivery snapshot before applying an update.
+
+    The baseline is deliberately validated from its own public audit rather
+    than from a historical row-count constant.  The audit field names here
+    are the fields emitted by the phase10 public delivery snapshot.
+    """
+    rows = delivery.get('ranking') if isinstance(delivery, dict) else None
+    if not isinstance(rows, list) or not rows:
+        raise ValueError('Baseline delivery must contain non-empty ranking')
+    identities = [row.get('work_id') if isinstance(row, dict) else None for row in rows]
+    if any(not identity for identity in identities):
+        raise ValueError('Baseline candidate requires a non-empty work_id')
+    if len(set(identities)) != len(identities):
+        raise ValueError('Duplicate baseline candidate identity')
+    audit = delivery.get('audit')
+    if not isinstance(audit, dict):
+        raise ValueError('Baseline public audit required')
+    expected = {
+        'input_candidates': len(rows),
+        'eligible_n': len(rows),
+        'catalogue_candidate_n': len(rows),
+        'catalogue_feature_bearing_n': sum(bool(row.get('content_labels')) for row in rows),
+        'supported_n': sum(row.get('score') is not None for row in rows),
+    }
+    for key, value in expected.items():
+        if audit.get(key) != value:
+            raise ValueError(f'Baseline audit {key} differs from ranking')
+    return expected
+
+
 def public_url(value):
     parsed = urlparse(value)
     if (parsed.scheme != 'https' or parsed.username or parsed.password
@@ -204,9 +235,8 @@ def build_batch(args):
     for name in ('delivery.json', 'index.html', 'public-source-credits.json'):
         pin(prior/name, manifest['output_sha256'][name])
     baseline = json.loads((prior/'delivery.json').read_bytes())
+    baseline_audit = validate_baseline(baseline)
     old_by_id = {row['work_id']: row for row in baseline['ranking']}
-    if len(old_by_id) != 2025 or len(baseline['ranking']) != 2025:
-        raise ValueError('Batch requires exactly 2025 unique existing candidates')
     cases_doc = json.loads(pin(args.mapping).read_bytes())
     mappings = cases_doc['cases']
     if not 1 <= len(mappings) <= 20:
@@ -377,7 +407,7 @@ def build_batch(args):
     report = {'version': 'world-evidence-update-batch-v1', 'display_n': len(delivery['ranking']),
         'feature_bearing_n': sum(bool(row['content_labels']) for row in delivery['ranking']),
         'supported_n': sum(row['score'] is not None for row in delivery['ranking']),
-        'updated_existing_n': len(updates), 'unchanged_other_rows_n': 2025-len(updates),
+        'updated_existing_n': len(updates), 'unchanged_other_rows_n': baseline_audit['input_candidates']-len(updates),
         'new_public_candidates_n': len(new_rows),
         'withheld_uncertain_or_held_n': sum(proof['review_status'] != 'accepted' for proof in proofs),
         'new_labels_added_n': sum(len(set(proof['updated_row']['content_labels'])-set((proof['old_row'] or {}).get('content_labels', []))) for proof in proofs),
