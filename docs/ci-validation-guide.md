@@ -4,6 +4,17 @@
 
 ## 最新の実装版の確認（2026-10-16）
 
+[PR #12](https://github.com/ayutaz/recommend-book/pull/12)の実装head `d12228f`に対する[CI run 38829155501](https://github.com/ayutaz/recommend-book/actions/runs/38829155501)は両OSで成功した。編集紹介文の更新・追加表示・用途検査・撤回経路と、題名・著者役割の取込み形式を含む。
+
+| OS | 結果 | pytestの時間 |
+|---|---|---:|
+| Ubuntu / Python 3.14 | 1,762 passed・7 skipped | 44.66秒 |
+| Windows / Python 3.14 | 1,763 passed・6 skipped | 245.02秒 |
+
+両OSのskipは旧取得済みscheduler依存2件、配布しないローカルOPF4件。UbuntuはWindows専用lock1件を追加する。実OPF・分類・審査・用途別読出し・画面と撤回はローカル実処理で確認し、fixture CIとは区別した。独立した分類精度・校正・推薦改善は未検証。旧head `f808641` のPR run `38828816359` と重複push run `38828808661`・`38829151538` は取消済みで成功扱いしない。以後の文書のみの変更は、テスト済みheadからコード差分0を確認して統合する。
+
+## 前回の実装版（phase9）
+
 [PR #11](https://github.com/ayutaz/recommend-book/pull/11)の実装head `8ce559c`に対する[CI run 38777725136](https://github.com/ayutaz/recommend-book/actions/runs/38777725136)は両OSで成功した。新しいStandard Ebooks取込み・用途検査のfixture試験を含む。
 
 | OS | 結果 | pytestの時間 |

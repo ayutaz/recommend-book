@@ -7,7 +7,7 @@ import pytest
 
 from recommend_book.database import DatasetDB
 from recommend_book.ingestion.standardebooks import (
-    ABOUT_URL, MANUAL_URL, POLICY_ID, editorial_work_record, ingest_editorial_description,
+    ABOUT_URL, MANUAL_URL, POLICY_ID, editorial_work_record, ingest_editorial_description, parse_opf,
 )
 from recommend_book.models import Contributor, Identifier, SourceRecord, Title, WorkInput
 from recommend_book.rights import RightsRegistry
@@ -27,6 +27,56 @@ OPF = '''<package xmlns="http://www.idpf.org/2007/opf" unique-identifier="uid">
 <link rel="schema:sameAs" href="https://en.wikipedia.org/wiki/Book"/>
 <link refines="#author" rel="schema:sameAs" href="https://en.wikipedia.org/wiki/Author"/>
 </metadata><manifest><item href="text/body.xhtml"/></manifest></package>'''
+
+TYPED_TITLES = '''<dc:title id="title">Book</dc:title>
+<meta property="title-type" refines="#title">main</meta>
+<dc:title id="subtitle">A subtitle</dc:title>
+<meta property="title-type" refines="#subtitle">subtitle</meta>
+<dc:title id="fulltitle">Book: A subtitle</dc:title>
+<meta property="title-type" refines="#fulltitle">expanded</meta>'''
+
+
+def test_explicit_main_title_and_known_secondary_author_roles():
+    text = OPF.replace('<dc:title id="title">Book</dc:title>', TYPED_TITLES)
+    text = text.replace('</metadata>', '<meta refines="#author" property="role">wpr</meta><meta refines="#author" property="role">ann</meta><meta refines="#author" property="role">dto</meta></metadata>')
+    result = parse_opf(text.encode())
+    assert result['title'] == 'Book' and result['author'] == 'Author'
+
+
+@pytest.mark.parametrize('titles', [
+    TYPED_TITLES.replace('>subtitle</meta>', '>main</meta>'),
+    TYPED_TITLES.replace('<meta property="title-type" refines="#subtitle">subtitle</meta>', ''),
+    TYPED_TITLES.replace('id="subtitle"', 'id="title"'),
+    TYPED_TITLES.replace('>expanded</meta>', '>alternative</meta>'),
+    TYPED_TITLES + '<meta property="title-type" refines="#title">expanded</meta>',
+])
+def test_multiple_titles_require_one_main_and_unique_explicit_types(titles):
+    with pytest.raises(ValueError):
+        parse_opf(OPF.replace('<dc:title id="title">Book</dc:title>', titles).encode())
+
+
+@pytest.mark.parametrize('roles', ['wpr', 'aut aut', 'aut trl'])
+def test_secondary_author_roles_cannot_replace_or_conflict_with_author(roles):
+    text = OPF.replace('<meta refines="#author" property="role">aut</meta>', ''.join(
+        f'<meta refines="#author" property="role">{role}</meta>' for role in roles.split()))
+    with pytest.raises(ValueError):
+        parse_opf(text.encode())
+
+
+@pytest.mark.parametrize('qid,expected_title,held', [
+    ('Q82464', 'The Picture of Dorian Gray', False),
+    ('Q182961', 'Jane Eyre', True),
+    ('Q274744', 'Sense and Sensibility', True),
+])
+def test_saved_phase10_shapes_keep_quotation_hold(qid, expected_title, held):
+    fixture = Path(__file__).resolve().parents[1] / f'data/autonomous-next-v3/evaluation/phase10-standardebooks-candidates-v1/raw/{qid}-content.opf'
+    if not fixture.exists():
+        pytest.skip('local acquisition is not a distributed test fixture')
+    if held:
+        with pytest.raises(ValueError, match='third-party quotation'):
+            parse_opf(fixture.read_bytes())
+    else:
+        assert parse_opf(fixture.read_bytes())['title'] == expected_title
 
 
 def digest(path):
