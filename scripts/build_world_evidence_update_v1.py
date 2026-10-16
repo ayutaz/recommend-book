@@ -126,6 +126,55 @@ def destination_authority_proof(database, mapping, bridge):
         'current_head': head}
 
 
+def new_candidate_proof(database, mapping, entity, current_rows):
+    """Reject a second public identity or ambiguous title for a newly shown work."""
+    identity, qid = mapping['delivery_work_id'], mapping['wikidata_qid']
+    current_ids = {row['work_id'] for row in current_rows}
+    with sqlite3.connect(Path(database).resolve().as_uri()+'?mode=ro&immutable=1', uri=True) as connection:
+        connection.row_factory = sqlite3.Row
+        eligibility = connection.execute('SELECT work_id,eligible,reason FROM autonomous_work_eligibility WHERE work_id=?', (identity,)).fetchone()
+        inventory = connection.execute('SELECT work_id,eligible FROM next_book_inventory WHERE work_id=?', (identity,)).fetchone()
+        qid_rows = [dict(row) for row in connection.execute(
+            'SELECT entity_id,scope,source,value FROM external_ids WHERE source=? AND value=?', ('wikidata',qid))]
+    if not eligibility or eligibility['eligible'] != 1 or not inventory or inventory['eligible'] != 1:
+        raise ValueError('New candidate lacks existing work/novel eligibility')
+    novel_claims = [statement for prop in ('P31', 'P7937') for statement in entity.get('claims', {}).get(prop, [])
+        if statement.get('rank') != 'deprecated' and statement.get('mainsnak', {}).get('datavalue', {}).get('value', {}).get('id') == 'Q8261']
+    if not novel_claims:
+        raise ValueError('New candidate raw authority lacks direct novel type')
+    known_ids = {row['entity_id'] for row in qid_rows if row['scope'] == 'work'} | {'declared-subclass:wd:'+qid}
+    if identity in current_ids or known_ids & current_ids:
+        raise ValueError('New candidate authority already has a public delivery identity')
+    titles = {row['value'] for row in entity.get('labels', {}).values()}
+    titles.update(row['value'] for rows in entity.get('aliases', {}).values() for row in rows)
+    titles.update(statement.get('mainsnak', {}).get('datavalue', {}).get('value', {}).get('text', '')
+        for statement in entity.get('claims', {}).get('P1476', []) if statement.get('rank') != 'deprecated')
+    titles.discard('')
+    for row in current_rows:
+        displayed = {row['title']} | {alias['title'] if isinstance(alias, dict) else alias for alias in row.get('display_title_aliases', [])}
+        if titles & displayed:
+            raise ValueError('Hold new candidate: exact raw authority title/alias already displayed')
+    return {'work_eligibility': dict(eligibility), 'novel_inventory': dict(inventory),
+        'qid_identity_rows': qid_rows, 'novel_type_claims': novel_claims,
+        'raw_title_aliases_checked': sorted(titles), 'existing_display_n': len(current_rows),
+        'authority_duplicate_found': False, 'exact_title_alias_duplicate_found': False}
+
+
+def append_candidates(delivery, new_rows):
+    identities = [row['work_id'] for row in delivery['ranking'] + new_rows]
+    if len(identities) != len(set(identities)):
+        raise ValueError('New candidate duplicates a public identity')
+    result = deepcopy(delivery)
+    result['ranking'].extend(deepcopy(new_rows))
+    result['ranking'].sort(key=lambda row: (row['score'] is None, -(row['score'] or 0), row['work_id']))
+    result['audit'].update(input_candidates=len(identities), eligible_n=len(identities),
+        catalogue_candidate_n=len(identities), new_public_candidates_n=len(new_rows),
+        unknown_read_status_n=sum(row['read_status']=='unknown' for row in result['ranking']),
+        supported_n=sum(row['score'] is not None for row in result['ranking']),
+        catalogue_feature_bearing_n=sum(bool(row['content_labels']) for row in result['ranking']))
+    return result
+
+
 def credit_section(credit):
     return ('<section aria-label="Standard Ebooks追加根拠"><h2>追加分類の出典</h2>'
         '<p>' + escape(credit['title']) + ' · Standard Ebooks contributors · '
@@ -223,10 +272,11 @@ def build_batch(args):
     for descriptor in contract['artifacts'].values():
         pin(descriptor['path'], descriptor['sha256'])
     credits = json.loads((prior/'public-source-credits.json').read_bytes())
-    updates, proofs, new_credit_html = [], [], []
+    updates, new_rows, proofs, new_credit_html = [], [], [], []
     for mapping in mappings:
         input_id, delivery_id, qid = (mapping[key] for key in ('input_work_id', 'delivery_work_id', 'wikidata_qid'))
-        if input_id not in admitted or delivery_id not in old_by_id or not qid.startswith('Q'):
+        is_new = delivery_id not in old_by_id
+        if input_id not in admitted or (is_new and not args.allow_new_candidates) or not qid.startswith('Q'):
             raise ValueError('Authority mapping lacks an admitted source or existing destination')
         work = works[input_id]
         if not guard.check_input(work, 'display').allowed:
@@ -244,21 +294,33 @@ def build_batch(args):
         if qid not in raw['entities']:
             raise ValueError('Missing raw authority entity')
         review_status = review_cases.get(input_id, {}).get('status', 'accepted')
-        candidate = combine_candidate(old_by_id[delivery_id], admitted[input_id],
-            old_id=delivery_id, supplement_id=input_id, review_status=review_status)
+        new_proof = None
+        if is_new:
+            new_proof = new_candidate_proof(BASE/'database/world-subject-sealed-v1/dataset.sqlite',
+                mapping, raw['entities'][qid], baseline['ranking'] + new_rows)
+            source = admitted[input_id]
+            candidate = {key: deepcopy(source[key]) for key in ('title', 'authors')}
+            candidate.update(work_id=delivery_id, read_status='unknown',
+                display_title_aliases=[alias['title'] if isinstance(alias, dict) else alias for alias in source.get('display_title_aliases', [])],
+                features={label:1.0 for label in source['features']} if review_status=='accepted' else {},
+                feature_provenance=deepcopy(source['feature_provenance']) if review_status=='accepted' else {})
+        else:
+            candidate = combine_candidate(old_by_id[delivery_id], admitted[input_id],
+                old_id=delivery_id, supplement_id=input_id, review_status=review_status)
         ranked = rank_personal_features([candidate], private['private_rows'], limit=1)['ranking'][0]
-        updates.append(ranked)
+        (new_rows if is_new else updates).append(ranked)
         proofs.append({'mapping': mapping, 'review_status': review_status,
             'destination_authority_proof': destination_proof,
-            'combined_candidate': candidate, 'old_row': old_by_id[delivery_id], 'updated_row': ranked})
+            'new_candidate_proof': new_proof,
+            'combined_candidate': candidate, 'old_row': old_by_id.get(delivery_id), 'updated_row': ranked})
         if review_status == 'accepted':
             credit = {'evidence_id': ev.evidence_id, 'credit': 'Standard Ebooks contributors',
                 'source_url': public_url(ev.attribution['ebook_url']), 'license': 'CC0-1.0',
-                'license_url': public_url(ev.license_url), 'title': old_by_id[delivery_id]['title'],
+                'license_url': public_url(ev.license_url), 'title': candidate['title'],
                 'changes': 'Editorial synopsis classified into binary content labels; source prose omitted.'}
             credits.setdefault(delivery_id, []).append(credit)
             new_credit_html.append(credit_section(credit))
-    delivery = replace_candidates(baseline, updates)
+    delivery = append_candidates(replace_candidates(baseline, updates), new_rows)
     labels = json.loads((ROOT/'config/recommendation-label-display-ja.json').read_bytes())['labels']
     prior_html = (prior/'index.html').read_text(encoding='utf-8')
     # All prior attribution sections are public and remain part of the new view.
@@ -291,6 +353,8 @@ def build_batch(args):
     save(withdrawal/'purpose-denial.local.json', denials)
     for proof in proofs:
         old = proof['old_row']
+        if old is None:
+            continue
         candidate = {key: deepcopy(old[key]) for key in
             ('work_id', 'title', 'authors', 'display_title_aliases', 'read_status')}
         candidate.update(features={label: 1.0 for label in old['content_labels']}, feature_provenance={})
@@ -298,7 +362,9 @@ def build_batch(args):
             raise ValueError('Withdrawn batch candidate does not restore its prior score')
     for name in ('delivery.json', 'index.html', 'public-source-credits.json'):
         (withdrawal/name).write_bytes((prior/name).read_bytes())
-    reapplied = replace_candidates(baseline, [rank_personal_features([proof['combined_candidate']], private['private_rows'], limit=1)['ranking'][0] for proof in proofs])
+    repeated = [(proof, rank_personal_features([proof['combined_candidate']], private['private_rows'], limit=1)['ranking'][0]) for proof in proofs]
+    reapplied = append_candidates(replace_candidates(baseline, [row for proof,row in repeated if proof['old_row'] is not None]),
+        [row for proof,row in repeated if proof['old_row'] is None])
     if encoded(reapplied) != (output/'delivery.json').read_bytes():
         raise ValueError('Batch reapplication differs')
     reapply = output/'reapplied'
@@ -312,8 +378,9 @@ def build_batch(args):
         'feature_bearing_n': sum(bool(row['content_labels']) for row in delivery['ranking']),
         'supported_n': sum(row['score'] is not None for row in delivery['ranking']),
         'updated_existing_n': len(updates), 'unchanged_other_rows_n': 2025-len(updates),
+        'new_public_candidates_n': len(new_rows),
         'withheld_uncertain_or_held_n': sum(proof['review_status'] != 'accepted' for proof in proofs),
-        'new_labels_added_n': sum(len(set(proof['updated_row']['content_labels'])-set(proof['old_row']['content_labels'])) for proof in proofs),
+        'new_labels_added_n': sum(len(set(proof['updated_row']['content_labels'])-set((proof['old_row'] or {}).get('content_labels', []))) for proof in proofs),
         'withdrawal_baseline_bytes_equal': True, 'reapplication_bytes_equal': True,
         'source_artifacts_unchanged': True, 'private_rows_exported': False,
         'model_calls': 0, 'gui_verified': False, 'quality_verified': False,
@@ -334,5 +401,6 @@ if __name__ == '__main__':
     parser.add_argument('--ledger-sha256', required=True)
     parser.add_argument('--database', type=Path, action='append', required=True)
     parser.add_argument('--mapping', type=Path, required=True)
+    parser.add_argument('--allow-new-candidates', action='store_true')
     args = parser.parse_args()
     print(json.dumps(build_batch(args), ensure_ascii=False))
