@@ -44,10 +44,22 @@ def parse_opf(payload):
     ident, ebook = one('dc:identifier')
     if tree.get('unique-identifier') != ident.get('id') or not re.fullmatch(r'https://standardebooks.org/ebooks/[a-z0-9-]+/[a-z0-9-]+', ebook):
         raise ValueError('canonical Standard Ebooks identifier required')
-    _, title = one('dc:title')
+    titles = metadata.findall('dc:title', NS)
+    if len(titles) > 1:
+        ids = [node.get('id') for node in titles]
+        if not all(ids) or len(set(ids)) != len(ids) or any(len(node) or not (node.text or '').strip() for node in titles):
+            raise ValueError('multiple OPF titles require unique IDs and plain values')
+        title_types = [[n.text for n in metadata.findall('opf:meta', NS)
+                        if n.get('property') == 'title-type' and n.get('refines') == '#' + ident]
+                       for ident in ids]
+        if any(len(types) != 1 or types[0] not in ('main', 'subtitle', 'expanded') for types in title_types) or sum(types == ['main'] for types in title_types) != 1:
+            raise ValueError('multiple OPF titles require one explicit main and unambiguous supported types')
+        title = titles[title_types.index(['main'])].text.strip()
+    else:
+        _, title = one('dc:title')
     author_node, author = one('dc:creator')
     author_roles = [n.text for n in metadata.findall('opf:meta', NS) if n.get('property') == 'role' and n.get('refines') == '#' + str(author_node.get('id'))]
-    if author_roles != ['aut'] or one('dc:publisher')[1] != 'Standard Ebooks':
+    if author_roles.count('aut') != 1 or len(author_roles) != len(set(author_roles)) or not set(author_roles) <= {'aut', 'wpr', 'ann', 'dto'} or one('dc:publisher')[1] != 'Standard Ebooks':
         raise ValueError('one explicit Standard Ebooks author/publisher required')
     if not one('dc:language')[1].startswith('en-') and one('dc:language')[1] != 'en':
         raise ValueError('only English editorial descriptions supported')
