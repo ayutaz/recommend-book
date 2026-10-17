@@ -1,6 +1,12 @@
 # CI 検証ガイド
 
-## 最新の実装版での確認（2026-10-17・phase12）
+## 最新の実装版での確認（2026-10-17・phase13）
+
+最終コード`1b80688`の[CI run 39025631704](https://github.com/ayutaz/recommend-book/actions/runs/39025631704)は両OSで成功した。固定取得対象・完全入力を使う準備経路と、公式の国名根拠・未対応言語コードをunknownとして保持する投影を含む。Ubuntu **1,850 passed・7 skipped（43.05秒）**、Windows **1,851 passed・6 skipped（185.16秒）**。新しい4試験を追加し、skipは従来のscheduler2件・ローカルOPF4件、UbuntuだけWindows lock1件のまま。
+
+実際のSol分類5作品、別呼出の内部審査、用途別DB読出し、推薦採用3作品、ブラウザーでの追加5作品と撤回・復元を[実データ報告](phase13-balanced-poc-and-delivery-v1.md)に分離した。内部審査の2不確実を除いた採用率は60%で、CI成功を独立精度・校正・本人向け改善としない。最終コードへworkflow dispatch一組を実行済み。以後はMarkdownのみの差分を確認し、全件試験を重複実行しない。
+
+## 前回の実装版での確認（2026-10-17・phase12）
 
 最終コード`30bf83e`の[CI run 39000544589](https://github.com/ayutaz/recommend-book/actions/runs/39000544589)は両OSで成功した。根拠付き合本ID訂正、厳密なSEリンク、別authority DBの小説適格性・重複検査、token上限の伝播を含む。Windowsは**1,847 passed・6 skipped（229.66秒）**、Ubuntuは**1,846 passed・7 skipped（44.41秒）**。skipは既存scheduler依存2件・ローカルOPF依存4件に加え、UbuntuだけWindows lock1件。新たなskipは追加していない。
 
