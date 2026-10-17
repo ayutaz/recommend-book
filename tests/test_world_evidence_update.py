@@ -216,7 +216,7 @@ def test_existing_autonomous_table_cannot_be_bypassed(tmp_path, eligibility):
 
 @pytest.mark.parametrize('prop,type_id', [('P629', 'Q99')] + [
     (prop, type_id) for prop in ('P31', 'P7937')
-    for type_id in ('Q3331189', 'Q53731850', 'Q49084', 'Q277759', 'Q1667921')])
+    for type_id in ('Q3331189', 'Q53731850', 'Q49084', 'Q277759', 'Q1667921', 'Q1279564', 'Q105420')])
 def test_fresh_authority_rejects_explicit_scope_conflicts(tmp_path, prop, type_id):
     database, _ = authority_database(tmp_path)
     with sqlite3.connect(database) as connection:

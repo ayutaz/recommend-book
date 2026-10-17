@@ -193,7 +193,7 @@ def new_candidate_proof(database, mapping, entity, current_rows):
         raise ValueError('New candidate lacks existing work/novel eligibility')
     claims = entity.get('claims', {})
     active = lambda prop: [statement for statement in claims.get(prop, []) if statement.get('rank') != 'deprecated']
-    excluded_types = {'Q3331189', 'Q53731850', 'Q49084', 'Q277759', 'Q1667921'}
+    excluded_types = {'Q3331189', 'Q53731850', 'Q49084', 'Q277759', 'Q1667921', 'Q1279564', 'Q105420'}
     conflicts = active('P629') + [statement for prop in ('P31', 'P7937') for statement in active(prop)
         if statement.get('mainsnak', {}).get('datavalue', {}).get('value', {}).get('id') in excluded_types]
     if conflicts:

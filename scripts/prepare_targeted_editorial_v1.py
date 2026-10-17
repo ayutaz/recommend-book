@@ -13,6 +13,7 @@ from recommend_book.ingestion.standardebooks import editorial_work_record, inges
 from recommend_book.ingestion.wikidata import claim_values
 from recommend_book.jobs import canonical_json
 from recommend_book.models import SourceRecord
+from recommend_book.next_database import build_next_database
 
 from prepare_standardebooks_pilot_v1 import BASE, ROOT, save, sha
 from prepare_standardebooks_batch_v1 import prepare
@@ -120,7 +121,9 @@ def select(output):
         'frozen_selection_sha256': sha(saved / 'frozen-selection.json')}
     cases_path = output / 'eligible-cases.json'
     save(cases_path, cases)
-    report = prepare(cases_path, output / 'batch', authority_database=authority)
+    authority_next = output.with_name(output.name + '-authority-next')
+    build_next_database(source_database=authority, output_dir=authority_next)
+    report = prepare(cases_path, output / 'batch', authority_database=authority_next / 'dataset.sqlite')
     save(output / 'selection-report.json', {'eligible': len(eligible), 'held': len(outcomes)-len(eligible),
         'authority_database_sha256': sha(authority), 'correction_packet_sha256': sha(correction),
         'model_calls': 0, 'batch': report})
