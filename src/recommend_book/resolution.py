@@ -9,6 +9,24 @@ from .models import Contributor, SourceRecord
 from .normalization import normalize_text
 
 
+_TITLE_APOSTROPHE_EQUIVALENTS = str.maketrans({
+    "\u2018": "'",  # left single quotation mark
+    "\u2019": "'",  # right single quotation mark
+    "\uff07": "'",  # fullwidth apostrophe
+})
+
+
+def _title_match_key(value: str) -> str:
+    """Return a conservative comparison key for published title variants.
+
+    Source title values remain untouched.  The extra mapping is deliberately
+    limited to apostrophe glyphs: it handles the ASCII/curly difference seen
+    between the saved Wikidata and Standard Ebooks records without turning
+    general punctuation or distinct titles into the same identity.
+    """
+    return normalize_text(value).translate(_TITLE_APOSTROPHE_EQUIVALENTS)
+
+
 @dataclass(frozen=True)
 class ResolutionResult:
     status: Literal["same", "different", "uncertain"]
@@ -67,7 +85,7 @@ def compare_records(left: SourceRecord, right: SourceRecord) -> ResolutionResult
             title_languages_a = {title.language or left.original_language for title in left.titles}
             title_languages_b = {title.language or right.original_language for title in right.titles}
             shared_languages = title_languages_a & title_languages_b
-            if shared_languages and not any(normalize_text(a.value) == normalize_text(b.value) for a in left.titles for b in right.titles if (a.language or left.original_language) == (b.language or right.original_language)):
+            if shared_languages and not any(_title_match_key(a.value) == _title_match_key(b.value) for a in left.titles for b in right.titles if (a.language or left.original_language) == (b.language or right.original_language)):
                 return ResolutionResult("uncertain", "conflicting work titles in the same language")
         return ResolutionResult("same", "explicit work identity corroborated by complete author set and compatible language and unit")
     return ResolutionResult("uncertain", "title or author similarity is insufficient work identity")
