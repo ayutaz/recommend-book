@@ -178,3 +178,76 @@ def test_append_keeps_old_rows_and_refuses_repeated_public_identity():
     assert result['audit']['new_public_candidates_n'] == 1
     with pytest.raises(ValueError, match='duplicates a public identity'):
         update.append_candidates(delivery, [old])
+
+
+def test_fresh_authority_without_autonomous_table_requires_inventory_and_direct_novel(tmp_path):
+    database, _ = authority_database(tmp_path)
+    with sqlite3.connect(database) as connection:
+        connection.execute('DROP TABLE autonomous_work_eligibility')
+    mapping = {'delivery_work_id': 'right-destination', 'wikidata_qid': 'Q1'}
+    proof = update.new_candidate_proof(database, mapping, novel_entity(), [baseline()])
+    assert proof['work_eligibility'] is None
+    assert proof['autonomous_work_eligibility_table_present'] is False
+    assert proof['novel_inventory']['eligible'] == 1
+    with pytest.raises(ValueError, match='lacks direct novel type'):
+        update.new_candidate_proof(database, mapping, dict(novel_entity(), claims={}), [])
+    deprecated = novel_entity()
+    deprecated['claims']['P7937'][0]['rank'] = 'deprecated'
+    with pytest.raises(ValueError, match='lacks direct novel type'):
+        update.new_candidate_proof(database, mapping, deprecated, [])
+    with sqlite3.connect(database) as connection:
+        connection.execute('UPDATE next_book_inventory SET eligible=0')
+    with pytest.raises(ValueError, match='lacks existing work/novel eligibility'):
+        update.new_candidate_proof(database, mapping, novel_entity(), [])
+
+
+@pytest.mark.parametrize('eligibility', [None, 0])
+def test_existing_autonomous_table_cannot_be_bypassed(tmp_path, eligibility):
+    database, _ = authority_database(tmp_path)
+    with sqlite3.connect(database) as connection:
+        connection.execute('DELETE FROM autonomous_work_eligibility')
+        if eligibility is not None:
+            connection.execute('INSERT INTO autonomous_work_eligibility VALUES(?,?,?)',
+                               ('right-destination', eligibility, 'held'))
+    with pytest.raises(ValueError, match='lacks existing work/novel eligibility'):
+        update.new_candidate_proof(database,
+            {'delivery_work_id': 'right-destination', 'wikidata_qid': 'Q1'}, novel_entity(), [])
+
+
+@pytest.mark.parametrize('prop,type_id', [('P629', 'Q99')] + [
+    (prop, type_id) for prop in ('P31', 'P7937')
+    for type_id in ('Q3331189', 'Q53731850', 'Q49084', 'Q277759', 'Q1667921', 'Q1279564', 'Q105420')])
+def test_fresh_authority_rejects_explicit_scope_conflicts(tmp_path, prop, type_id):
+    database, _ = authority_database(tmp_path)
+    with sqlite3.connect(database) as connection:
+        connection.execute('DROP TABLE autonomous_work_eligibility')
+    entity = novel_entity()
+    conflict = {'mainsnak': {'datavalue': {'value': {'id': type_id}}}}
+    entity['claims'].setdefault(prop, []).append(conflict)
+    mapping = {'delivery_work_id': 'right-destination', 'wikidata_qid': 'Q1'}
+    with pytest.raises(ValueError, match='explicit work/novel scope conflict'):
+        update.new_candidate_proof(database, mapping, entity, [])
+    conflict['rank'] = 'deprecated'
+    assert update.new_candidate_proof(database, mapping, entity, [])['novel_type_claims']
+
+
+def test_historical_qid_duplicate_rejected_even_without_public_membership(tmp_path):
+    database, _ = authority_database(tmp_path)
+    with pytest.raises(ValueError, match='already exists in historical authority'):
+        update.historical_identity_proof(database, 'Q1')
+    with sqlite3.connect(database) as connection:
+        connection.execute("UPDATE external_ids SET scope='edition' WHERE value='Q1'")
+    proof = update.historical_identity_proof(database, 'Q1')
+    assert proof['identity_rows'] == []
+    assert proof['parameters'] == ['wikidata', 'Q1', 'work']
+    assert proof['database_size'] == database.stat().st_size
+    assert proof['database_mtime_ns'] == database.stat().st_mtime_ns
+
+
+def test_destination_rejects_identity_bound_to_stale_source_version(tmp_path):
+    database, bridge = authority_database(tmp_path)
+    with sqlite3.connect(database) as connection:
+        connection.execute("UPDATE external_ids SET source_version_id='stale' WHERE value='Q1'")
+    with pytest.raises(ValueError, match='current source head differs'):
+        update.destination_authority_proof(database,
+            {'delivery_work_id': 'right-destination', 'wikidata_qid': 'Q1'}, bridge)

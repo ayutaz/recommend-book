@@ -4,7 +4,9 @@ import hashlib
 import importlib.util
 import os
 from pathlib import Path
+import sys
 import threading
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -137,3 +139,81 @@ def test_publication_is_explicitly_before_rename_and_full_context_is_hashed():
     assert b"config['runtime_source_sha256']" in runner
     assert b'subprocess.Popen(argv' in runner
     assert b'"process_exit_observed":returncode is not None' in runner
+
+
+@pytest.mark.parametrize('limit', [None, 200000])
+def test_preflight_uses_same_token_limit_for_preparation_and_freeze(tmp_path, monkeypatch, limit):
+    output = tmp_path / 'snapshot'
+    runtime = output / 'runtime'
+    runtime.mkdir(parents=True)
+    verifier = runtime / 'verifier.py'
+    verifier.write_bytes(b'fixture verifier')
+    implementation = runtime / 'database.py'
+    implementation.write_bytes(b'fixture database')
+    inputs, ledger = tmp_path / 'inputs.jsonl', tmp_path / 'ledger.json'
+    inputs.write_text('{}\n', encoding='utf-8')
+    ledger.write_text('{}', encoding='utf-8')
+    modules = {
+        'recommend_book.classification.runner_v4': dict(build_run_config=lambda *a, **k: {},
+            resolve_executable=lambda: ['fixture-tool'], command_artifact_hashes=lambda c: {}),
+        'recommend_book.classification.native_attempt_v4': {'__file__': str(verifier)},
+        'recommend_book.next_database_v4': {'__file__': str(implementation)},
+        'recommend_book.usage_guard_v4': {'UsageGuard': object},
+    }
+    for name, attributes in modules.items():
+        module = ModuleType(name)
+        module.__dict__.update(attributes)
+        monkeypatch.setitem(sys.modules, name, module)
+        parent, attribute = name.rsplit('.', 1)
+        monkeypatch.setattr(sys.modules[parent], attribute, module, raising=False)
+    calls = {}
+    def prepare(inputs, ledger, namespace, **kwargs):
+        calls['prepare'] = kwargs
+        namespace.mkdir(parents=True)
+        (namespace / 'preparation-manifest.json').write_text('{}', encoding='utf-8')
+        return {'selected': 1}
+    def freeze_execution(*args, **kwargs):
+        calls['freeze'] = kwargs
+    helpers = {'new_guarded_preparation': SimpleNamespace(prepare=prepare),
+               'new_execution_freeze': SimpleNamespace(freeze_execution=freeze_execution)}
+    monkeypatch.setattr(importlib.util, 'spec_from_file_location', lambda name, path:
+        SimpleNamespace(module=helpers[name], loader=SimpleNamespace(exec_module=lambda module: None)))
+    monkeypatch.setattr(importlib.util, 'module_from_spec', lambda spec: spec.module)
+    kwargs = {} if limit is None else {'max_observed_tokens': limit}
+    result = builder.preflight(output, inputs, ledger, 'fixture-version', 'guarded-v3-baseline', 'fixture', **kwargs)
+    assert result['stage'] == 'prepared_not_started'
+    assert calls['prepare']['max_observed_tokens'] == calls['freeze']['max_observed_tokens'] == (limit or 500000)
+
+
+@pytest.mark.parametrize('command', ['preflight', '_preflight'])
+@pytest.mark.parametrize('limit', [None, '200000'])
+def test_cli_forwards_token_limit_to_child_or_preflight(tmp_path, monkeypatch, command, limit):
+    argv = ['prepare-runtime', command, '--output', str(tmp_path), '--inputs', str(tmp_path / 'inputs'),
+            '--usage-ledger', str(tmp_path / 'ledger'), '--cli-version', 'fixture']
+    if limit is not None:
+        argv += ['--max-observed-tokens', limit]
+    monkeypatch.setattr(sys, 'argv', argv)
+    monkeypatch.setattr(builder, 'verify_source', lambda path: {})
+    seen = []
+    def run(command, **kwargs):
+        seen.append(command[command.index('--max-observed-tokens') + 1])
+        return SimpleNamespace(stdout=b'{}', stderr=b'', returncode=0)
+    monkeypatch.setattr(builder.subprocess, 'run', run)
+    monkeypatch.setattr(builder, 'preflight', lambda *args: seen.append(str(args[-1])) or {})
+    builder.main()
+    assert seen == [limit or '500000']
+
+
+@pytest.mark.parametrize('limit', ['0', '-1', '1.5', 'bad'])
+def test_cli_rejects_nonpositive_or_noninteger_token_limit(tmp_path, monkeypatch, limit):
+    monkeypatch.setattr(sys, 'argv', ['prepare-runtime', '_preflight', '--output', str(tmp_path),
+                                    '--max-observed-tokens', limit])
+    with pytest.raises(SystemExit) as error:
+        builder.main()
+    assert error.value.code == 2
+
+
+@pytest.mark.parametrize('limit', [0, -1, True, 1.5])
+def test_preflight_rejects_invalid_token_limit_before_runtime_access(tmp_path, limit):
+    with pytest.raises(builder.argparse.ArgumentTypeError, match='positive integer'):
+        builder.preflight(tmp_path, None, None, None, None, 'fixture', limit)

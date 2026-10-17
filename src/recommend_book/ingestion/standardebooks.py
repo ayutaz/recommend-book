@@ -9,7 +9,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 from xml.etree import ElementTree as ET
 
 from recommend_book.models import Contributor, Evidence, Identifier, SourceRecord, Title
@@ -20,6 +20,24 @@ MANUAL_URL = 'https://standardebooks.org/manual/1.9.1/9-metadata'
 LOCATOR = '/opf:package/opf:metadata/dc:description;escaped-xhtml;complete-paragraphs-v1'
 LICENSE_URL = 'https://creativecommons.org/publicdomain/zero/1.0/'
 NS = {'opf': 'http://www.idpf.org/2007/opf', 'dc': 'http://purl.org/dc/elements/1.1/'}
+
+
+def _reviewed_description_link(href):
+    """Recognize local editorial referrals without ever following their URLs.
+
+    Only canonical HTTPS author/ebook and single collection-slug paths qualify.
+    Ports (even 443), credentials, queries, fragments and URL escapes stay held.
+    """
+    if not href or re.search(r'[\s\\?#%]', href):
+        return False
+    try:
+        url = urlsplit(href)
+    except ValueError:
+        return False
+    return (url.scheme == 'https' and url.hostname == 'standardebooks.org'
+            and url.netloc == 'standardebooks.org'
+            and url.username is None and url.password is None
+            and re.fullmatch(r'/(?:ebooks/[a-z0-9-]+(?:/[a-z0-9-]+)?|collections/[a-z0-9-]+)', url.path) is not None)
 
 
 def parse_opf(payload):
@@ -92,7 +110,7 @@ def parse_opf(payload):
             raise ValueError('third-party quotation or unsupported description markup')
         if node.tag == 'p' and node not in list(fragment):
             raise ValueError('nested paragraph not supported')
-        if node.tag == 'a' and not (node.get('href') or '').startswith('https://standardebooks.org/ebooks/'):
+        if node.tag == 'a' and not _reviewed_description_link(node.get('href')):
             raise ValueError('external description link requires separate review')
     text = '\n\n'.join(' '.join(''.join(p.itertext()).split()) for p in fragment)
     if len(text) < 20 or re.search('[“”«»"]|copyright|quoted from|according to|excerpt from', text, re.I):

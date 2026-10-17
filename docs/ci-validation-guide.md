@@ -1,5 +1,11 @@
 # CI 検証ガイド
 
+## 最新の実装版での確認（2026-10-17・phase12）
+
+最終コード`30bf83e`の[CI run 39000544589](https://github.com/ayutaz/recommend-book/actions/runs/39000544589)は両OSで成功した。根拠付き合本ID訂正、厳密なSEリンク、別authority DBの小説適格性・重複検査、token上限の伝播を含む。Windowsは**1,847 passed・6 skipped（229.66秒）**、Ubuntuは**1,846 passed・7 skipped（44.41秒）**。skipは既存scheduler依存2件・ローカルOPF依存4件に加え、UbuntuだけWindows lock1件。新たなskipは追加していない。
+
+5作品の実Sol分類・内部審査・DB採用・画面・撤回復元はローカルで別途確認した。[実データ報告](phase12-targeted-evidence-and-delivery-v1.md)を参照する。CI成功を分類精度や本人向け推薦改善の証明へ読み替えない。push/PRはskip指定とし、最終コードのworkflow dispatch一組だけを実行した。後続Markdown変更はコード差分0を確認して統合する。以下は過去の固定記録である。
+
 `.github/workflows/tests.yml` は Windows と Ubuntu の GitHub hosted runner で、既存の全 pytest を実行する。2026-10-12 時点のローカル環境に合わせて Python 3.14 と uv 0.12.20 を指定し、2 job の最小構成にした。`pyproject.toml` の宣言上の最小 Python 3.12 は、この matrix では検証しない。
 
 ## 最新の実装版の確認（2026-10-16）

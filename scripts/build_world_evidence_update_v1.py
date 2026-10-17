@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
 BASE = ROOT / 'data/autonomous-next-v3'
+HISTORICAL_AUTHORITY = BASE/'database/world-subject-sealed-v1/dataset.sqlite'
 
 
 def sha(path):
@@ -157,18 +158,46 @@ def destination_authority_proof(database, mapping, bridge):
         'current_head': head}
 
 
+def historical_identity_proof(database, qid):
+    """A separate authority may add only a work absent from the historical master."""
+    database = Path(database).resolve(strict=True)
+    before = database.stat()
+    query = 'SELECT entity_id,scope,source,value FROM external_ids WHERE source=? AND value=? AND scope=?'
+    parameters = ('wikidata', qid, 'work')
+    with sqlite3.connect(database.as_uri()+'?mode=ro&immutable=1', uri=True) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = [dict(row) for row in connection.execute(query, parameters)]
+    after = database.stat()
+    if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+        raise ValueError('Historical authority database changed during metadata check')
+    if rows:
+        raise ValueError('New candidate Wikidata identity already exists in historical authority')
+    return {'database': str(database), 'database_size': before.st_size,
+        'database_mtime_ns': before.st_mtime_ns, 'access': 'SQLite mode=ro&immutable=1; work-scoped identity query only',
+        'query': query, 'parameters': list(parameters), 'identity_rows': rows}
+
+
 def new_candidate_proof(database, mapping, entity, current_rows):
     """Reject a second public identity or ambiguous title for a newly shown work."""
     identity, qid = mapping['delivery_work_id'], mapping['wikidata_qid']
     current_ids = {row['work_id'] for row in current_rows}
     with sqlite3.connect(Path(database).resolve().as_uri()+'?mode=ro&immutable=1', uri=True) as connection:
         connection.row_factory = sqlite3.Row
-        eligibility = connection.execute('SELECT work_id,eligible,reason FROM autonomous_work_eligibility WHERE work_id=?', (identity,)).fetchone()
+        has_eligibility = connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='autonomous_work_eligibility'").fetchone() is not None
+        eligibility = (connection.execute('SELECT work_id,eligible,reason FROM autonomous_work_eligibility WHERE work_id=?', (identity,)).fetchone()
+                       if has_eligibility else None)
         inventory = connection.execute('SELECT work_id,eligible FROM next_book_inventory WHERE work_id=?', (identity,)).fetchone()
         qid_rows = [dict(row) for row in connection.execute(
             'SELECT entity_id,scope,source,value FROM external_ids WHERE source=? AND value=?', ('wikidata',qid))]
-    if not eligibility or eligibility['eligible'] != 1 or not inventory or inventory['eligible'] != 1:
+    if (has_eligibility and (not eligibility or eligibility['eligible'] != 1)) or not inventory or inventory['eligible'] != 1:
         raise ValueError('New candidate lacks existing work/novel eligibility')
+    claims = entity.get('claims', {})
+    active = lambda prop: [statement for statement in claims.get(prop, []) if statement.get('rank') != 'deprecated']
+    excluded_types = {'Q3331189', 'Q53731850', 'Q49084', 'Q277759', 'Q1667921', 'Q1279564', 'Q105420'}
+    conflicts = active('P629') + [statement for prop in ('P31', 'P7937') for statement in active(prop)
+        if statement.get('mainsnak', {}).get('datavalue', {}).get('value', {}).get('id') in excluded_types]
+    if conflicts:
+        raise ValueError('New candidate raw authority has explicit work/novel scope conflict')
     novel_claims = [statement for prop in ('P31', 'P7937') for statement in entity.get('claims', {}).get(prop, [])
         if statement.get('rank') != 'deprecated' and statement.get('mainsnak', {}).get('datavalue', {}).get('value', {}).get('id') == 'Q8261']
     if not novel_claims:
@@ -185,7 +214,8 @@ def new_candidate_proof(database, mapping, entity, current_rows):
         displayed = {row['title']} | {alias['title'] if isinstance(alias, dict) else alias for alias in row.get('display_title_aliases', [])}
         if titles & displayed:
             raise ValueError('Hold new candidate: exact raw authority title/alias already displayed')
-    return {'work_eligibility': dict(eligibility), 'novel_inventory': dict(inventory),
+    return {'work_eligibility': dict(eligibility) if eligibility is not None else None,
+        'autonomous_work_eligibility_table_present': has_eligibility, 'novel_inventory': dict(inventory),
         'qid_identity_rows': qid_rows, 'novel_type_claims': novel_claims,
         'raw_title_aliases_checked': sorted(titles), 'existing_display_n': len(current_rows),
         'authority_duplicate_found': False, 'exact_title_alias_duplicate_found': False}
@@ -258,6 +288,10 @@ def build_batch(args):
     from recommend_book.recommendation.personal_ranking import rank_personal_features
     from recommend_book.recommendation.personal_site import render_personal_site
     ledger = pin(args.ledger, args.ledger_sha256)
+    explicit_authority = getattr(args, 'authority_database', None)
+    authority_database = (pin(explicit_authority) if explicit_authority is not None
+                          and Path(explicit_authority).resolve(strict=True) != HISTORICAL_AUTHORITY.resolve(strict=True)
+                          else HISTORICAL_AUTHORITY)
     guard = UsageGuard(ledger, expected_ledger_sha256=args.ledger_sha256)
     admitted, works, review_cases, audits = {}, {}, {}, []
     for source in args.database:
@@ -319,15 +353,19 @@ def build_batch(args):
         if bridge['wikidata_work_id'] != qid:
             raise ValueError('Mapping differs from frozen source authority bridge')
         destination_proof = destination_authority_proof(
-            BASE/'database/world-subject-sealed-v1/dataset.sqlite', mapping, bridge)
+            authority_database, mapping, bridge)
         raw = json.loads(pin(bridge['target_raw_path'], bridge['target_raw_sha256']).read_bytes())
         if qid not in raw['entities']:
             raise ValueError('Missing raw authority entity')
         review_status = review_cases.get(input_id, {}).get('status', 'accepted')
         new_proof = None
         if is_new:
-            new_proof = new_candidate_proof(BASE/'database/world-subject-sealed-v1/dataset.sqlite',
+            historical_proof = (historical_identity_proof(HISTORICAL_AUTHORITY, qid)
+                if authority_database.resolve(strict=True) != HISTORICAL_AUTHORITY.resolve(strict=True) else None)
+            new_proof = new_candidate_proof(authority_database,
                 mapping, raw['entities'][qid], baseline['ranking'] + new_rows)
+            if historical_proof is not None:
+                new_proof['historical_authority_absence_proof'] = historical_proof
             source = admitted[input_id]
             candidate = {key: deepcopy(source[key]) for key in ('title', 'authors')}
             candidate.update(work_id=delivery_id, read_status='unknown',
@@ -430,6 +468,8 @@ if __name__ == '__main__':
     parser.add_argument('--ledger', type=Path, required=True)
     parser.add_argument('--ledger-sha256', required=True)
     parser.add_argument('--database', type=Path, action='append', required=True)
+    parser.add_argument('--authority-database', type=Path,
+                        help='Separate hash-pinned authority database (default: historical master, metadata queries only)')
     parser.add_argument('--mapping', type=Path, required=True)
     parser.add_argument('--allow-new-candidates', action='store_true')
     args = parser.parse_args()

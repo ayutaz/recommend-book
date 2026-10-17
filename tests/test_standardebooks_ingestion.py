@@ -36,6 +36,50 @@ TYPED_TITLES = '''<dc:title id="title">Book</dc:title>
 <meta property="title-type" refines="#fulltitle">expanded</meta>'''
 
 
+@pytest.mark.parametrize('href', [
+    'https://standardebooks.org/collections/inspector-hanaud',
+    'https://standardebooks.org/ebooks/author',
+    'https://standardebooks.org/ebooks/author/book',
+])
+def test_official_description_referral_preserves_complete_paragraphs(href):
+    description = f'&lt;p&gt;A young &lt;a href="{href}"&gt;traveler&lt;/a&gt; returns home.&lt;/p&gt;&lt;p&gt;Family expectations follow.&lt;/p&gt;'
+    payload = OPF.replace('&lt;p&gt;A young traveler returns home and confronts family expectations.&lt;/p&gt;', description)
+    assert parse_opf(payload.encode())['text'] == 'A young traveler returns home.\n\nFamily expectations follow.'
+
+
+@pytest.mark.parametrize('href', [
+    'https://standardebooks.org.evil.test/collections/inspector-hanaud',
+    'https://standardebooks.org@evil.test/collections/inspector-hanaud',
+    'https://user:password@standardebooks.org/collections/inspector-hanaud',
+    'https://standardebooks.org:443/collections/inspector-hanaud',
+    'https://standardebooks.org:bad/collections/inspector-hanaud',
+    'https://standardebooks.org/collections/inspector-hanaud?source=other',
+    'https://standardebooks.org/collections/inspector-hanaud#fragment',
+    'https://standardebooks.org/collections/',
+    'https://standardebooks.org/collections/../ebooks/book',
+    'https://standardebooks.org/ebooks/author%2fbook',
+    'https://standardebooks.org/ebooks/author\\book',
+    'https://standardebooks.org/ebooks/author\t/book',
+    'https://standardebooks.org/ebooks/author?',
+    'https://standardebooks.org/ebooks/author#',
+    'https://[standardebooks.org/collections/inspector-hanaud',
+    'https://en.wikipedia.org/wiki/Inspector_Hanaud',
+    'http://standardebooks.org/collections/inspector-hanaud',
+    'javascript:alert(1)',
+])
+def test_unreviewed_or_malformed_description_links_remain_held(href):
+    payload = OPF.replace('A young traveler', f'A young &lt;a href="{href}"&gt;traveler&lt;/a&gt;')
+    with pytest.raises(ValueError, match='external description link'):
+        parse_opf(payload.encode())
+
+
+@pytest.mark.parametrize('quoted', ['“traveler”', '&lt;q&gt;traveler&lt;/q&gt;'])
+def test_official_description_link_does_not_exempt_quoted_text(quoted):
+    payload = OPF.replace('A young traveler', f'A young &lt;a href="https://standardebooks.org/collections/inspector-hanaud"&gt;{quoted}&lt;/a&gt;')
+    with pytest.raises(ValueError, match='third-party quotation'):
+        parse_opf(payload.encode())
+
+
 def test_explicit_main_title_and_known_secondary_author_roles():
     text = OPF.replace('<dc:title id="title">Book</dc:title>', TYPED_TITLES)
     text = text.replace('</metadata>', '<meta refines="#author" property="role">wpr</meta><meta refines="#author" property="role">ann</meta><meta refines="#author" property="role">dto</meta></metadata>')
