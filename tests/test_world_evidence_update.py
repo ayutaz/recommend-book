@@ -75,6 +75,19 @@ def test_unaccepted_supplement_never_erases_prior_admissions(review):
     assert 'theme.family' not in combined['feature_provenance']
 
 
+def test_partial_projection_is_explicit_and_keeps_only_validated_labels():
+    added = supplement()
+    decision = {'policy_version': 'label-level-admission-v1',
+                'admitted_label_ids': ['theme.family']}
+    combined = update.combine_candidate(
+        baseline(), added, old_id='existing', supplement_id='supplement',
+        review_status='partial', label_admission=decision)
+    assert combined['features'] == {'genre.romance': 1.0, 'theme.family': 1.0}
+    with pytest.raises(ValueError, match='Validated label-level admission'):
+        update.combine_candidate(baseline(), added, old_id='existing',
+                                 supplement_id='supplement', review_status='partial')
+
+
 def test_batch_replaces_only_explicit_existing_identities_and_refuses_duplicates():
     rows = [baseline('first'), baseline('second'), baseline('third')]
     original = {'ranking': rows, 'audit': {}}
