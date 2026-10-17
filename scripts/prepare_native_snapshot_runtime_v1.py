@@ -158,8 +158,21 @@ def verify_source(output):
     return report
 
 
-def preflight(output, inputs, ledger_path, cli_version, execution_spec, run_name):
+def positive_int(value):
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        raise argparse.ArgumentTypeError('A positive integer is required')
+    try:
+        result = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError('A positive integer is required') from error
+    if result <= 0:
+        raise argparse.ArgumentTypeError('A positive integer is required')
+    return result
+
+
+def preflight(output, inputs, ledger_path, cli_version, execution_spec, run_name, max_observed_tokens=500000):
     """Called in a fresh interpreter with the frozen runtime on PYTHONPATH."""
+    max_observed_tokens = positive_int(max_observed_tokens)
     import importlib.util
     from recommend_book.classification.runner_v4 import build_run_config, resolve_executable, command_artifact_hashes
     from recommend_book.classification.validation import load_taxonomy
@@ -203,7 +216,7 @@ def preflight(output, inputs, ledger_path, cli_version, execution_spec, run_name
     save(selected / 'manifest.json', {'version':'new-world-pilot-input-snapshot-v1','ordered_inputs_sha256':sha(input_raw),
         'source_path':str(Path(inputs).resolve()),'work_expression_count':len([line for line in input_raw.splitlines() if line.strip()])})
     result = helper.prepare(selected / 'ordered.jsonl', frozen_ledger, namespace, cli_version=cli_version, execution_spec=execution_spec,
-        batch_size=5, concurrency=2, timeout=900, max_run_seconds=1800, max_observed_tokens=500000)
+        batch_size=5, concurrency=2, timeout=900, max_run_seconds=1800, max_observed_tokens=max_observed_tokens)
     freeze_spec = importlib.util.spec_from_file_location('new_execution_freeze', runtime / 'scripts/freeze_classification_execution.py')
     freeze = importlib.util.module_from_spec(freeze_spec)
     freeze_spec.loader.exec_module(freeze)
@@ -213,7 +226,7 @@ def preflight(output, inputs, ledger_path, cli_version, execution_spec, run_name
     freeze.build_run_config = frozen_config
     context = output / ('execution-context-' + run_name)
     freeze.freeze_execution(selected / 'ordered.jsonl',context,model='gpt-6.1-sol',cli_version=cli_version,
-        batch_size=5,concurrency=2,timeout=900,max_run_seconds=1800,max_observed_tokens=500000,
+        batch_size=5,concurrency=2,timeout=900,max_run_seconds=1800,max_observed_tokens=max_observed_tokens,
         stop_on_rate_limit=True,execution_spec=execution_spec)
     command = resolve_executable()
     report = {'version':'native-snapshot-preflight-v1','stage':'prepared_not_started','namespace':str(namespace),
@@ -236,6 +249,7 @@ def main():
     parser.add_argument('--cli-version')
     parser.add_argument('--execution-spec', default='guarded-v3-baseline')
     parser.add_argument('--run-name', default='first10')
+    parser.add_argument('--max-observed-tokens', type=positive_int, default=500000)
     args = parser.parse_args()
     if args.command == 'build':
         result = build(args.output)
@@ -245,7 +259,8 @@ def main():
         verify_source(args.output)
         env = dict(os.environ, PYTHONPATH=str(args.output.resolve() / 'runtime/src'), PYTHONDONTWRITEBYTECODE='1')
         command = [sys.executable,str(Path(__file__).resolve()),'_preflight','--output',str(args.output.resolve()),
-            '--inputs',str(args.inputs.resolve()),'--usage-ledger',str(args.usage_ledger.resolve()),'--cli-version',args.cli_version,'--execution-spec',args.execution_spec,'--run-name',args.run_name]
+            '--inputs',str(args.inputs.resolve()),'--usage-ledger',str(args.usage_ledger.resolve()),'--cli-version',args.cli_version,'--execution-spec',args.execution_spec,'--run-name',args.run_name,
+            '--max-observed-tokens',str(args.max_observed_tokens)]
         process = subprocess.run(command,cwd=ROOT,env=env,capture_output=True,text=False,shell=False,timeout=300)
         (args.output / ('preflight.' + args.run_name + '.stdout.txt')).write_bytes(process.stdout)
         (args.output / ('preflight.' + args.run_name + '.stderr.txt')).write_bytes(process.stderr)
@@ -254,7 +269,7 @@ def main():
         print(process.stdout.decode('utf-8'))
         return
     else:
-        result = preflight(args.output,args.inputs,args.usage_ledger,args.cli_version,args.execution_spec,args.run_name)
+        result = preflight(args.output,args.inputs,args.usage_ledger,args.cli_version,args.execution_spec,args.run_name,args.max_observed_tokens)
     print(json.dumps(result, ensure_ascii=True))
 
 

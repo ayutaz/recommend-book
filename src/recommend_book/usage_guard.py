@@ -669,6 +669,9 @@ class UsageGuard:
             entity = json.loads(payload).get('entities', {}).get(record.source_id)
             if not entity or entity.get('id') != record.source_id:
                 raise ValueError('Wikidata raw identity differs')
+            if 'identity_correction' in record.extra:
+                from recommend_book.authority_identity_correction import verify_identity_correction
+                verify_identity_correction(record)
         elif record.source == 'openlibrary':
             fields = payload.rstrip(b'\r\n').split(b'\t', 4)
             value = json.loads(fields[-1])

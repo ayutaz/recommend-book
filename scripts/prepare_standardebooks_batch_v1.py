@@ -22,8 +22,10 @@ from prepare_standardebooks_pilot_v1 import BASE, ROOT, SOURCE_DB, save, sha
 PREVIOUS = BASE / 'preparation/phase9-standardebooks-pilot-v3'
 
 
-def prepare(cases_path, output):
+def prepare(cases_path, output, *, authority_database=None):
     cases_path = Path(cases_path).resolve(strict=True)
+    authority_database = (SOURCE_DB.resolve() if authority_database is None
+                          else Path(authority_database).resolve(strict=True))
     output = Path(output).resolve()
     if output.exists():
         raise ValueError('Existing preparation is immutable; use a new namespace')
@@ -40,7 +42,7 @@ def prepare(cases_path, output):
         raise ValueError('Original candidate selection changed')
     registry_before = sha(ROOT / 'config/sources.json')
     records, selected = [], []
-    with sqlite3.connect(SOURCE_DB.resolve().as_uri() + '?mode=ro&immutable=1', uri=True) as db:
+    with sqlite3.connect(authority_database.as_uri() + '?mode=ro&immutable=1', uri=True) as db:
         for case in cases:
             qid = case['wikidata_qid']
             if not db.execute('SELECT 1 FROM external_ids WHERE entity_id=? AND scope=? AND source=? AND value=?',
@@ -128,6 +130,7 @@ def prepare(cases_path, output):
         raise ValueError('Protected source registry changed')
     report = {'version': 'standardebooks-batch-preparation-v1', 'stage': 'prepared_not_started',
               'acquisition_path': str(cases_path), 'acquisition_sha256': sha(cases_path),
+              'authority_database_path': str(authority_database),
               'source_records_ingested': ingested, 'eligible_works': len(works),
               'initial_works': len(works[:10]), 'remaining_works': len(works[10:]),
               'new_distinct_novels': 0, 'model_calls': 0, 'root_registry_unchanged': True,
@@ -140,5 +143,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--cases', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--authority-database', type=Path,
+                        help='Read-only saved authority database (default: existing SOURCE_DB)')
     args = parser.parse_args()
-    print(json.dumps(prepare(args.cases, args.output), ensure_ascii=True))
+    print(json.dumps(prepare(args.cases, args.output, authority_database=args.authority_database), ensure_ascii=True))
