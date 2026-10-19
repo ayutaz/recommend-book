@@ -32,6 +32,10 @@ def transform(relative, raw):
         text = text.replace('src/recommend_book/usage_guard.py', 'src/recommend_book/usage_guard_v4.py')
         text = text.replace('src/recommend_book/classification/native_attempt.py', 'src/recommend_book/classification/native_attempt_v4.py')
         text = replace(text, 'guarded-runner-v3.2', 'guarded-runner-v4.0')
+        # Future snapshots hold failures immediately; unchanged inputs are not
+        # automatically submitted again, including on a same-namespace resume.
+        text = replace(text, '    store = JobStore(output_dir)\n',
+                       '    store = JobStore(output_dir, max_attempts=1)\n')
         anchor = '        config["dependency_sha256"] = {p:hashlib.sha256((ROOT / p).read_bytes()).hexdigest() for p in dependencies}\n'
         text = replace(text, anchor, anchor + '''        config['runtime_version'] = 'native-snapshot-runtime-v1'
         config['runtime_source_sha256'] = {p.relative_to(ROOT).as_posix():hashlib.sha256(p.read_bytes()).hexdigest()
