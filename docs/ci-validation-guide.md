@@ -1,5 +1,11 @@
 # CI 検証ガイド
 
+## 最新の実装・テスト版（2026-10-19・phase14）
+
+`fdff689`の[CI run 39272636536](https://github.com/ayutaz/recommend-book/actions/runs/39272636536)は成功した。名寄せの限定的なapostrophe比較、既定方式を保持したラベル単位の明示採用と、ローカル資料に依存しない診断テストを含む。実装後の対象試験は名寄せ26件、分類・表示43件が成功。実データの2作品・2特徴の反映と撤回・復元は[別報告](phase14-identity-and-label-admission-v1.md)に記録した。
+
+初回run `39033993443`は、診断テスト2件がGit対象外のローカル資料を参照して両OSで失敗。テストを合成一時SQLite・注入入力に修正し、skipは追加していない。旧headの重複run `39272128462`は取消済み。成功した最終runと区別する。CI成功を独立した分類精度・校正・本人向け改善の証明としない。以後はMarkdownのみの差分を確認して統合する。
+
 ## 最新の実装版での確認（2026-10-17・phase13）
 
 最終コード`1b80688`の[CI run 39025631704](https://github.com/ayutaz/recommend-book/actions/runs/39025631704)は両OSで成功した。固定取得対象・完全入力を使う準備経路と、公式の国名根拠・未対応言語コードをunknownとして保持する投影を含む。Ubuntu **1,850 passed・7 skipped（43.05秒）**、Windows **1,851 passed・6 skipped（185.16秒）**。新しい4試験を追加し、skipは従来のscheduler2件・ローカルOPF4件、UbuntuだけWindows lock1件のまま。

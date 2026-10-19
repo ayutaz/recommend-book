@@ -8,6 +8,7 @@ import argparse
 from copy import deepcopy
 import hashlib
 from html import escape
+import importlib.util
 import json
 from pathlib import Path
 import sqlite3
@@ -73,7 +74,8 @@ def public_url(value):
 
 
 def combine_candidate(baseline, admitted, *, old_id, supplement_id,
-                      accepted_labels=None, review_status='accepted'):
+                      accepted_labels=None, review_status='accepted',
+                      label_admission=None):
     """Preserve the old identity/metadata; only add admitted work-level features."""
     if baseline['work_id'] != old_id or admitted['work_id'] != supplement_id:
         raise ValueError('Exact frozen identity bridge required')
@@ -81,9 +83,16 @@ def combine_candidate(baseline, admitted, *, old_id, supplement_id,
         raise ValueError('Frozen feature admission differs')
     result = {key: deepcopy(baseline[key]) for key in
               ('work_id', 'title', 'authors', 'display_title_aliases', 'read_status')}
-    if review_status not in {'accepted', 'uncertain', 'held'}:
+    if review_status not in {'accepted', 'uncertain', 'held', 'partial'}:
         raise ValueError('Independent review status required')
-    added = set(admitted['features']) if review_status == 'accepted' else set()
+    if review_status == 'partial':
+        if not isinstance(label_admission, dict) or label_admission.get('policy_version') != 'label-level-admission-v1':
+            raise ValueError('Validated label-level admission required for partial projection')
+        added = set(label_admission.get('admitted_label_ids', []))
+        if not added <= set(admitted['features']):
+            raise ValueError('Partial projection differs from existing feature derivation')
+    else:
+        added = set(admitted['features']) if review_status == 'accepted' else set()
     result['features'] = {label: 1.0 for label in sorted(set(baseline['content_labels']) | added)}
     result['feature_provenance'] = deepcopy(admitted['feature_provenance']) if added else {}
     for label in baseline['content_labels']:
@@ -91,6 +100,28 @@ def combine_candidate(baseline, admitted, *, old_id, supplement_id,
             'scope': 'work', 'admission': 'frozen-prior-public-delivery',
             'work_id': old_id})
     return result
+
+
+def native_result_for_work(database, work_id):
+    """Read the exact adopted native result from a supplement in read-only mode."""
+    database = Path(database).resolve(strict=True)
+    with sqlite3.connect(database.as_uri() + '?mode=ro&immutable=1', uri=True) as connection:
+        row = connection.execute(
+            'SELECT run_id,result_json FROM next_classification_inputs WHERE work_id=?',
+            (work_id,)).fetchone()
+    if row is None or not row[1]:
+        raise ValueError('Label-level admission requires one completed native result')
+    return row[0], json.loads(row[1])
+
+
+def load_label_admission_policy(path):
+    """Load the opt-in policy from the root checkout, never frozen runtime."""
+    spec = importlib.util.spec_from_file_location('recommend_book_phase14_label_policy', path)
+    if spec is None or spec.loader is None:
+        raise ValueError('Label admission policy module cannot be loaded')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def replace_candidate(delivery, updated):
@@ -283,17 +314,47 @@ def build_batch(args):
         pin(runtime/relative, sha(pin(ROOT/relative)))
     sys.path.insert(0, str(runtime/'src'))
     from recommend_book.usage_guard_v4 import UsageGuard, model_hash
-    from recommend_book.next_database_v4 import load_next_world_database, get_next_inputs, _quality_document
+    from recommend_book.next_database_v4 import (load_next_world_database,
+        get_next_inputs, _quality_document, extract_classification_features)
     from recommend_book.recommendation.personal_poc import PROFILE_PINS, PURPOSE, load_pinned_json
     from recommend_book.recommendation.personal_ranking import rank_personal_features
     from recommend_book.recommendation.personal_site import render_personal_site
+    label_admission_cases, label_reviews = {}, {}
+    label_policy = None
+    if getattr(args, 'label_admission_request', None):
+        label_policy_module = load_label_admission_policy(pin(ROOT/'src/recommend_book/label_admission_v1.py'))
+        label_policy = label_policy_module.validate_request(json.loads(pin(args.label_admission_request).read_bytes()))
+        review_path = pin(label_policy['review_path'], label_policy['review_sha256'])
+        review_admission_path = pin(label_policy['review_admission_path'], label_policy['review_admission_sha256'])
+        quality_review_path = pin(label_policy['quality_review_path'], label_policy['quality_review_sha256'])
+        source_audit_path = pin(label_policy['source_audit_path'], label_policy['source_audit_sha256'])
+        review_final_path = pin(label_policy['review_final_path'], label_policy['review_final_sha256'])
+        if source_audit_path != review_path:
+            raise ValueError('Label admission review must use the bound source-audit artifact')
+        source_audit = json.loads(source_audit_path.read_bytes())
+        if source_audit.get('artifact_sha256', {}).get('review-admission.json') != label_policy['review_admission_sha256']:
+            raise ValueError('Label admission receipt is not bound by source-audit artifact hashes')
+        if source_audit.get('artifact_sha256', {}).get('review.final.json') != label_policy['review_final_sha256']:
+            raise ValueError('Label admission review.final is not bound by source-audit artifact hashes')
+        review_admission = json.loads(review_admission_path.read_bytes())
+        if (review_admission.get('protocol') != 'complete-input-native-output-internal-review-v2'
+                or review_admission.get('prompt_sha256') != review_admission.get('approved_exact_prompt_sha256')
+                or review_admission.get('usage_ledger_sha256') != args.ledger_sha256):
+            raise ValueError('Label admission review receipt is not bound to the frozen review protocol')
+        review_document = json.loads(review_path.read_bytes())
+        if review_document.get('version') != 'world-pilot-independent-source-review-v2':
+            raise ValueError('Label admission requires the exact independent review v2')
+        if review_document.get('artifact_sha256', {}).get('review-admission.json') != label_policy['review_admission_sha256']:
+            raise ValueError('Label admission source-audit binding is incomplete')
+        label_reviews = {entry['work_id']: entry for entry in review_document.get('reviews', [])}
+        label_admission_cases = {entry['work_id']: entry['admit_label_ids'] for entry in label_policy['cases']}
     ledger = pin(args.ledger, args.ledger_sha256)
     explicit_authority = getattr(args, 'authority_database', None)
     authority_database = (pin(explicit_authority) if explicit_authority is not None
                           and Path(explicit_authority).resolve(strict=True) != HISTORICAL_AUTHORITY.resolve(strict=True)
                           else HISTORICAL_AUTHORITY)
     guard = UsageGuard(ledger, expected_ledger_sha256=args.ledger_sha256)
-    admitted, works, review_cases, audits = {}, {}, {}, []
+    admitted, works, work_databases, review_cases, audits = {}, {}, {}, {}, []
     for source in args.database:
         database = pin(source)
         local_works = get_next_inputs(database)['classification']
@@ -301,6 +362,7 @@ def build_batch(args):
             if work.work_id in works:
                 raise ValueError('Supplement work has multiple database owners')
             works[work.work_id] = work
+            work_databases[work.work_id] = database
         with sqlite3.connect(database.as_uri()+'?mode=ro&immutable=1', uri=True) as connection:
             for (serialized,) in connection.execute('SELECT provenance_json FROM next_classification_runs'):
                 binding = json.loads(serialized).get('quality_adoption_review')
@@ -309,8 +371,18 @@ def build_batch(args):
                 document, bound_cases, files = _quality_document(pin(binding['path'], binding['sha256']))
                 for path, digest in files.items():
                     pin(path, digest)
+                if label_policy is not None:
+                    audit_bindings = {(Path(item['path']).resolve(), item['sha256'])
+                                      for item in document['source_audits']}
+                    if ((source_audit_path, label_policy['source_audit_sha256']) not in audit_bindings
+                            or files.get(str(source_audit_path)) != label_policy['source_audit_sha256']):
+                        raise ValueError('Label admission source-audit is not bound by quality review')
                 for case in bound_cases.values():
                     review_cases[case['work_id']] = case
+                if label_policy is not None:
+                    quality_binding = str(quality_review_path)
+                    if str(Path(binding['path']).resolve()) != quality_binding or binding['sha256'] != label_policy['quality_review_sha256']:
+                        raise ValueError('Label admission quality review differs from database binding')
         for purpose in ('display', 'commercial', 'redistribution'):
             readback = load_next_world_database(database, guard=guard, usage=purpose, content_classified=True)
             audits.append({'database_sha256': sha(database), 'purpose': purpose, 'audit': readback['audit']})
@@ -324,6 +396,16 @@ def build_batch(args):
                 raise ValueError('Mapped supplement purpose admission denied')
             if purpose == 'display':
                 admitted.update(by_id)
+    if label_policy is not None:
+        requested_ids = set(label_admission_cases)
+        mapped_ids = {mapping['input_work_id'] for mapping in mappings}
+        uncertain_mapped_ids = {identity for identity in mapped_ids if review_cases.get(identity, {}).get('status') == 'uncertain'}
+        if requested_ids != uncertain_mapped_ids:
+            raise ValueError('Label admission request must cover exactly all mapped uncertain cases')
+        receipt_hashes = set(review_admission.get('native_output_value_sha256', []))
+        for case in review_cases.values():
+            if case.get('native_result_value_sha256') not in receipt_hashes:
+                raise ValueError('Label admission quality case is absent from the exact review receipt')
     profile_dir = BASE/'evaluation/phase3-personal-profile-v1/runtime-v2'
     snapshots = {name: load_pinned_json(pin(profile_dir/name, digest), digest) for name, digest in PROFILE_PINS.items()}
     private, contract = snapshots['private-profile.json'], snapshots['purpose-contract.json']
@@ -358,6 +440,24 @@ def build_batch(args):
         if qid not in raw['entities']:
             raise ValueError('Missing raw authority entity')
         review_status = review_cases.get(input_id, {}).get('status', 'accepted')
+        label_decision = None
+        if input_id in label_admission_cases:
+            if review_status != 'uncertain' or input_id not in label_reviews:
+                raise ValueError('Label admission requires a matching uncertain review case')
+            admit_label_level = label_policy_module.admit_label_level
+            filter_feature_projection = label_policy_module.filter_feature_projection
+            run_id, native_result = native_result_for_work(work_databases[input_id], input_id)
+            label_decision = admit_label_level(
+                native_result, review_cases[input_id], label_reviews[input_id],
+                admit_label_ids=label_admission_cases[input_id])
+            derived = extract_classification_features(
+                work, native_result, review_cases[input_id]['job_key'], run_id)
+            features, provenance = filter_feature_projection(
+                derived['features'], derived['feature_provenance'], label_decision)
+            admitted[input_id] = {**admitted[input_id],
+                                  'features': features,
+                                  'feature_provenance': provenance}
+            review_status = 'partial'
         new_proof = None
         if is_new:
             historical_proof = (historical_identity_proof(HISTORICAL_AUTHORITY, qid)
@@ -370,18 +470,23 @@ def build_batch(args):
             candidate = {key: deepcopy(source[key]) for key in ('title', 'authors')}
             candidate.update(work_id=delivery_id, read_status='unknown',
                 display_title_aliases=[alias['title'] if isinstance(alias, dict) else alias for alias in source.get('display_title_aliases', [])],
-                features={label:1.0 for label in source['features']} if review_status=='accepted' else {},
-                feature_provenance=deepcopy(source['feature_provenance']) if review_status=='accepted' else {})
+                features={label:1.0 for label in source['features']} if review_status in {'accepted', 'partial'} else {},
+                feature_provenance=deepcopy(source['feature_provenance']) if review_status in {'accepted', 'partial'} else {})
         else:
             candidate = combine_candidate(old_by_id[delivery_id], admitted[input_id],
-                old_id=delivery_id, supplement_id=input_id, review_status=review_status)
+                old_id=delivery_id, supplement_id=input_id, review_status=review_status,
+                label_admission=label_decision)
         ranked = rank_personal_features([candidate], private['private_rows'], limit=1)['ranking'][0]
         (new_rows if is_new else updates).append(ranked)
         proofs.append({'mapping': mapping, 'review_status': review_status,
+            'label_decision': ({key: deepcopy(label_decision[key]) for key in (
+                'policy_version', 'work_id', 'native_label_ids', 'affected_label_ids',
+                'admitted_label_ids', 'withheld_label_ids', 'review_reason_codes')}
+                if label_decision is not None else None),
             'destination_authority_proof': destination_proof,
             'new_candidate_proof': new_proof,
             'combined_candidate': candidate, 'old_row': old_by_id.get(delivery_id), 'updated_row': ranked})
-        if review_status == 'accepted':
+        if review_status in {'accepted', 'partial'}:
             credit = {'evidence_id': ev.evidence_id, 'credit': 'Standard Ebooks contributors',
                 'source_url': public_url(ev.attribution['ebook_url']), 'license': 'CC0-1.0',
                 'license_url': public_url(ev.license_url), 'title': candidate['title'],
@@ -447,7 +552,8 @@ def build_batch(args):
         'supported_n': sum(row['score'] is not None for row in delivery['ranking']),
         'updated_existing_n': len(updates), 'unchanged_other_rows_n': baseline_audit['input_candidates']-len(updates),
         'new_public_candidates_n': len(new_rows),
-        'withheld_uncertain_or_held_n': sum(proof['review_status'] != 'accepted' for proof in proofs),
+        'withheld_uncertain_or_held_n': sum(proof['review_status'] in {'uncertain', 'held'} for proof in proofs),
+        'label_level_projected_n': sum(proof['review_status'] == 'partial' for proof in proofs),
         'new_labels_added_n': sum(len(set(proof['updated_row']['content_labels'])-set((proof['old_row'] or {}).get('content_labels', []))) for proof in proofs),
         'withdrawal_baseline_bytes_equal': True, 'reapplication_bytes_equal': True,
         'source_artifacts_unchanged': True, 'private_rows_exported': False,
@@ -472,5 +578,7 @@ if __name__ == '__main__':
                         help='Separate hash-pinned authority database (default: historical master, metadata queries only)')
     parser.add_argument('--mapping', type=Path, required=True)
     parser.add_argument('--allow-new-candidates', action='store_true')
+    parser.add_argument('--label-admission-request', type=Path,
+                        help='Explicit, independently reviewed label-level projection; whole-work hold remains default')
     args = parser.parse_args()
     print(json.dumps(build_batch(args), ensure_ascii=False))

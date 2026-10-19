@@ -66,6 +66,27 @@ def test_distinct_original_titles_require_review_despite_external_id():
     assert compare_records(record("a", identifiers=[common]), record("b", identifiers=[common], titles=[Title(value="A different novel")])).status == "uncertain"
 
 
+def test_published_apostrophe_variants_match_same_authority_work():
+    common = Identifier(source="wikidata", value="Q1", scope="work")
+    left = record("a", identifiers=[common], titles=[Title(value="The World's End", language="en")])
+    right = record("b", identifiers=[common], titles=[Title(value="The World’s End", language="en")])
+    assert compare_records(left, right).status == "same"
+
+
+def test_published_apostrophe_normalization_does_not_merge_distinct_titles():
+    common = Identifier(source="wikidata", value="Q1", scope="work")
+    left = record("a", identifiers=[common], titles=[Title(value="The World's End", language="en")])
+    right = record("b", identifiers=[common], titles=[Title(value="The World's Other End", language="en")])
+    assert compare_records(left, right).status == "uncertain"
+
+
+def test_prime_is_not_treated_as_an_apostrophe():
+    common = Identifier(source="wikidata", value="Q1", scope="work")
+    left = record("a", identifiers=[common], titles=[Title(value="The World's End", language="en")])
+    right = record("b", identifiers=[common], titles=[Title(value="The World′s End", language="en")])
+    assert compare_records(left, right).status == "uncertain"
+
+
 def source_mapping_pair(tmp_path):
     wd_path, wp_path = tmp_path / "wd.json", tmp_path / "wp.json"
     wd_path.write_text(json.dumps({"entities": {"Q1": {"id": "Q1"}}}), encoding="utf-8")
