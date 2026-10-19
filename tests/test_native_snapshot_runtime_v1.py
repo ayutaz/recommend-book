@@ -2,6 +2,7 @@
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import importlib.util
+import json
 import os
 from pathlib import Path
 import sys
@@ -16,6 +17,76 @@ ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location('snapshot_builder', ROOT / 'scripts/prepare_native_snapshot_runtime_v1.py')
 builder = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(builder)
+
+
+@pytest.mark.parametrize('failure', ['transient_transport', 'invalid_schema'])
+def test_new_runtime_never_retries_failed_native_call_or_unchanged_resume(tmp_path, monkeypatch, failure):
+    from recommend_book.classification import runner as historical
+    from test_classification_guarded import allowed_fixture, event_bytes, unknown_result
+
+    work, ledger, binary, payload = allowed_fixture(tmp_path)
+    # Execute the actual generated scheduler and guard. The existing approved
+    # fixture config isolates retry behavior from full-runtime freeze testing.
+    for name, relative in (
+        ('recommend_book.classification.native_attempt_v4', 'src/recommend_book/classification/native_attempt.py'),
+        ('recommend_book.usage_guard_v4', 'src/recommend_book/usage_guard.py'),
+        ('recommend_book.classification.snapshot_runner_test', 'src/recommend_book/classification/runner.py'),
+    ):
+        module = ModuleType(name)
+        source = builder.transform(relative, (ROOT / relative).read_bytes())
+        path = tmp_path / (name.rsplit('.', 1)[-1] + '.py')
+        path.write_bytes(source)
+        module.__file__ = str(path)
+        monkeypatch.setitem(sys.modules, name, module)
+        exec(compile(source, str(path), 'exec'), module.__dict__)
+    verifier = tmp_path / 'native_attempt_v4.py'
+    for recipe in payload['execution_recipes'].values():
+        recipe.update(verifier_path=str(verifier), verifier_sha256=hashlib.sha256(verifier.read_bytes()).hexdigest())
+    ledger.write_text(json.dumps(payload), encoding='utf-8')
+    runtime = module
+    monkeypatch.setattr(runtime, 'build_run_config', historical.build_run_config)
+    monkeypatch.setattr(runtime, 'observe_cli_version', lambda command: ('fake-1', {'argv': [*command, '--version']}))
+    monkeypatch.setattr(runtime.time, 'sleep', lambda _: None)
+    calls = []
+
+    class NativeFailure:
+        pid = 1234
+
+        def __init__(self, argv, **kwargs):
+            calls.append(argv)
+            assert kwargs['shell'] is False
+            self.returncode = 1 if failure == 'transient_transport' else 0
+            self.final = Path(argv[argv.index('-o') + 1])
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def communicate(self, prompt, timeout):
+            assert isinstance(prompt, bytes)
+            if failure == 'transient_transport':
+                return b'', b'connection reset'
+            value = unknown_result(work)
+            value['labels'] = 'invalid schema fixture'
+            self.final.write_bytes(json.dumps(value).encode('utf-8'))
+            return event_bytes(value), b''
+
+    monkeypatch.setattr(runtime.subprocess, 'Popen', NativeFailure)
+    output = tmp_path / 'single-shot-run'
+    arguments = dict(executable=str(binary), usage_ledger=ledger,
+                     execution_spec='guarded-v3-baseline')
+    first = runtime.run_classification([work], output, **arguments)
+    assert len(calls) == first['cli_invocations'] == 1
+    assert first['completed'] == first['pending'] == first['retries'] == 0
+    assert first['failed'] == 1
+    state = next(iter(first['jobs'].values()))
+    assert state['status'] == 'held' and state['attempts'] == 1
+    assert state['error_category'] == failure
+    resumed = runtime.run_classification([work], output, **arguments)
+    assert len(calls) == 1
+    assert resumed['cli_invocations'] == 0 and resumed['failed'] == 1
 
 
 def executable(tmp_path):
