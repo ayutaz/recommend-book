@@ -1,5 +1,11 @@
 # CI 検証ガイド
 
+## phase15の変更（2026-10-20）
+
+新しいv4 runtime生成時だけJobStoreを1試行に固定し、失敗後の同一入力の自動再送を防ぐ。通信失敗、schema失敗、同じ名前空間での再開を実際の生成schedulerと検査用fixtureで確認し、対象68件成功。過去runtimeと通常runnerの既定は変更していない。
+
+コード`78d80c8`のWindows・Ubuntu CIを[run 39283406164](https://github.com/ayutaz/recommend-book/actions/runs/39283406164)で実行中。最終結果を確認してから統合する。実データ2作品の分類・審査、6用途の読戻し、追加7特徴、画面と撤回・復元は[別報告](phase15-bounded-poc-and-delivery-v1.md)。CIを独立精度・校正・本人向け改善の証明としない。
+
 ## 最新の実装・テスト版（2026-10-19・phase14）
 
 `fdff689`の[CI run 39272636536](https://github.com/ayutaz/recommend-book/actions/runs/39272636536)は成功した。名寄せの限定的なapostrophe比較、既定方式を保持したラベル単位の明示採用と、ローカル資料に依存しない診断テストを含む。実装後の対象試験は名寄せ26件、分類・表示43件が成功。実データの2作品・2特徴の反映と撤回・復元は[別報告](phase14-identity-and-label-admission-v1.md)に記録した。
