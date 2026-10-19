@@ -54,7 +54,7 @@ phase8〜14と既存の調査台帳を照合した。具体的な未調査の有
 
 ## 検証と原票
 
-新しいruntimeの単発実行方針は、通信失敗が変更前に3呼出になることを確認して修正し、schema失敗と同じ入力での再開も含めた対象試験**68件成功**。最終コードのWindows・Ubuntu CIは[run 39283406164](https://github.com/ayutaz/recommend-book/actions/runs/39283406164)で実行中。fixture試験と実2作品の処理・画面確認を区別する。
+新しいruntimeの単発実行方針は、通信失敗が変更前に3呼出になることを確認して修正し、schema失敗と同じ入力での再開も含めた対象試験**68件成功**。最終コードのWindows・Ubuntu CIは[run 39283406164](https://github.com/ayutaz/recommend-book/actions/runs/39283406164)で両OSの成功を確認した。コードheadは`78d80c8`で、後続はMarkdownのみの差分を確認した。fixture試験と実2作品の処理・画面確認を区別する。
 
 原票はGit対象外の `data/autonomous-next-v3/` に保存する。
 

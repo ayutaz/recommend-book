@@ -4,7 +4,7 @@
 
 新しいv4 runtime生成時だけJobStoreを1試行に固定し、失敗後の同一入力の自動再送を防ぐ。通信失敗、schema失敗、同じ名前空間での再開を実際の生成schedulerと検査用fixtureで確認し、対象68件成功。過去runtimeと通常runnerの既定は変更していない。
 
-コード`78d80c8`のWindows・Ubuntu CIを[run 39283406164](https://github.com/ayutaz/recommend-book/actions/runs/39283406164)で実行中。最終結果を確認してから統合する。実データ2作品の分類・審査、6用途の読戻し、追加7特徴、画面と撤回・復元は[別報告](phase15-bounded-poc-and-delivery-v1.md)。CIを独立精度・校正・本人向け改善の証明としない。
+コード`78d80c8`のWindows・Ubuntu CIを[run 39283406164](https://github.com/ayutaz/recommend-book/actions/runs/39283406164)で両OSの成功を確認した。後続の変更はMarkdownのみで、実装・試験の差分0を確認して統合する。実データ2作品の分類・審査、6用途の読戻し、追加7特徴、画面と撤回・復元は[別報告](phase15-bounded-poc-and-delivery-v1.md)。CIを独立精度・校正・本人向け改善の証明としない。
 
 ## 最新の実装・テスト版（2026-10-19・phase14）
 
