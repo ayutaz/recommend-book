@@ -379,13 +379,13 @@ def test_ingest_failures_retain_bounded_qid_for_models_and_json_dicts(catalogue,
 
 @pytest.mark.parametrize('version,module_name', [
     ('scale-native-classification-export-v1', 'recommend_book.scale_classification_v1'),
-    ('scale-content-native-classification-export-v1', 'recommend_book.scale_content_classification_v1'),
+    ('scale-content-native-classification-export-v2', 'recommend_book.scale_content_classification_v2'),
 ])
 def test_verifier_admitted_theme_and_structure_are_stored_unchanged(catalogue, tmp_path, monkeypatch, version, module_name):
     import importlib
     import sys
     from types import ModuleType
-    if version == 'scale-content-native-classification-export-v1':
+    if version == 'scale-content-native-classification-export-v2':
         verifier = ModuleType(module_name)
         monkeypatch.setitem(sys.modules, module_name, verifier)
     else:
@@ -397,7 +397,7 @@ def test_verifier_admitted_theme_and_structure_are_stored_unchanged(catalogue, t
                'axis': axis, 'decision': 'present', 'scope': 'work', 'raw_confidence': 0.71,
                'relevance': None, 'evidence': []} for axis in ('theme', 'structure')]
     projection = {'qid': 'Q100', 'work_id': 'wd:Q100', 'admitted_labels': labels}
-    if version == 'scale-content-native-classification-export-v1':
+    if version == 'scale-content-native-classification-export-v2':
         projection['source_attributions'] = [{'source_url': 'https://en.wikipedia.org/w/index.php?oldid=123',
                                              'revision': 123, 'display_allowed': True}]
     manifest_sha = native_manifest(manifest, version=version, rows=[projection])
@@ -432,6 +432,13 @@ def test_unknown_native_export_version_does_not_fall_back_to_metadata_verifier(c
     manifest = tmp_path / 'unknown-version.json'
     digest = native_manifest(manifest, version='unsupported-native-export')
     with pytest.raises(ValueError, match='Unknown classification export version'):
+        catalogue.import_classifications(manifest, digest)
+
+
+def test_content_parent_export_without_output_rights_review_is_not_public(catalogue, tmp_path):
+    manifest = tmp_path / 'content-parent.json'
+    digest = native_manifest(manifest, version='scale-content-native-classification-export-v1')
+    with pytest.raises(ValueError, match='output rights review required'):
         catalogue.import_classifications(manifest, digest)
 
 

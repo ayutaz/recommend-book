@@ -26,7 +26,7 @@ CONFLICT_TYPES = {'Q3331189', 'Q53731850', 'Q49084', 'Q277759', 'Q1667921',
                   'Q1279564', 'Q105420', 'Q2668072', 'Q104213567', 'Q5398426', 'Q11424', 'Q7725310'}
 READ_STATUSES = {'unknown', 'unread', 'reading', 'read'}
 NATIVE_EXPORT_VERSIONS = {'scale-native-classification-export-v1',
-                          'scale-content-native-classification-export-v1'}
+                          'scale-content-native-classification-export-v2'}
 
 
 def collective_description(entity):
@@ -589,8 +589,10 @@ class ScaleCatalogue:
         version = json.loads(raw).get('version')
         if version == 'scale-native-classification-export-v1':
             from .scale_classification_v1 import verify_catalogue_classification
+        elif version == 'scale-content-native-classification-export-v2':
+            from .scale_content_classification_v2 import verify_catalogue_classification
         elif version == 'scale-content-native-classification-export-v1':
-            from .scale_content_classification_v1 import verify_catalogue_classification
+            raise ValueError('Content classification output rights review required before publication')
         else:
             raise ValueError('Unknown classification export version')
         rows = verify_catalogue_classification(manifest_path, expected_sha256)

@@ -24,7 +24,10 @@ def test_content_attribution_is_public_and_nonpermitted_quotes_stay_private():
         {'evidence_ids': ['allowed'], 'source_url': 'https://en.wikipedia.org/w/index.php?oldid=123',
          'license': 'CC-BY-SA-4.0', 'license_url': 'https://creativecommons.org/licenses/by-sa/4.0/',
          'attribution': {'credit': 'Wikipedia contributors: Example novel',
+                         'permalink': 'https://en.wikipedia.org/w/index.php?oldid=123',
+                         'history_url': 'https://en.wikipedia.org/w/index.php?title=Example&action=history',
                          'private_path': 'PRIVATE-SENTINEL'}, 'revision': 123, 'locator': 'Plot',
+         'output_license': 'CC-BY-SA-4.0', 'output_license_url': 'https://creativecommons.org/licenses/by-sa/4.0/',
          'display_allowed': True, 'quote_allowed': True, 'changed_from_source': 'Excerpted and classified',
          'raw_path': 'PRIVATE-SENTINEL'},
         {'evidence_ids': ['private'], 'source_url': 'PRIVATE-SENTINEL',
@@ -39,6 +42,9 @@ def test_content_attribution_is_public_and_nonpermitted_quotes_stay_private():
     assert row['llm_features'][0]['evidence'] == 'Publicly quotable plot excerpt'
     assert row['content_sources'][0]['revision'] == '123'
     assert row['content_sources'][0]['attribution'] == 'Wikipedia contributors: Example novel'
+    assert row['content_sources'][0]['history_url'].endswith('&action=history')
+    assert row['content_sources'][0]['permalink'].endswith('oldid=123')
+    assert row['content_sources'][0]['output_license'] == 'CC-BY-SA-4.0'
     assert row['content_sources'][1]['source_url'] == row['content_sources'][1]['license_url'] == ''
 
 from recommend_book.recommendation.scale_site_v1 import create_server
