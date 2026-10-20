@@ -1,18 +1,18 @@
 # CI 検証ガイド
 
-## phase15の変更（2026-10-20）
+## 最新の検証と統合（2026-10-20・phase15）
 
 新しいv4 runtime生成時だけJobStoreを1試行に固定し、失敗後の同一入力の自動再送を防ぐ。通信失敗、schema失敗、同じ名前空間での再開を実際の生成schedulerと検査用fixtureで確認し、対象68件成功。過去runtimeと通常runnerの既定は変更していない。
 
-コード`78d80c8`のWindows・Ubuntu CIを[run 39283406164](https://github.com/ayutaz/recommend-book/actions/runs/39283406164)で両OSの成功を確認した。後続の変更はMarkdownのみで、実装・試験の差分0を確認して統合する。実データ2作品の分類・審査、6用途の読戻し、追加7特徴、画面と撤回・復元は[別報告](phase15-bounded-poc-and-delivery-v1.md)。CIを独立精度・校正・本人向け改善の証明としない。
+コード`78d80c8`のWindows・Ubuntu CIを[run 39283406164](https://github.com/ayutaz/recommend-book/actions/runs/39283406164)で両OSの成功を確認した。後続の変更はMarkdownのみで、実装・試験の差分0を確認し、[PR #18](https://github.com/ayutaz/recommend-book/pull/18)でmainへ統合済み（`f1606ce`）。実データ2作品の分類・審査、6用途の読戻し、追加7特徴、画面と撤回・復元は[別報告](phase15-bounded-poc-and-delivery-v1.md)。CIを独立精度・校正・本人向け改善の証明としない。以下は各時点の固定記録である。
 
-## 最新の実装・テスト版（2026-10-19・phase14）
+## 過去の実装・テスト版（2026-10-19・phase14）
 
 `fdff689`の[CI run 39272636536](https://github.com/ayutaz/recommend-book/actions/runs/39272636536)は成功した。名寄せの限定的なapostrophe比較、既定方式を保持したラベル単位の明示採用と、ローカル資料に依存しない診断テストを含む。実装後の対象試験は名寄せ26件、分類・表示43件が成功。実データの2作品・2特徴の反映と撤回・復元は[別報告](phase14-identity-and-label-admission-v1.md)に記録した。
 
 初回run `39033993443`は、診断テスト2件がGit対象外のローカル資料を参照して両OSで失敗。テストを合成一時SQLite・注入入力に修正し、skipは追加していない。旧headの重複run `39272128462`は取消済み。成功した最終runと区別する。CI成功を独立した分類精度・校正・本人向け改善の証明としない。以後はMarkdownのみの差分を確認して統合する。
 
-## 最新の実装版での確認（2026-10-17・phase13）
+## 過去の実装版での確認（2026-10-17・phase13）
 
 最終コード`1b80688`の[CI run 39025631704](https://github.com/ayutaz/recommend-book/actions/runs/39025631704)は両OSで成功した。固定取得対象・完全入力を使う準備経路と、公式の国名根拠・未対応言語コードをunknownとして保持する投影を含む。Ubuntu **1,850 passed・7 skipped（43.05秒）**、Windows **1,851 passed・6 skipped（185.16秒）**。新しい4試験を追加し、skipは従来のscheduler2件・ローカルOPF4件、UbuntuだけWindows lock1件のまま。
 
@@ -26,7 +26,7 @@
 
 `.github/workflows/tests.yml` は Windows と Ubuntu の GitHub hosted runner で、既存の全 pytest を実行する。2026-10-12 時点のローカル環境に合わせて Python 3.14 と uv 0.12.20 を指定し、2 job の最小構成にした。`pyproject.toml` の宣言上の最小 Python 3.12 は、この matrix では検証しない。
 
-## 最新の実装版の確認（2026-10-16）
+## 過去の実装版の確認（2026-10-16）
 
 [PR #13](https://github.com/ayutaz/recommend-book/pull/13)の最終実装head `fe45415`に対する[CI run 38854021948](https://github.com/ayutaz/recommend-book/actions/runs/38854021948)は両OSで成功した。現在件数での更新検査と、唯一の著者が挿絵担当を兼ねる形式を含む。
 

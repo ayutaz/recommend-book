@@ -1,5 +1,22 @@
 # 世界小説PoCの実生成・検証結果 v3
 
+2026-10-20更新。最新表示は**2,038候補・特徴あり1,040件（LLM856＋資料記載184）・暫定得点219件**。資料上の小説/LNは1,442行・異なる保存済みWikidata作品ID1,440件で、独立検証済みの原作品数ではない。履歴内容接続2/335、独立した分類精度・校正・名寄せ精度・本人向け改善は未評価。追加費用0・外注なし・追加本人作業0を維持する。
+
+直近の計画1〜4は[phase15報告](phase15-bounded-poc-and-delivery-v1.md)の範囲で完了した。2作品・7特徴を追加し、モデル2呼出・再試行0、画面・出典・撤回・復元を確認した。[PR #18](https://github.com/ayutaz/recommend-book/pull/18)はmainへ統合済み（`f1606ce`）、[最終コードCI](https://github.com/ayutaz/recommend-book/actions/runs/39283406164)はWindows・Ubuntuとも成功。次の適合入力0のため、次バッチ・100作品測定・大量処理は未開始。PoC全体の品質合格ではない。
+
+現在の作業順序と再開条件は[実行計画v16](autonomous-next-phase-plan-v16.md)。最新画面は `data/autonomous-next-v3/database/phase15-world-delivery-v1/index.html`。取得データはGitに含めていないため、リポジトリだけでは画面用データは揃わない。
+
+| 実施記録 | 結果と確認範囲 |
+|---|---|
+| [phase15](phase15-bounded-poc-and-delivery-v1.md) | 名寄せ修正後の2作品を分類・審査・反映。2候補・7特徴追加、履歴接続・独立正解の追加0 |
+| [phase14](phase14-identity-and-label-admission-v1.md) | 題名比較の限定修正と、保存済み審査による2作品・2特徴の部分採用 |
+| [phase13](phase13-balanced-poc-and-delivery-v1.md) | 保存候補の実集計、完全入力5作品の分類・審査、全項目採用3/5。旧採用率を変更しない |
+| [phase12](phase12-targeted-evidence-and-delivery-v1.md) | 根拠付き修正と5小説・16特徴の追加。旧母集団と合算して品質合格にしない |
+
+## 過去の固定記録（phase11以前）
+
+以下の「最新」「次」「未実行」と件数は各実施時点の記録であり、現在値や現在の指示ではない。過去の分類結果・採用率・評価値は保持する。
+
 2026-10-16更新。新しい本人作業・評価・履歴入力は0件。最新表示は2,026候補・特徴あり1,028件（LLM分類844＋資料記載184）・暫定得点216件。固定36作品の推薦特徴23作品・13作品書誌のみという過去の判定は維持し、新しい紹介文を使う別処理で既存表示1作品を更新、未表示だった主DB候補1件を追加した。履歴との確定関係10件・内容接続2/335件を維持する。独立した分類精度・校正・本人向け推薦の改善は未検証であり、PoC全体の完了とは扱わない。候補数は異なる小説数ではない。実行順序は[計画 v15](autonomous-next-phase-plan-v15.md)を参照する。
 
 実装は[PR #2](https://github.com/ayutaz/recommend-book/pull/2)でmainへ統合済み。その実装版の[Windows/Ubuntu CI](https://github.com/ayutaz/recommend-book/actions/runs/38701147898)は成功。README整理もPR #3で統合した。以下の過去の節で「未実行」「次」とある記述は、各節のスナップショットに対する記録として読む。
