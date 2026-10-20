@@ -29,7 +29,7 @@
 
 ## 開発・ローカルでの確認
 
-Python 3.12以上と[uv](https://docs.astral.sh/uv/)を使用します。
+Python 3.14と[uv](https://docs.astral.sh/uv/)を使用します。`uv`は`.python-version`に従ってPythonを選択します。
 
 ```powershell
 uv sync --locked
