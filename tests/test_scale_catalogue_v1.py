@@ -380,12 +380,13 @@ def test_ingest_failures_retain_bounded_qid_for_models_and_json_dicts(catalogue,
 @pytest.mark.parametrize('version,module_name', [
     ('scale-native-classification-export-v1', 'recommend_book.scale_classification_v1'),
     ('scale-content-native-classification-export-v2', 'recommend_book.scale_content_classification_v2'),
+    ('scale-content-native-classification-export-v3', 'recommend_book.scale_content_classification_v3'),
 ])
 def test_verifier_admitted_theme_and_structure_are_stored_unchanged(catalogue, tmp_path, monkeypatch, version, module_name):
     import importlib
     import sys
     from types import ModuleType
-    if version == 'scale-content-native-classification-export-v2':
+    if version.startswith('scale-content-native-classification-export-'):
         verifier = ModuleType(module_name)
         monkeypatch.setitem(sys.modules, module_name, verifier)
     else:
@@ -400,7 +401,7 @@ def test_verifier_admitted_theme_and_structure_are_stored_unchanged(catalogue, t
                   'native_result': {'labels': labels, 'missing_axes': [{'axis': 'style', 'decision': 'unknown',
                                                                        'reason': 'PRIVATE-SENTINEL'}]},
                   'label_admission': {'held_labels': [{'label_id': 'structure.nonlinear', 'reason': 'not_supported'}]}}
-    if version == 'scale-content-native-classification-export-v2':
+    if version.startswith('scale-content-native-classification-export-'):
         projection['source_attributions'] = [{'source_url': 'https://en.wikipedia.org/w/index.php?oldid=123',
                                              'revision': 123, 'display_allowed': True}]
     manifest_sha = native_manifest(manifest, version=version, rows=[projection])

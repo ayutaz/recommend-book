@@ -27,7 +27,8 @@ CONFLICT_TYPES = {'Q3331189', 'Q53731850', 'Q49084', 'Q277759', 'Q1667921',
 READ_STATUSES = {'unknown', 'unread', 'reading', 'read'}
 CLASSIFICATION_AXES = ('genre', 'theme', 'structure', 'protagonist', 'style', 'atmosphere')
 NATIVE_EXPORT_VERSIONS = {'scale-native-classification-export-v1',
-                          'scale-content-native-classification-export-v2'}
+                          'scale-content-native-classification-export-v2',
+                          'scale-content-native-classification-export-v3'}
 
 
 def collective_description(entity):
@@ -610,6 +611,8 @@ class ScaleCatalogue:
             from .scale_classification_v1 import verify_catalogue_classification
         elif version == 'scale-content-native-classification-export-v2':
             from .scale_content_classification_v2 import verify_catalogue_classification
+        elif version == 'scale-content-native-classification-export-v3':
+            from .scale_content_classification_v3 import verify_catalogue_classification
         elif version == 'scale-content-native-classification-export-v1':
             raise ValueError('Content classification output rights review required before publication')
         else:
