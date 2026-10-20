@@ -396,8 +396,11 @@ def test_verifier_admitted_theme_and_structure_are_stored_unchanged(catalogue, t
     labels = [{'label_id': next(row['label_id'] for row in load_taxonomy()['labels'] if row['axis'] == axis),
                'axis': axis, 'decision': 'present', 'scope': 'work', 'raw_confidence': 0.71,
                'relevance': None, 'evidence': []} for axis in ('theme', 'structure')]
-    manifest_sha = native_manifest(manifest, version=version,
-                                   rows=[{'qid': 'Q100', 'work_id': 'wd:Q100', 'admitted_labels': labels}])
+    projection = {'qid': 'Q100', 'work_id': 'wd:Q100', 'admitted_labels': labels}
+    if version == 'scale-content-native-classification-export-v1':
+        projection['source_attributions'] = [{'source_url': 'https://en.wikipedia.org/w/index.php?oldid=123',
+                                             'revision': 123, 'display_allowed': True}]
+    manifest_sha = native_manifest(manifest, version=version, rows=[projection])
     admitted = {'qid': 'Q100', 'work_id': 'wd:Q100', 'labels': labels,
                 'provenance': {'artifacts': native_pins(manifest)}}
     calls = []
@@ -408,6 +411,11 @@ def test_verifier_admitted_theme_and_structure_are_stored_unchanged(catalogue, t
     assert catalogue.import_classifications(manifest, manifest_sha)['adopted'] == 1
     assert calls == [(str(manifest.resolve()), manifest_sha)]
     assert catalogue.work_detail('Q100')['llm_features'] == labels
+    if 'source_attributions' in projection:
+        with catalogue._connect() as db:
+            forged = dict(admitted['provenance'], source_attributions=[{'source_url': 'FORGED-SQL-SOURCE'}])
+            db.execute('UPDATE native_classifications SET provenance_json=?', (json.dumps(forged),))
+        assert catalogue.work_detail('Q100')['content_sources'] == projection['source_attributions']
     labels[0]['axis'] = 'genre'
     with pytest.raises(ValueError, match='unadmitted labels'):
         catalogue.import_classifications(manifest, manifest_sha)

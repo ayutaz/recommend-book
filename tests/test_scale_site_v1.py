@@ -17,6 +17,30 @@ def test_native_feature_shape_displays_confidence_and_quoted_evidence():
     assert feature['label'] == 'Mystery' and feature['evidence'] == 'detective fiction'
     assert 'internal-only' not in json.dumps(row)
 
+
+def test_content_attribution_is_public_and_nonpermitted_quotes_stay_private():
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = public_work({'qid': 'Q2', 'content_sources': [
+        {'evidence_ids': ['allowed'], 'source_url': 'https://en.wikipedia.org/w/index.php?oldid=123',
+         'license': 'CC-BY-SA-4.0', 'license_url': 'https://creativecommons.org/licenses/by-sa/4.0/',
+         'attribution': {'credit': 'Wikipedia contributors: Example novel',
+                         'private_path': 'PRIVATE-SENTINEL'}, 'revision': 123, 'locator': 'Plot',
+         'display_allowed': True, 'quote_allowed': True, 'changed_from_source': 'Excerpted and classified',
+         'raw_path': 'PRIVATE-SENTINEL'},
+        {'evidence_ids': ['private'], 'source_url': 'PRIVATE-SENTINEL',
+         'display_allowed': False, 'quote_allowed': False},
+        {'evidence_ids': ['no-quote'], 'source_url': 'javascript:alert(1)', 'license_url': 'http://[',
+         'display_allowed': True, 'quote_allowed': False}],
+        'llm_features': [{'label_id': 'theme.growth', 'evidence': [
+            {'evidence_id': 'allowed', 'quote': 'Publicly quotable plot excerpt'},
+            {'evidence_id': 'private', 'quote': 'PRIVATE-SENTINEL'},
+            {'evidence_id': 'no-quote', 'quote': 'PRIVATE-SENTINEL'}]}]})
+    assert 'PRIVATE-SENTINEL' not in json.dumps(row)
+    assert row['llm_features'][0]['evidence'] == 'Publicly quotable plot excerpt'
+    assert row['content_sources'][0]['revision'] == '123'
+    assert row['content_sources'][0]['attribution'] == 'Wikipedia contributors: Example novel'
+    assert row['content_sources'][1]['source_url'] == row['content_sources'][1]['license_url'] == ''
+
 from recommend_book.recommendation.scale_site_v1 import create_server
 
 

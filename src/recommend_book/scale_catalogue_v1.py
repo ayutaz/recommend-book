@@ -492,8 +492,10 @@ class ScaleCatalogue:
         with self._connect() as db:
             native = db.execute('SELECT * FROM native_classifications WHERE qid=?', (row['qid'],)).fetchone()
         if native:
-            self._native_proofs(native, verified=native_verified)
+            native_row = self._native_proofs(native, verified=native_verified)
             row['llm_features'], row['llm_held_features'] = _display_native_labels(json.loads(native['labels_json']))
+            if detail and 'source_attributions' in native_row:
+                row['content_sources'] = native_row['source_attributions']
         if detail:
             if _sha(stored['record_json'].encode('utf-8')) != stored['record_sha256']:
                 raise ValueError('source version record hash changed')
@@ -519,7 +521,7 @@ class ScaleCatalogue:
         for artifact in proof['artifacts']:
             self._check_native_pin(artifact['path'], artifact['sha256'], verified)
         if 'qid' in native.keys() or 'labels_json' in native.keys():
-            self._native_label_binding(native, document)
+            return self._native_label_binding(native, document)
 
     def _check_native_pin(self, path, sha, verified):
         path = Path(path)
@@ -548,6 +550,7 @@ class ScaleCatalogue:
         rows = [row for row in document['verified_projection']['rows'] if row['qid'] == qid]
         if len(rows) != 1 or rows[0]['work_id'] != 'wd:' + qid or _json(json.loads(native['labels_json'])) != _json(rows[0]['admitted_labels']):
             raise ValueError('native catalogue identity or labels differ from pinned admitted export')
+        return rows[0]
 
     def _native_proof_artifact(self, path, sha):
         """Verify exact bytes per operation; timestamps never authorize reuse."""
