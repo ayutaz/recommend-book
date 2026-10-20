@@ -396,7 +396,10 @@ def test_verifier_admitted_theme_and_structure_are_stored_unchanged(catalogue, t
     labels = [{'label_id': next(row['label_id'] for row in load_taxonomy()['labels'] if row['axis'] == axis),
                'axis': axis, 'decision': 'present', 'scope': 'work', 'raw_confidence': 0.71,
                'relevance': None, 'evidence': []} for axis in ('theme', 'structure')]
-    projection = {'qid': 'Q100', 'work_id': 'wd:Q100', 'admitted_labels': labels}
+    projection = {'qid': 'Q100', 'work_id': 'wd:Q100', 'admitted_labels': labels,
+                  'native_result': {'labels': labels, 'missing_axes': [{'axis': 'style', 'decision': 'unknown',
+                                                                       'reason': 'PRIVATE-SENTINEL'}]},
+                  'label_admission': {'held_labels': [{'label_id': 'structure.nonlinear', 'reason': 'not_supported'}]}}
     if version == 'scale-content-native-classification-export-v2':
         projection['source_attributions'] = [{'source_url': 'https://en.wikipedia.org/w/index.php?oldid=123',
                                              'revision': 123, 'display_allowed': True}]
@@ -411,6 +414,12 @@ def test_verifier_admitted_theme_and_structure_are_stored_unchanged(catalogue, t
     assert catalogue.import_classifications(manifest, manifest_sha)['adopted'] == 1
     assert calls == [(str(manifest.resolve()), manifest_sha)]
     assert catalogue.work_detail('Q100')['llm_features'] == labels
+    axes = {item['axis']: item for item in catalogue.work_detail('Q100')['classification_axes']}
+    assert len(axes) == 6
+    assert axes['theme']['adopted_count'] == 1
+    assert axes['structure']['held_count'] == 1
+    assert axes['style']['unknown'] is True
+    assert 'PRIVATE-SENTINEL' not in json.dumps(axes)
     if 'source_attributions' in projection:
         with catalogue._connect() as db:
             forged = dict(admitted['provenance'], source_attributions=[{'source_url': 'FORGED-SQL-SOURCE'}])
@@ -534,7 +543,7 @@ def test_native_response_checks_every_unique_pin_once_and_resets_next_call(catal
         path = tmp_path / f'shared-pin-{index}.bin'
         path.write_bytes(str(index).encode())
         pins.append({'path': str(path), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()})
-    labels = [{'label_id': 'genre.fantasy'}]
+    labels = [{'label_id': 'genre.fantasy', 'axis': 'genre'}]
     manifest_sha = native_manifest(manifest, artifacts=pins, rows=[
         {'qid': f'Q{index}', 'work_id': f'wd:Q{index}', 'admitted_labels': labels} for index in range(100, 200)])
     pins = native_pins(manifest)
@@ -545,7 +554,7 @@ def test_native_response_checks_every_unique_pin_once_and_resets_next_call(catal
     for index in range(100, 200):
         proof = {'native_result': {'work_id': f'wd:Q{index}'},
                  'artifacts': pins + ([extra_pin] if index == 199 else [])}
-        rows.append((f'Q{index}', str(manifest), manifest_sha, '[{"label_id":"genre.fantasy"}]', json.dumps(proof)))
+        rows.append((f'Q{index}', str(manifest), manifest_sha, json.dumps(labels), json.dumps(proof)))
     with sqlite3.connect(catalogue.db_path) as db:
         db.executemany('INSERT INTO native_classifications VALUES(?,?,?,?,?)', rows)
     original = catalogue._native_proof_artifact

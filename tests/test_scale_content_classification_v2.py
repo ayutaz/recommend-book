@@ -74,6 +74,32 @@ def test_unreviewed_content_citation_rejected_even_with_old_flags():
         review_public_rows(rows, [work], taxonomy)
 
 
+@pytest.mark.parametrize('quote',[None,''])
+def test_generated_summary_is_licensed_adaptation_without_quote_permission(quote):
+    rows, work, taxonomy = fixture()
+    rows[0]['admitted_labels'][0]['evidence'][0].update(quote=quote,summary='The characters undertake a journey.')
+    output,audit=review_public_rows(rows,[work],taxonomy)
+    assert output[0]['source_attributions'][0]['quote_allowed'] is False
+    assert output[0]['source_attributions'][0]['output_license']==LICENSE
+    assert audit['rows'][0]['generated_summary_adaptation_count']==1
+    assert audit['rows'][0]['exact_quote_count']==0
+
+
+@pytest.mark.parametrize('quote,summary',[(None,None),(None,''),('',None),('invented','a plausible summary')])
+def test_empty_or_invented_quote_cannot_be_hidden_by_summary(tmp_path,quote,summary):
+    rows,work,taxonomy=fixture()
+    rows[0]['admitted_labels'][0]['evidence'][0].update(quote=quote,summary=summary)
+    with pytest.raises(ValueError):
+        review_public_rows(rows,[work],taxonomy)
+
+
+def test_summary_requires_actual_retained_source_binding():
+    rows,work,taxonomy=fixture()
+    rows[0]['admitted_labels'][0]['evidence'][0].update(evidence_id='not-actual-content',quote=None,summary='Generated summary')
+    with pytest.raises(ValueError,match='outside exact reviewed'):
+        review_public_rows(rows,[work],taxonomy)
+
+
 def test_public_verifier_rejects_internal_content_v1(tmp_path):
     import hashlib
     path = tmp_path / 'manifest.json'

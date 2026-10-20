@@ -25,6 +25,7 @@ VERSION = 'scale-catalogue-v1'
 CONFLICT_TYPES = {'Q3331189', 'Q53731850', 'Q49084', 'Q277759', 'Q1667921',
                   'Q1279564', 'Q105420', 'Q2668072', 'Q104213567', 'Q5398426', 'Q11424', 'Q7725310'}
 READ_STATUSES = {'unknown', 'unread', 'reading', 'read'}
+CLASSIFICATION_AXES = ('genre', 'theme', 'structure', 'protagonist', 'style', 'atmosphere')
 NATIVE_EXPORT_VERSIONS = {'scale-native-classification-export-v1',
                           'scale-content-native-classification-export-v2'}
 
@@ -59,6 +60,23 @@ def _display_native_labels(labels):
         else:
             admitted.append(label)
     return admitted, held
+
+
+def _native_axis_summary(native_row, displayed, display_held):
+    """Expose counts from the authenticated export, never SQL provenance text."""
+    raw = native_row.get('native_result', {})
+    labels = [*raw.get('labels', []), *native_row['admitted_labels']]
+    label_axes = {item['label_id']: item['axis'] for item in labels}
+    held = {item['label_id'] for item in [
+        *native_row.get('label_admission', {}).get('held_labels', []), *display_held]}
+    missing = {item['axis'] for item in raw.get('missing_axes', [])}
+    result = []
+    for axis in CLASSIFICATION_AXES:
+        adopted_count = sum(item.get('axis') == axis for item in displayed)
+        held_count = sum(label_axes.get(label_id, label_id.split('.', 1)[0]) == axis for label_id in held)
+        result.append({'axis': axis, 'adopted_count': adopted_count, 'held_count': held_count,
+                       'unknown': axis in missing or (adopted_count == 0 and held_count == 0)})
+    return result
 
 
 class _NativeOperation(set):
@@ -496,6 +514,7 @@ class ScaleCatalogue:
         if native:
             native_row = self._native_proofs(native, verified=native_verified)
             row['llm_features'], row['llm_held_features'] = _display_native_labels(json.loads(native['labels_json']))
+            row['classification_axes'] = _native_axis_summary(native_row, row['llm_features'], row['llm_held_features'])
             if detail and 'source_attributions' in native_row:
                 row['content_sources'] = native_row['source_attributions']
         if detail:

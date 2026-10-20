@@ -67,6 +67,9 @@ def review_public_rows(rows, works, taxonomy):
         if not content_ids <= evidence.keys():
             raise ValueError('Actual retained content evidence absent')
         attrs = []
+        quoted_ids = {citation['evidence_id'] for label in row['admitted_labels']
+                      for citation in label.get('evidence', [])
+                      if isinstance(citation.get('quote'), str) and citation['quote'].strip()}
         for evidence_id in sorted(content_ids):
             item = evidence[evidence_id]
             if (item.rights_policy_id != 'wikipedia-screened-prose' or not item.llm_input_allowed
@@ -90,10 +93,10 @@ def review_public_rows(rows, works, taxonomy):
                 'attribution': {'credit': attribution['credit'], 'permalink': permalink,
                                 'history_url': history, 'changes': attribution['changes']},
                 'locator': item.locator, 'revision': revision,
-                'display_allowed': True, 'quote_allowed': True,
+                'display_allowed': True, 'quote_allowed': evidence_id in quoted_ids,
                 'changed_from_source': attribution['changes'] + '; closed-taxonomy AI classification added; original native record preserved',
                 'output_license': LICENSE, 'output_license_url': LICENSE_URL})
-        citation_count = 0
+        citation_count, quote_count, summary_count = 0, 0, 0
         for label in row['admitted_labels']:
             if (label.get('label_id') not in label_axes or label.get('axis') != label_axes[label['label_id']]
                     or label.get('scope') != 'work' or label.get('decision') != 'present'):
@@ -103,8 +106,20 @@ def review_public_rows(rows, works, taxonomy):
             for citation in label['evidence']:
                 item = evidence[citation['evidence_id']]
                 quote = citation.get('quote')
-                if not item.llm_input_allowed or not isinstance(quote, str) or not quote.strip() or quote not in item.text:
-                    raise ValueError('Public output quotation is not exact retained source text')
+                summary = citation.get('summary')
+                if not item.llm_input_allowed:
+                    raise ValueError('Public citation is not permitted retained source evidence')
+                if quote not in (None, ''):
+                    if not isinstance(quote, str) or not quote.strip() or quote not in item.text:
+                        raise ValueError('Public output quotation is not exact retained source text')
+                    quote_count += 1
+                else:
+                    if not isinstance(summary, str) or not summary.strip():
+                        raise ValueError('Public reference needs exact quote or nonempty generated summary')
+                    # An actual semantic-reviewed summary is generated adapted
+                    # expression under this record's CC-BY-SA output license.
+                    # It is never attributed as a verbatim source quotation.
+                    summary_count += 1
                 if citation.get('locator') != item.locator:
                     raise ValueError('Public citation locator differs from retained source')
                 if item.rights_policy_id != 'wikidata-cc0' and item.evidence_id not in content_ids:
@@ -113,6 +128,7 @@ def review_public_rows(rows, works, taxonomy):
         output.append({**row, 'source_attributions': attrs})
         audits.append({'qid': row['qid'], 'input_hash': row['input_hash'],
             'reviewed_label_count': len(row['admitted_labels']), 'exact_citation_count': citation_count,
+            'exact_quote_count': quote_count, 'generated_summary_adaptation_count': summary_count,
             'reviewed_content_evidence_ids': sorted(content_ids),
             'public_source_attributions_sha256': model_hash(attrs), 'output_license': LICENSE})
     return output, {'version': 'scale-content-output-rights-review-v1',
@@ -121,6 +137,7 @@ def review_public_rows(rows, works, taxonomy):
         'legal_clearance_claimed': False, 'output_license': LICENSE, 'output_license_url': LICENSE_URL,
         'license_scope': 'This publication record contribution and retained quoted adaptations; source novel rights unchanged',
         'checks': ['closed_taxonomy', 'actual_input_hash', 'exact_retained_quotation',
+                   'summary_only_adapted_output_license_without_quote_permission',
                    'exact_content_evidence_ids', 'source_license', 'credit_revision_history_locator',
                    'screening_proof_in_native_display_guard', 'share_alike_output_license', 'mark_changes'],
         'rows': audits}

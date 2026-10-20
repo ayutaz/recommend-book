@@ -18,6 +18,33 @@ def test_native_feature_shape_displays_confidence_and_quoted_evidence():
     assert 'internal-only' not in json.dumps(row)
 
 
+def test_axis_summary_exposes_counts_without_internal_review_text():
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    result = public_work({'qid': 'Q2', 'classification_axes': [
+        {'axis': 'theme', 'adopted_count': 2, 'held_count': 1, 'unknown': False,
+         'review_path': 'PRIVATE-SENTINEL'},
+        {'axis': 'style', 'adopted_count': 0, 'held_count': 0, 'unknown': True},
+        {'axis': 'PRIVATE-SENTINEL', 'adopted_count': 99}]})
+    assert result['classification_axes'] == [
+        {'axis': 'theme', 'adopted_count': 2, 'held_count': 1, 'unknown': False},
+        {'axis': 'style', 'adopted_count': 0, 'held_count': 0, 'unknown': True}]
+    assert 'PRIVATE-SENTINEL' not in json.dumps(result)
+
+
+def test_summary_only_content_is_distinct_from_a_verbatim_quote():
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    result = public_work({'qid': 'Q2', 'content_sources': [
+        {'evidence_ids': ['summary'], 'display_allowed': True, 'quote_allowed': False},
+        {'evidence_ids': ['held'], 'display_allowed': False, 'quote_allowed': False}],
+        'llm_features': [{'label_id': 'theme.growth', 'evidence': [
+            {'evidence_id': 'summary', 'quote': None, 'summary': 'Reviewed model summary'},
+            {'evidence_id': 'summary', 'quote': 'PRIVATE-SENTINEL'},
+            {'evidence_id': 'held', 'summary': 'PRIVATE-SENTINEL'}]}]})
+    assert result['llm_features'][0]['evidence'] == ''
+    assert result['llm_features'][0]['evidence_summary'] == 'Reviewed model summary'
+    assert 'PRIVATE-SENTINEL' not in json.dumps(result)
+
+
 def test_content_attribution_is_public_and_nonpermitted_quotes_stay_private():
     from recommend_book.recommendation.scale_site_v1 import public_work
     row = public_work({'qid': 'Q2', 'content_sources': [
