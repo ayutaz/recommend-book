@@ -364,3 +364,62 @@ def test_native_proof_rejects_change_during_streamed_hash(catalogue, tmp_path, m
     with pytest.raises(ValueError, match='changed during hash verification'):
         catalogue._native_proof_artifact(path, expected_sha)
     assert not catalogue._native_signature_cache
+
+
+@pytest.mark.parametrize('operation', ['stats', 'search', 'similar'])
+def test_native_response_checks_every_unique_pin_once_and_resets_next_call(catalogue, tmp_path, monkeypatch, operation):
+    catalogue.ingest([record(tmp_path, f'Q{index}') for index in range(100, 200)])
+    manifest = tmp_path / 'shared-manifest.json'
+    manifest_sha = save(manifest, {'fixture': '100 distinct native provenance rows with shared dependencies'})
+    pins = [{'path': str(manifest), 'sha256': manifest_sha}]
+    for index in range(426):
+        path = tmp_path / f'shared-pin-{index}.bin'
+        path.write_bytes(str(index).encode())
+        pins.append({'path': str(path), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()})
+    extra = tmp_path / 'last-row-extra.bin'
+    extra.write_bytes(b'first')
+    extra_pin = {'path': str(extra), 'sha256': hashlib.sha256(extra.read_bytes()).hexdigest()}
+    rows = []
+    for index in range(100, 200):
+        proof = {'native_result': {'work_id': f'wd:Q{index}'},
+                 'artifacts': pins + ([extra_pin] if index == 199 else [])}
+        rows.append((f'Q{index}', str(manifest), manifest_sha, '[{"label_id":"genre.fantasy"}]', json.dumps(proof)))
+    with sqlite3.connect(catalogue.db_path) as db:
+        db.executemany('INSERT INTO native_classifications VALUES(?,?,?,?,?)', rows)
+    original = catalogue._native_proof_artifact
+    checked = []
+
+    def counted(path, sha):
+        checked.append((str(path), sha))
+        return original(path, sha)
+
+    monkeypatch.setattr(catalogue, '_native_proof_artifact', counted)
+
+    def invoke():
+        if operation == 'stats':
+            return catalogue.catalogue_stats()
+        if operation == 'search':
+            return catalogue.search_catalogue(page_size=100)
+        return catalogue.similar_works('Q100', limit=100)
+
+    invoke()
+    assert len(checked) == len(set(checked)) == 428
+    assert (str(extra), extra_pin['sha256']) in checked
+    checked.clear()
+    invoke()
+    assert len(checked) == len(set(checked)) == 428
+    # A row sharing the manifest can still introduce a different expected SHA.
+    conflicting = json.loads(rows[-1][-1])
+    conflicting['artifacts'][1]['sha256'] = '0' * 64
+    with sqlite3.connect(catalogue.db_path) as db:
+        db.execute('UPDATE native_classifications SET provenance_json=? WHERE qid=?',
+                   (json.dumps(conflicting), 'Q199'))
+    with pytest.raises(ValueError, match='hash changed'):
+        invoke()
+    with sqlite3.connect(catalogue.db_path) as db:
+        db.execute('UPDATE native_classifications SET provenance_json=? WHERE qid=?', (rows[-1][-1], 'Q199'))
+    before = extra.stat()
+    extra.write_bytes(b'other')
+    os.utime(extra, ns=(before.st_atime_ns, before.st_mtime_ns))
+    with pytest.raises(ValueError, match='hash changed'):
+        invoke()

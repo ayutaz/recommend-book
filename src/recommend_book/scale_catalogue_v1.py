@@ -443,7 +443,7 @@ class ScaleCatalogue:
                         result['failures'].append(failure)
         result['chunks'] += 1
 
-    def _row(self, stored, *, detail=False):
+    def _row(self, stored, *, detail=False, native_verified=None):
         row = json.loads(stored['row_json'])
         for artifact in row['provenance']['artifacts']:
             self._artifact(artifact['raw_path'], artifact['raw_sha256'])
@@ -451,7 +451,7 @@ class ScaleCatalogue:
         with self._connect() as db:
             native = db.execute('SELECT * FROM native_classifications WHERE qid=?', (row['qid'],)).fetchone()
         if native:
-            self._native_proofs(native)
+            self._native_proofs(native, verified=native_verified)
             row['llm_features'] = json.loads(native['labels_json'])
         if detail:
             if _sha(stored['record_json'].encode('utf-8')) != stored['record_sha256']:
@@ -462,13 +462,27 @@ class ScaleCatalogue:
                 row.pop(key, None)
         return row
 
-    def _native_proofs(self, native):
-        self._native_proof_artifact(native['manifest_path'], native['manifest_sha256'])
+    def _native_proofs(self, native, *, verified=None):
+        # This set belongs to one operation, never an admission or a later
+        # request. Every row's full provenance is still parsed below.
+        if verified is None:
+            verified = set()
+
+        def check(path, sha):
+            path = Path(path)
+            if not path.is_absolute():
+                raise ValueError('native proof path must be absolute')
+            key = (str(path), sha)
+            if key not in verified:
+                self._native_proof_artifact(path, sha)
+                verified.add(key)
+
+        check(native['manifest_path'], native['manifest_sha256'])
         proof = json.loads(native['provenance_json'])
         if not proof.get('artifacts'):
             raise ValueError('native classification mutable dependency pins absent')
         for artifact in proof['artifacts']:
-            self._native_proof_artifact(artifact['path'], artifact['sha256'])
+            check(artifact['path'], artifact['sha256'])
 
     def _native_proof_artifact(self, path, sha):
         """Cache successful byte verification only; retain no artifact bytes or decisions."""
@@ -505,6 +519,7 @@ class ScaleCatalogue:
         rows = verify_catalogue_classification(manifest_path, expected_sha256)
         label_axes = {label['label_id']: label['axis'] for label in load_taxonomy()['labels']}
         result = {'raw_classified': 0, 'adopted': 0, 'failed': 0, 'unchanged': 0, 'failures': []}
+        native_verified = set()
         with self._connect() as db:
             db.execute('BEGIN IMMEDIATE')
             for native in rows:
@@ -519,7 +534,7 @@ class ScaleCatalogue:
                     raise ValueError('native classifier verifier returned unadmitted labels')
                 proof = {'manifest_path': manifest_path, 'manifest_sha256': expected_sha256,
                          'provenance_json': _json(native['provenance'])}
-                self._native_proofs(proof)
+                self._native_proofs(proof, verified=native_verified)
                 work = db.execute('SELECT qid FROM works WHERE qid=?', (qid,)).fetchone()
                 if work is None:
                     result['failed'] += 1
@@ -546,9 +561,12 @@ class ScaleCatalogue:
             n = db.execute('SELECT count(*) FROM works').fetchone()[0]
             shown = db.execute('SELECT count(*) FROM works WHERE display_allowed=1').fetchone()[0] if rights['display'] == 'allowed' else 0
             featured = db.execute('SELECT count(*) FROM works WHERE recommendable=1 AND display_allowed=1').fetchone()[0] if shown else 0
-            native_proofs = db.execute('SELECT DISTINCT manifest_path,manifest_sha256,provenance_json FROM native_classifications').fetchall()
+            native_proofs = db.execute("""SELECT DISTINCT manifest_path,manifest_sha256,
+                json_object('artifacts',json_extract(provenance_json,'$.artifacts')) AS provenance_json
+                FROM native_classifications""").fetchall()
+            native_verified = set()
             for native in native_proofs:
-                self._native_proofs(native)
+                self._native_proofs(native, verified=native_verified)
             native_n = db.execute("SELECT count(*) FROM native_classifications n JOIN works w USING(qid) WHERE n.labels_json!='[]' AND w.display_allowed=1").fetchone()[0] if shown else 0
             raw_classified_n = db.execute('SELECT count(*) FROM native_classifications').fetchone()[0]
             union_features = db.execute("SELECT count(*) FROM works w LEFT JOIN native_classifications n USING(qid) WHERE w.display_allowed=1 AND (w.recommendable=1 OR coalesce(n.labels_json,'[]')!='[]')").fetchone()[0] if shown else 0
@@ -598,23 +616,25 @@ class ScaleCatalogue:
             total = db.execute('SELECT count(*)' + base, parameters).fetchone()[0]
             rows = db.execute('SELECT w.row_json,r.status AS read_status' + base + ' ORDER BY w.title,w.qid LIMIT ? OFFSET ?',
                               parameters + [page_size, (page - 1) * page_size]).fetchall()
-        return {'items': [self._row(r) for r in rows], 'total': total, 'page': page, 'page_size': page_size,
+        native_verified = set()
+        return {'items': [self._row(r, native_verified=native_verified) for r in rows], 'total': total, 'page': page, 'page_size': page_size,
                 'pages': (total + page_size - 1) // page_size,
                 'filters': {'query': query, 'genre': genre, 'language': language,
                             'year_from': year_from, 'year_to': year_to, 'read_filter': read_filter}}
 
-    def work_detail(self, qid):
+    def work_detail(self, qid, *, _native_verified=None):
         _, rights = self._conditions()
         if rights['display'] != 'allowed':
             return None
-        qid = self._resolve_qid(qid)
+        native_verified = set() if _native_verified is None else _native_verified
+        qid = self._resolve_qid(qid, native_verified=native_verified)
         with self._connect() as db:
             row = db.execute('''SELECT w.row_json,r.status AS read_status,s.record_json,s.record_sha256 FROM works w
                 JOIN source_versions s USING(version_id) LEFT JOIN read_status r ON r.qid=w.qid
                 WHERE w.qid=? AND w.display_allowed=1''', (qid,)).fetchone()
-        return self._row(row, detail=True) if row else None
+        return self._row(row, detail=True, native_verified=native_verified) if row else None
 
-    def _resolve_qid(self, value):
+    def _resolve_qid(self, value, *, native_verified=None):
         try:
             return _qid(value)
         except ValueError:
@@ -627,7 +647,7 @@ class ScaleCatalogue:
                 for artifact in proof['artifacts']:
                     self._artifact(artifact['path'], artifact['sha256'])
             else:
-                self._native_proofs(proof)
+                self._native_proofs(proof, verified=native_verified)
             return _qid(row['qid'])
 
     def import_crosswalk(self, snapshot_path, expected_sha256):
@@ -678,7 +698,8 @@ class ScaleCatalogue:
     def similar_works(self, qid, limit=12, exclude_read=True):
         if not 1 <= limit <= 100:
             raise ValueError('limit must be 1..100')
-        source = self.work_detail(qid)
+        native_verified = set()
+        source = self.work_detail(qid, _native_verified=native_verified)
         result = {'mode': 'insufficient_evidence', 'personalized': False, 'items': [],
                   'explanation': '資料記載ジャンルが不足しています。個人向けスコアは計算していません。'}
         if source is None or not source['genres']:
@@ -713,7 +734,7 @@ class ScaleCatalogue:
             ranked.append((score, candidate['title'], candidate['qid'], stored, reasons))
         ranked.sort(key=lambda x: (-x[0], x[1], x[2]))
         for score, _, _, stored, reasons in ranked[:limit]:
-            row = self._row(stored)
+            row = self._row(stored, native_verified=native_verified)
             row.update({'score': round(score, 6), 'reasons': reasons, 'score_kind': 'uncalibrated_source_similarity'})
             result['items'].append(row)
         result.update({'mode': 'source_similarity',
