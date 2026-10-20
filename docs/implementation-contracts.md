@@ -2,7 +2,7 @@
 
 2026年10月12日。ステージ1〜4を並列実装するための共通契約。
 
-共通モデルは `src/recommend_book/models.py` のPydanticモデルを使う。各担当は共通モデルの変更を統合担当へ提案し、担当範囲のモジュール・テストを編集する。Python 3.12以上、uv、pytest、httpx、jsonschema、pydanticを使う。依存管理は統合担当が行う。
+共通モデルは `src/recommend_book/models.py` のPydanticモデルを使う。各担当は共通モデルの変更を統合担当へ提案し、担当範囲のモジュール・テストを編集する。Python 3.14、uv、pytest、httpx、jsonschema、pydanticを使う。依存管理は統合担当が行う。
 
 1. 収集担当は `ingestion/` と `rights.py` を担当する。各アダプタは原データを保存して `SourceRecord` を返す。正規化レコードをJSONLに保存する。Wikidata、Open Libraryダンプ、NDLの少量取得・OAI-PMHに対応。説明文とあらすじを混同せず、Evidenceは用途別許諾確認を通す。
 2. DB担当は `database.py`、`normalization.py`、`resolution.py` を担当する。`DatasetDB(path)` は `ingest(records: Iterable[SourceRecord]) -> dict`、`work_inputs() -> list[WorkInput]`、`stats() -> dict` を提供する。作品・表現・版・収録関係・出典・フィールド来歴・同定履歴を保存し、タイトルやISBNのみで作品を統合しない。取り消しAPIと難例テストを作る。
