@@ -1,5 +1,11 @@
 # CI 検証ガイド
 
+## 現在のPython・検証（2026-10-20・phase16）
+
+Python 3.14系へ設定を統一し、[PR #20](https://github.com/ayutaz/recommend-book/pull/20)でmainへ統合した。依存パッケージのバージョン変更は0。対象head`46e0532`の[run 39346947438](https://github.com/ayutaz/recommend-book/actions/runs/39346947438)はWindows・Ubuntuとも成功、ローカルは1,873 passed。phase16の後続差分はMarkdownのみで、ソース・依存・テストを変更していないため全件試験・CIを重複実行しない。
+
+新規15作品、6用途、表示・撤回復元、実際の中断再開、全工程実測は[別の実データ報告](phase16-flow-measurement-and-delivery-v1.md)。これを独立精度や本人向け改善の証明にしない。以下は各時点の固定記録である。
+
 ## 最新の検証と統合（2026-10-20・phase15）
 
 新しいv4 runtime生成時だけJobStoreを1試行に固定し、失敗後の同一入力の自動再送を防ぐ。通信失敗、schema失敗、同じ名前空間での再開を実際の生成schedulerと検査用fixtureで確認し、対象68件成功。過去runtimeと通常runnerの既定は変更していない。
