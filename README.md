@@ -43,7 +43,7 @@ uv run python scripts/serve_scale_catalogue_v1.py --database data/autonomous-nex
 
 データ購入・外部委託・有料APIへの切替は行わず、無料公開資料と既存のCodex CLIを使います。データのAI入力・表示・再配布・商用利用条件は資料と用途ごとに管理します。
 
-- [実行計画v17](docs/autonomous-next-phase-plan-v17.md)
+- [次の実行計画：3万→10万作品](docs/autonomous-next-phase-plan-v18.md)
 - [品質評価仕様](docs/quality-evaluation-protocol-v1.md)
 - [初期設計](docs/world-novel-dataset-plan.md)
 - [利用条件の確認範囲](docs/source-rights-review-scope-v3.md)
