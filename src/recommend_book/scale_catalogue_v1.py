@@ -484,13 +484,15 @@ class ScaleCatalogue:
                         result['failures'].append(failure)
         result['chunks'] += 1
 
-    def _row(self, stored, *, detail=False, native_verified=None):
+    def _row(self, stored, *, detail=False, native_verified=None, include_native=True):
         row = json.loads(stored['row_json'])
         for artifact in row['provenance']['artifacts']:
             self._artifact(artifact['raw_path'], artifact['raw_sha256'])
         row['read_status'] = stored['read_status'] or 'unknown'
-        with self._connect() as db:
-            native = db.execute('SELECT * FROM native_classifications WHERE qid=?', (row['qid'],)).fetchone()
+        native = None
+        if detail and include_native:
+            with self._connect() as db:
+                native = db.execute('SELECT * FROM native_classifications WHERE qid=?', (row['qid'],)).fetchone()
         if native:
             native_row = self._native_proofs(native, verified=native_verified)
             row['llm_features'], row['llm_held_features'] = _display_native_labels(json.loads(native['labels_json']))
@@ -710,7 +712,7 @@ class ScaleCatalogue:
                 'filters': {'query': query, 'genre': genre, 'language': language,
                             'year_from': year_from, 'year_to': year_to, 'read_filter': read_filter}}
 
-    def work_detail(self, qid, *, _native_verified=None):
+    def work_detail(self, qid, *, _native_verified=None, _include_native=True):
         _, rights = self._conditions()
         if rights['display'] != 'allowed':
             return None
@@ -720,7 +722,8 @@ class ScaleCatalogue:
             row = db.execute('''SELECT w.row_json,r.status AS read_status,s.record_json,s.record_sha256 FROM works w
                 JOIN source_versions s USING(version_id) LEFT JOIN read_status r ON r.qid=w.qid
                 WHERE w.qid=? AND w.display_allowed=1''', (qid,)).fetchone()
-        return self._row(row, detail=True, native_verified=native_verified) if row else None
+        return self._row(row, detail=True, native_verified=native_verified,
+                         include_native=_include_native) if row else None
 
     def _resolve_qid(self, value, *, native_verified=None):
         try:
@@ -787,7 +790,9 @@ class ScaleCatalogue:
         if not 1 <= limit <= 100:
             raise ValueError('limit must be 1..100')
         native_verified = _NativeOperation()
-        source = self.work_detail(qid, _native_verified=native_verified)
+        # This ranking uses source bibliography only and returns no native
+        # labels. Keep native proof work at the boundary that actually uses it.
+        source = self.work_detail(qid, _native_verified=native_verified, _include_native=False)
         result = {'mode': 'insufficient_evidence', 'personalized': False, 'items': [],
                   'explanation': '資料記載ジャンルが不足しています。個人向けスコアは計算していません。'}
         if source is None or not source['genres']:

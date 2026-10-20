@@ -518,7 +518,7 @@ def test_native_proof_rejects_change_during_streamed_hash(catalogue, tmp_path, m
         catalogue._native_proof_artifact(path, expected_sha)
 
 
-@pytest.mark.parametrize('operation', ['stats', 'search', 'similar'])
+@pytest.mark.parametrize('operation', ['stats', 'detail'])
 def test_native_response_checks_every_unique_pin_once_and_resets_next_call(catalogue, tmp_path, monkeypatch, operation):
     catalogue.ingest([record(tmp_path, f'Q{index}') for index in range(100, 200)])
     manifest = tmp_path / 'shared-manifest.json'
@@ -553,9 +553,7 @@ def test_native_response_checks_every_unique_pin_once_and_resets_next_call(catal
     def invoke():
         if operation == 'stats':
             return catalogue.catalogue_stats()
-        if operation == 'search':
-            return catalogue.search_catalogue(page_size=100)
-        return catalogue.similar_works('Q100', limit=100)
+        return catalogue.work_detail('Q199')
 
     from recommend_book.scale_coordinator_proof_v1 import coordinator_chain_pins
     expected_checks = len({(item['path'], item['sha256']) for item in
@@ -583,3 +581,26 @@ def test_native_response_checks_every_unique_pin_once_and_resets_next_call(catal
     os.utime(extra, ns=(before.st_atime_ns, before.st_mtime_ns))
     with pytest.raises(ValueError, match='hash changed'):
         invoke()
+
+
+def test_source_only_search_and_similarity_do_not_depend_on_unused_native_outputs(catalogue, tmp_path, monkeypatch):
+    catalogue.ingest([record(tmp_path, 'Q100'), record(tmp_path, 'Q101')])
+    # Deliberately corrupt native records: source-only responses must remain
+    # available, while detail/statistics which expose native data fail closed.
+    with catalogue._connect() as db:
+        db.execute('INSERT INTO native_classifications VALUES(?,?,?,?,?)',
+                   ('Q100', str(tmp_path / 'missing-native-export.json'), '0' * 64, '[]', '{}'))
+    def forbidden(*args, **kwargs):
+        raise AssertionError('source-only operation must not read native labels or proof')
+    monkeypatch.setattr(catalogue, '_native_proofs', forbidden)
+    found = catalogue.search_catalogue()
+    assert found['total'] == 2
+    assert all('llm_features' not in row and 'content_sources' not in row for row in found['items'])
+    similar = catalogue.similar_works('Q100')
+    assert similar['mode'] == 'source_similarity' and similar['items'][0]['qid'] == 'Q101'
+    assert {reason['kind'] for reason in similar['items'][0]['reasons']} <= {
+        'source_genre', 'same_author', 'same_language', 'publication_period'}
+    with pytest.raises(AssertionError, match='source-only operation'):
+        catalogue.work_detail('Q100')
+    with pytest.raises(AssertionError, match='source-only operation'):
+        catalogue.catalogue_stats()
