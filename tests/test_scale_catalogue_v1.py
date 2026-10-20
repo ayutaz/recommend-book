@@ -16,6 +16,37 @@ def save(path, payload):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def native_manifest(path, *, rows=(), artifacts=()):
+    preparation = path.parent / f'{path.stem}-preparation'
+    run_manifest = preparation / 'runtime/data/autonomous-next-v3/classification/fixture/run/manifest.json'
+    run_manifest.parent.mkdir(parents=True, exist_ok=True)
+    run_sha = save(run_manifest, {'run_id': 'fixture-run'})
+    terminal = preparation / 'terminal-fixture'
+    terminal.mkdir(exist_ok=True)
+    coordinator = preparation / 'coordinator.py'
+    coordinator.write_text('# fixture bytes only; never executed\n', encoding='utf-8')
+    coordinator_sha = hashlib.sha256(coordinator.read_bytes()).hexdigest()
+    request_sha = save(terminal / 'request.json', {'version': 'native-snapshot-terminal-request-v1',
+                                                'coordinator_path': str(coordinator), 'coordinator_sha256': coordinator_sha})
+    exit_sha = save(terminal / 'process-exit.json', {'version': 'native-snapshot-terminal-exit-v1',
+                                                 'process_pid': 1234, 'actual_exit_code': 0, 'process_exit_observed': True})
+    proof_path = terminal / 'terminal-proof.json'
+    proof_sha = save(proof_path, {'schema_version': 'classification-terminal-proof-v1', 'run_id': 'fixture-run',
+                                 'manifest_sha256': run_sha, 'exit_code': 0, 'process_exit_observed': True,
+                                 'process_pid': 1234, 'parent_request_sha256': request_sha,
+                                 'parent_exit_observation_sha256': exit_sha})
+    return save(path, {'version': 'scale-native-classification-export-v1',
+                       'runtime_preparation': str(preparation), 'run_manifest': str(run_manifest),
+                       'coordinator_sha256': coordinator_sha,
+                       'artifact_sha256': {**{item['path']: item['sha256'] for item in artifacts},
+                                           str(run_manifest): run_sha, str(proof_path): proof_sha},
+                       'verified_projection': {'rows': list(rows)}})
+
+
+def native_pins(manifest):
+    return [{'path': path, 'sha256': sha} for path, sha in json.loads(manifest.read_bytes())['artifact_sha256'].items()]
+
+
 def claim(qid, rank='normal'):
     return {'rank': rank, 'mainsnak': {'datavalue': {'value': {'id': qid}}}}
 
@@ -128,6 +159,46 @@ def test_display_hold_stores_but_does_not_serve(tmp_path, catalogue):
     assert held.work_detail('Q100') is None
 
 
+def test_source_declared_count_includes_novels_without_genre(catalogue, tmp_path):
+    catalogue.ingest([record(tmp_path, 'Q100'), record(tmp_path, 'Q101', genre=None)])
+    stats = catalogue.catalogue_stats()
+    assert stats['source_declared_works'] == 2
+    assert stats['source_genre_works'] == stats['recommendable_works'] == 1
+
+
+@pytest.mark.parametrize('tamper', ['labels', 'confidence_type', 'qid', 'stripped_provenance'])
+def test_native_sql_tamper_cannot_change_authenticated_labels_or_drop_required_pins(catalogue, tmp_path, tamper):
+    catalogue.ingest([record(tmp_path), record(tmp_path, 'Q101')])
+    dependency = tmp_path / 'required-proof.bin'
+    dependency.write_bytes(b'required')
+    pin = {'path': str(dependency), 'sha256': hashlib.sha256(dependency.read_bytes()).hexdigest()}
+    labels = [{'label_id': 'genre.fantasy', 'axis': 'genre', 'decision': 'present', 'scope': 'work', 'raw_confidence': 1.0}]
+    manifest = tmp_path / 'authentic-export.json'
+    sha = native_manifest(manifest, rows=[{'qid': 'Q100', 'work_id': 'wd:Q100', 'admitted_labels': labels}], artifacts=[pin])
+    proof = {'artifacts': native_pins(manifest)}
+    with sqlite3.connect(catalogue.db_path) as db:
+        db.execute('INSERT INTO native_classifications VALUES(?,?,?,?,?)',
+                   ('Q100', str(manifest), sha, json.dumps(labels), json.dumps(proof)))
+    assert catalogue.work_detail('Q100')['llm_features'] == labels
+    assert catalogue.catalogue_stats()['llm_works'] == 1
+    with sqlite3.connect(catalogue.db_path) as db:
+        if tamper == 'labels':
+            forged = [{'label_id': 'theme.revenge', 'axis': 'theme', 'decision': 'present', 'scope': 'work'}]
+            db.execute('UPDATE native_classifications SET labels_json=?', (json.dumps(forged),))
+        elif tamper == 'confidence_type':
+            forged = [dict(labels[0], raw_confidence=True)]
+            db.execute('UPDATE native_classifications SET labels_json=?', (json.dumps(forged),))
+        elif tamper == 'qid':
+            db.execute("UPDATE native_classifications SET qid='Q101'")
+        else:
+            db.execute('UPDATE native_classifications SET provenance_json=?',
+                       (json.dumps({'artifacts': [{'path': str(manifest), 'sha256': sha}]}),))
+    with pytest.raises(ValueError, match='native'):
+        catalogue.work_detail('Q101' if tamper == 'qid' else 'Q100')
+    with pytest.raises(ValueError, match='native'):
+        catalogue.catalogue_stats()
+
+
 def test_bulk_writer_keeps_committed_catalogue_readable(catalogue, tmp_path):
     catalogue.ingest([record(tmp_path, 'Q100')])
     writer = sqlite3.connect(catalogue.db_path)
@@ -199,10 +270,11 @@ def test_interrupted_stream_resumes_only_after_committed_chunk(catalogue, tmp_pa
 def test_authenticated_native_import_keeps_raw_and_admitted_counts_separate(catalogue, tmp_path, monkeypatch):
     catalogue.ingest([record(tmp_path, 'Q100'), record(tmp_path, 'Q101')])
     manifest = tmp_path / 'manifest.json'
-    manifest_sha = save(manifest, {'fixture': 'production uses frozen native verifier'})
     label = {'label_id': 'genre.fantasy', 'axis': 'genre', 'decision': 'present', 'scope': 'work',
              'confidence': 0.73, 'relevance': None, 'evidence': []}
-    proof = {'artifacts': [{'path': str(manifest), 'sha256': manifest_sha}]}
+    manifest_sha = native_manifest(manifest, rows=[{'qid': 'Q100', 'work_id': 'wd:Q100', 'admitted_labels': [label]},
+                                                 {'qid': 'Q101', 'work_id': 'wd:Q101', 'admitted_labels': []}])
+    proof = {'artifacts': native_pins(manifest)}
     from recommend_book import scale_classification_v1
     monkeypatch.setattr(scale_classification_v1, 'verify_catalogue_classification', lambda *args: [
         {'qid': 'Q100', 'work_id': 'wd:Q100', 'input_work_id': 'old_work_100', 'labels': [label], 'provenance': proof},
@@ -259,12 +331,12 @@ def test_verifier_admitted_theme_and_structure_are_stored_unchanged(catalogue, t
     from recommend_book.classification.validation import load_taxonomy
     catalogue.ingest([record(tmp_path)])
     manifest = tmp_path / 'reviewed-manifest.json'
-    manifest_sha = save(manifest, {'fixture': 'authentic verifier contract, not an actual native review'})
     labels = [{'label_id': next(row['label_id'] for row in load_taxonomy()['labels'] if row['axis'] == axis),
                'axis': axis, 'decision': 'present', 'scope': 'work', 'raw_confidence': 0.71,
                'relevance': None, 'evidence': []} for axis in ('theme', 'structure')]
+    manifest_sha = native_manifest(manifest, rows=[{'qid': 'Q100', 'work_id': 'wd:Q100', 'admitted_labels': labels}])
     admitted = {'qid': 'Q100', 'work_id': 'wd:Q100', 'labels': labels,
-                'provenance': {'artifacts': [{'path': str(manifest), 'sha256': manifest_sha}]}}
+                'provenance': {'artifacts': native_pins(manifest)}}
     monkeypatch.setattr(scale_classification_v1, 'verify_catalogue_classification', lambda *args: [admitted])
     assert catalogue.import_classifications(manifest, manifest_sha)['adopted'] == 1
     assert catalogue.work_detail('Q100')['llm_features'] == labels
@@ -276,16 +348,16 @@ def test_verifier_admitted_theme_and_structure_are_stored_unchanged(catalogue, t
         catalogue.import_classifications(manifest, manifest_sha)
 
 
-def test_native_proof_pins_hash_once_without_retaining_bytes(catalogue, tmp_path, monkeypatch):
+def test_native_proof_pins_stream_twice_per_request_without_retaining_bytes(catalogue, tmp_path, monkeypatch):
     manifest = tmp_path / 'native-manifest.json'
-    manifest_sha = save(manifest, {'fixture': 'native dependency hash cache'})
     pins = []
     for index in range(110):
         path = tmp_path / f'pin-{index}.bin'
         path.write_bytes(f'proof {index}'.encode())
         pins.append({'path': str(path), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()})
+    manifest_sha = native_manifest(manifest, artifacts=pins)
     native = {'manifest_path': str(manifest), 'manifest_sha256': manifest_sha,
-              'provenance_json': json.dumps({'artifacts': pins})}
+              'provenance_json': json.dumps({'artifacts': native_pins(manifest)})}
     hashes = []
     file_digest = hashlib.file_digest
 
@@ -296,7 +368,7 @@ def test_native_proof_pins_hash_once_without_retaining_bytes(catalogue, tmp_path
     read_bytes = Path.read_bytes
 
     def forbid_proof_bytes(path):
-        if path == manifest or path.name.startswith('pin-'):
+        if path.name.startswith('pin-'):
             raise AssertionError('native proof verification must stream bytes, not retain them')
         return read_bytes(path)
 
@@ -304,55 +376,49 @@ def test_native_proof_pins_hash_once_without_retaining_bytes(catalogue, tmp_path
     monkeypatch.setattr(Path, 'read_bytes', forbid_proof_bytes)
     catalogue._native_proofs(native)
     catalogue._native_proofs(native)
-    assert len(hashes) == len(set(hashes)) == 111
-    assert catalogue._raw_cache == {}
+    assert len(hashes) == 4 * len(set(hashes))
+    assert {pin['path'] for pin in pins} <= set(hashes)
+    assert {key[0] for key in catalogue._raw_cache} == {str(manifest)}
 
 
 def test_native_proof_detects_same_size_tamper_with_restored_mtime(catalogue, tmp_path):
     path = tmp_path / 'mutable-proof.bin'
     path.write_bytes(b'first')
     expected_sha = hashlib.sha256(path.read_bytes()).hexdigest()
-    native = {'manifest_path': str(path), 'manifest_sha256': expected_sha,
-              'provenance_json': json.dumps({'artifacts': [{'path': str(path), 'sha256': expected_sha}]})}
-    catalogue._native_proofs(native)
+    catalogue._native_proof_artifact(path, expected_sha)
     original = path.stat()
     path.write_bytes(b'other')
     os.utime(path, ns=(original.st_atime_ns, original.st_mtime_ns))
     assert path.stat().st_mtime_ns == original.st_mtime_ns
     assert path.stat().st_size == original.st_size
     with pytest.raises(ValueError, match='hash changed'):
-        catalogue._native_proofs(native)
+        catalogue._native_proof_artifact(path, expected_sha)
 
 
-def test_native_proof_signature_cache_is_bounded_and_rehashes_evicted_pin(catalogue, tmp_path, monkeypatch):
+def test_native_proof_rechecks_changed_bytes_on_next_call_even_with_identical_metadata(catalogue, tmp_path, monkeypatch):
     from recommend_book import scale_catalogue_v1
-    monkeypatch.setattr(scale_catalogue_v1, '_NATIVE_SIGNATURE_CACHE_LIMIT', 3)
-    hashes = []
-    digest = hashlib.file_digest
-
-    def counted(stream, algorithm):
-        hashes.append(stream.name)
-        return digest(stream, algorithm)
-
-    monkeypatch.setattr(hashlib, 'file_digest', counted)
-    pins = []
-    for index in range(5):
-        path = tmp_path / f'bounded-{index}.bin'
-        path.write_bytes(str(index).encode())
-        sha = hashlib.sha256(path.read_bytes()).hexdigest()
-        pins.append((path, sha))
+    path = tmp_path / 'coarse-metadata.bin'
+    path.write_bytes(b'first')
+    sha = hashlib.sha256(path.read_bytes()).hexdigest()
+    signature = scale_catalogue_v1._native_proof_signature(path)
+    monkeypatch.setattr(scale_catalogue_v1, '_native_proof_signature', lambda _: signature)
+    catalogue._native_proof_artifact(path, sha)
+    original = path.stat()
+    path.write_bytes(b'other')
+    os.utime(path, ns=(original.st_atime_ns, original.st_mtime_ns))
+    with pytest.raises(ValueError, match='hash changed'):
         catalogue._native_proof_artifact(path, sha)
-    assert len(catalogue._native_signature_cache) == 3
-    catalogue._native_proof_artifact(*pins[-1])
-    assert len(hashes) == 5
-    catalogue._native_proof_artifact(*pins[0])
-    assert len(hashes) == 6
 
 
 def test_native_proof_rejects_change_during_streamed_hash(catalogue, tmp_path, monkeypatch):
+    from recommend_book import scale_catalogue_v1
     path = tmp_path / 'changing.bin'
     path.write_bytes(b'first')
     expected_sha = hashlib.sha256(path.read_bytes()).hexdigest()
+    # Reproduce the Windows runner's timestamp collision deterministically;
+    # the changed bytes must be rejected even when all metadata is identical.
+    signature = scale_catalogue_v1._native_proof_signature(path)
+    monkeypatch.setattr(scale_catalogue_v1, '_native_proof_signature', lambda _: signature)
     digest = hashlib.file_digest
 
     def change_after_hash(stream, algorithm):
@@ -363,19 +429,21 @@ def test_native_proof_rejects_change_during_streamed_hash(catalogue, tmp_path, m
     monkeypatch.setattr(hashlib, 'file_digest', change_after_hash)
     with pytest.raises(ValueError, match='changed during hash verification'):
         catalogue._native_proof_artifact(path, expected_sha)
-    assert not catalogue._native_signature_cache
 
 
 @pytest.mark.parametrize('operation', ['stats', 'search', 'similar'])
 def test_native_response_checks_every_unique_pin_once_and_resets_next_call(catalogue, tmp_path, monkeypatch, operation):
     catalogue.ingest([record(tmp_path, f'Q{index}') for index in range(100, 200)])
     manifest = tmp_path / 'shared-manifest.json'
-    manifest_sha = save(manifest, {'fixture': '100 distinct native provenance rows with shared dependencies'})
-    pins = [{'path': str(manifest), 'sha256': manifest_sha}]
+    pins = []
     for index in range(426):
         path = tmp_path / f'shared-pin-{index}.bin'
         path.write_bytes(str(index).encode())
         pins.append({'path': str(path), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()})
+    labels = [{'label_id': 'genre.fantasy'}]
+    manifest_sha = native_manifest(manifest, artifacts=pins, rows=[
+        {'qid': f'Q{index}', 'work_id': f'wd:Q{index}', 'admitted_labels': labels} for index in range(100, 200)])
+    pins = native_pins(manifest)
     extra = tmp_path / 'last-row-extra.bin'
     extra.write_bytes(b'first')
     extra_pin = {'path': str(extra), 'sha256': hashlib.sha256(extra.read_bytes()).hexdigest()}
@@ -402,19 +470,24 @@ def test_native_response_checks_every_unique_pin_once_and_resets_next_call(catal
             return catalogue.search_catalogue(page_size=100)
         return catalogue.similar_works('Q100', limit=100)
 
+    from recommend_book.scale_coordinator_proof_v1 import coordinator_chain_pins
+    expected_checks = len({(item['path'], item['sha256']) for item in
+                          [*pins, extra_pin, {'path': str(manifest), 'sha256': manifest_sha},
+                           *coordinator_chain_pins(json.loads(manifest.read_bytes()))]})
+
     invoke()
-    assert len(checked) == len(set(checked)) == 428
+    assert len(checked) == len(set(checked)) == expected_checks
     assert (str(extra), extra_pin['sha256']) in checked
     checked.clear()
     invoke()
-    assert len(checked) == len(set(checked)) == 428
+    assert len(checked) == len(set(checked)) == expected_checks
     # A row sharing the manifest can still introduce a different expected SHA.
     conflicting = json.loads(rows[-1][-1])
     conflicting['artifacts'][1]['sha256'] = '0' * 64
     with sqlite3.connect(catalogue.db_path) as db:
         db.execute('UPDATE native_classifications SET provenance_json=? WHERE qid=?',
                    (json.dumps(conflicting), 'Q199'))
-    with pytest.raises(ValueError, match='hash changed'):
+    with pytest.raises(ValueError, match='native provenance omits pinned export dependencies'):
         invoke()
     with sqlite3.connect(catalogue.db_path) as db:
         db.execute('UPDATE native_classifications SET provenance_json=? WHERE qid=?', (rows[-1][-1], 'Q199'))

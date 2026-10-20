@@ -25,7 +25,13 @@ VERSION = 'scale-catalogue-v1'
 CONFLICT_TYPES = {'Q3331189', 'Q53731850', 'Q49084', 'Q277759', 'Q1667921',
                   'Q1279564', 'Q105420', 'Q2668072', 'Q104213567', 'Q5398426', 'Q11424', 'Q7725310'}
 READ_STATUSES = {'unknown', 'unread', 'reading', 'read'}
-_NATIVE_SIGNATURE_CACHE_LIMIT = 4096
+
+
+class _NativeOperation(set):
+    """Request-local pin set and parsed manifest data, never usage decisions."""
+    def __init__(self):
+        super().__init__()
+        self.manifests = {}
 
 
 @lru_cache(maxsize=1)
@@ -171,7 +177,6 @@ class ScaleCatalogue:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._raw_cache = OrderedDict()
         self._json_cache = OrderedDict()
-        self._native_signature_cache = OrderedDict()
         self._registry = RightsRegistry.default()
         with self._connect() as db:
             # Bulk source-version writes must not block the running search UI.
@@ -466,44 +471,67 @@ class ScaleCatalogue:
         # This set belongs to one operation, never an admission or a later
         # request. Every row's full provenance is still parsed below.
         if verified is None:
-            verified = set()
-
-        def check(path, sha):
-            path = Path(path)
-            if not path.is_absolute():
-                raise ValueError('native proof path must be absolute')
-            key = (str(path), sha)
-            if key not in verified:
-                self._native_proof_artifact(path, sha)
-                verified.add(key)
-
-        check(native['manifest_path'], native['manifest_sha256'])
+            verified = _NativeOperation()
+        document = self._native_manifest(native, verified)
         proof = json.loads(native['provenance_json'])
         if not proof.get('artifacts'):
             raise ValueError('native classification mutable dependency pins absent')
+        supplied = {(str(Path(item['path'])), item['sha256']) for item in proof['artifacts']}
+        required = {(str(Path(path)), sha) for path, sha in document['artifact_sha256'].items()}
+        if not required <= supplied:
+            raise ValueError('native provenance omits pinned export dependencies')
         for artifact in proof['artifacts']:
-            check(artifact['path'], artifact['sha256'])
+            self._check_native_pin(artifact['path'], artifact['sha256'], verified)
+        if 'qid' in native.keys() or 'labels_json' in native.keys():
+            self._native_label_binding(native, document)
 
-    def _native_proof_artifact(self, path, sha):
-        """Cache successful byte verification only; retain no artifact bytes or decisions."""
+    def _check_native_pin(self, path, sha, verified):
         path = Path(path)
         if not path.is_absolute():
             raise ValueError('native proof path must be absolute')
         key = (str(path), sha)
+        if key not in verified:
+            self._native_proof_artifact(path, sha)
+            verified.add(key)
+
+    def _native_manifest(self, native, verified):
+        from .scale_coordinator_proof_v1 import coordinator_chain_pins
+        key = (native['manifest_path'], native['manifest_sha256'])
+        if key not in verified.manifests:
+            self._check_native_pin(*key, verified)
+            document = self._payload(*key)
+            if document.get('version') != 'scale-native-classification-export-v1' or not isinstance(document.get('artifact_sha256'), dict):
+                raise ValueError('unsupported native classification export')
+            for artifact in coordinator_chain_pins(document):
+                self._check_native_pin(artifact['path'], artifact['sha256'], verified)
+            verified.manifests[key] = document
+        return verified.manifests[key]
+
+    def _native_label_binding(self, native, document):
+        qid = _qid(native['qid'])
+        rows = [row for row in document['verified_projection']['rows'] if row['qid'] == qid]
+        if len(rows) != 1 or rows[0]['work_id'] != 'wd:' + qid or _json(json.loads(native['labels_json'])) != _json(rows[0]['admitted_labels']):
+            raise ValueError('native catalogue identity or labels differ from pinned admitted export')
+
+    def _native_proof_artifact(self, path, sha):
+        """Verify exact bytes per operation; timestamps never authorize reuse."""
+        path = Path(path)
+        if not path.is_absolute():
+            raise ValueError('native proof path must be absolute')
         signature = _native_proof_signature(path)
-        if self._native_signature_cache.get(key) == signature:
-            self._native_signature_cache.move_to_end(key)
-            return
         with path.open('rb') as stream:
             actual_sha = hashlib.file_digest(stream, 'sha256').hexdigest()
         if actual_sha != sha:
             raise ValueError('native proof hash changed: ' + str(path))
         if _native_proof_signature(path) != signature:
             raise ValueError('native proof changed during hash verification: ' + str(path))
-        self._native_signature_cache[key] = signature
-        self._native_signature_cache.move_to_end(key)
-        while len(self._native_signature_cache) > _NATIVE_SIGNATURE_CACHE_LIMIT:
-            self._native_signature_cache.popitem(last=False)
+        # Windows metadata can collide for rapid same-size writes. Reopen and
+        # reread bytes before accepting the pin, even if its signature matches.
+        # The caller's operation-local set still removes all duplicate pins.
+        with path.open('rb') as stream:
+            confirmed_sha = hashlib.file_digest(stream, 'sha256').hexdigest()
+        if confirmed_sha != sha or _native_proof_signature(path) != signature:
+            raise ValueError('native proof changed during hash verification: ' + str(path))
 
     def import_classifications(self, manifest_path, expected_sha256):
         """Adopt only the frozen v4 verifier's admitted, display-authorized labels.
@@ -519,7 +547,7 @@ class ScaleCatalogue:
         rows = verify_catalogue_classification(manifest_path, expected_sha256)
         label_axes = {label['label_id']: label['axis'] for label in load_taxonomy()['labels']}
         result = {'raw_classified': 0, 'adopted': 0, 'failed': 0, 'unchanged': 0, 'failures': []}
-        native_verified = set()
+        native_verified = _NativeOperation()
         with self._connect() as db:
             db.execute('BEGIN IMMEDIATE')
             for native in rows:
@@ -533,7 +561,7 @@ class ScaleCatalogue:
                        for label in labels):
                     raise ValueError('native classifier verifier returned unadmitted labels')
                 proof = {'manifest_path': manifest_path, 'manifest_sha256': expected_sha256,
-                         'provenance_json': _json(native['provenance'])}
+                         'provenance_json': _json(native['provenance']), 'qid': qid, 'labels_json': _json(labels)}
                 self._native_proofs(proof, verified=native_verified)
                 work = db.execute('SELECT qid FROM works WHERE qid=?', (qid,)).fetchone()
                 if work is None:
@@ -558,15 +586,18 @@ class ScaleCatalogue:
     def catalogue_stats(self):
         _, rights = self._conditions()
         with self._connect() as db:
+            db.execute('BEGIN')
             n = db.execute('SELECT count(*) FROM works').fetchone()[0]
             shown = db.execute('SELECT count(*) FROM works WHERE display_allowed=1').fetchone()[0] if rights['display'] == 'allowed' else 0
             featured = db.execute('SELECT count(*) FROM works WHERE recommendable=1 AND display_allowed=1').fetchone()[0] if shown else 0
             native_proofs = db.execute("""SELECT DISTINCT manifest_path,manifest_sha256,
                 json_object('artifacts',json_extract(provenance_json,'$.artifacts')) AS provenance_json
                 FROM native_classifications""").fetchall()
-            native_verified = set()
+            native_verified = _NativeOperation()
             for native in native_proofs:
                 self._native_proofs(native, verified=native_verified)
+            for native in db.execute('SELECT qid,labels_json,manifest_path,manifest_sha256 FROM native_classifications'):
+                self._native_label_binding(native, self._native_manifest(native, native_verified))
             native_n = db.execute("SELECT count(*) FROM native_classifications n JOIN works w USING(qid) WHERE n.labels_json!='[]' AND w.display_allowed=1").fetchone()[0] if shown else 0
             raw_classified_n = db.execute('SELECT count(*) FROM native_classifications').fetchone()[0]
             union_features = db.execute("SELECT count(*) FROM works w LEFT JOIN native_classifications n USING(qid) WHERE w.display_allowed=1 AND (w.recommendable=1 OR coalesce(n.labels_json,'[]')!='[]')").fetchone()[0] if shown else 0
@@ -576,7 +607,7 @@ class ScaleCatalogue:
             failures = db.execute('SELECT count(*) FROM ingestion_failures').fetchone()[0]
         return {'works': n, 'searchable_works': shown, 'held_works': n - shown,
                 'feature_bearing_works': union_features, 'recommendable_works': featured,
-                'source_declared_works': featured, 'source_genre_works': featured,
+                'source_declared_works': shown, 'source_genre_works': featured,
                 'strict72_works': native_n, 'llm_works': native_n, 'raw_classified_works': raw_classified_n,
                 'personal_score_works': 0, 'content_history_links': 0, 'bibliographic_history_links': 0,
                 'personalized': False, 'languages': languages, 'genres': genres,
@@ -616,7 +647,7 @@ class ScaleCatalogue:
             total = db.execute('SELECT count(*)' + base, parameters).fetchone()[0]
             rows = db.execute('SELECT w.row_json,r.status AS read_status' + base + ' ORDER BY w.title,w.qid LIMIT ? OFFSET ?',
                               parameters + [page_size, (page - 1) * page_size]).fetchall()
-        native_verified = set()
+        native_verified = _NativeOperation()
         return {'items': [self._row(r, native_verified=native_verified) for r in rows], 'total': total, 'page': page, 'page_size': page_size,
                 'pages': (total + page_size - 1) // page_size,
                 'filters': {'query': query, 'genre': genre, 'language': language,
@@ -626,7 +657,7 @@ class ScaleCatalogue:
         _, rights = self._conditions()
         if rights['display'] != 'allowed':
             return None
-        native_verified = set() if _native_verified is None else _native_verified
+        native_verified = _NativeOperation() if _native_verified is None else _native_verified
         qid = self._resolve_qid(qid, native_verified=native_verified)
         with self._connect() as db:
             row = db.execute('''SELECT w.row_json,r.status AS read_status,s.record_json,s.record_sha256 FROM works w
@@ -698,7 +729,7 @@ class ScaleCatalogue:
     def similar_works(self, qid, limit=12, exclude_read=True):
         if not 1 <= limit <= 100:
             raise ValueError('limit must be 1..100')
-        native_verified = set()
+        native_verified = _NativeOperation()
         source = self.work_detail(qid, _native_verified=native_verified)
         result = {'mode': 'insufficient_evidence', 'personalized': False, 'items': [],
                   'explanation': '資料記載ジャンルが不足しています。個人向けスコアは計算していません。'}
