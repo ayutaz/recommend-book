@@ -3,3 +3,6 @@
 schemas/classification-provenance-v4.schema.json text eol=lf
 # Preserve the exact mixed line endings pinned by the real recovery checkpoint.
 scripts/verify_world_pilot_recovery_v2.py -text whitespace=cr-at-eol
+# Preserve source bytes already pinned by the first content-classification run.
+scripts/run_scale_content_classification_v1.py -text whitespace=cr-at-eol
+src/recommend_book/scale_content_classification_v1.py -text whitespace=cr-at-eol
