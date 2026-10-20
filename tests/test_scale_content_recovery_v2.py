@@ -17,6 +17,8 @@ from recommend_book import scale_content_recovery_v2 as recovery
 from recommend_book.models import WorkInput
 from recommend_book.usage_guard import model_hash
 
+TAIL_FIXTURES = Path(__file__).parent / 'fixtures' / 'scale_content_recovery'
+
 
 def write(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -71,7 +73,25 @@ def failed_fixture(tmp_path, monkeypatch):
     return path, digest, receipt
 
 
-def test_frozen_v1_reuse_does_not_change_its_globals_or_bytes():
+def frozen_reuse_fixture(tmp_path, monkeypatch):
+    scope, source = tmp_path / 'scope.json', tmp_path / 'source.json'
+    monkeypatch.setattr(recovery, 'SCOPE_SHA', write(scope, {'kind': 'scope-fixture'}))
+    monkeypatch.setattr(recovery, 'NEXT_SOURCE_SHA', write(source, {'window_index': 38}))
+    paths = {
+        'reused_helper_v1': Path(preserved.__file__),
+        'reused_runner_v1': recovery.ROOT / 'scripts/run_scale_content_recovery_v1.py',
+        'reused_tail_v1': TAIL_FIXTURES / 'content-recovery-tail-v1.py',
+        'scope_supplement': scope,
+        'next_source': source,
+    }
+    monkeypatch.setattr(recovery, 'frozen_reuse_pins',
+                        lambda: {name: recovery._pin(path) for name, path in paths.items()})
+    return paths
+
+
+def test_frozen_v1_reuse_does_not_change_its_globals_or_bytes(tmp_path, monkeypatch):
+    paths = frozen_reuse_fixture(tmp_path, monkeypatch)
+    before = {name: path.read_bytes() for name, path in paths.items()}
     recovery.verify_frozen_reuse()
     assert preserved.RUN_NAME == 'scale30k-content-2301-2400'
     assert preserved.FAILED_GATE['failure_rate'] == .06
@@ -79,6 +99,16 @@ def test_frozen_v1_reuse_does_not_change_its_globals_or_bytes():
     assert recovery.FAILED_GATE == control.actual_gate(100, 92, 88, 81)
     assert recovery.FAILED_GATE['failure_rate'] == .08
     assert len(recovery.QUARANTINED) == 8
+    assert {name: path.read_bytes() for name, path in paths.items()} == before
+
+
+@pytest.mark.parametrize('name', ['scope_supplement', 'next_source'])
+def test_frozen_reuse_rejects_changed_operational_receipt(tmp_path, monkeypatch, name):
+    paths = frozen_reuse_fixture(tmp_path, monkeypatch)
+    recovery.verify_frozen_reuse()
+    write(paths[name], {'changed': True})
+    with pytest.raises(ValueError, match='changed'):
+        recovery.verify_frozen_reuse()
 
 
 def test_only_the_new_genuine_failed_gate_is_returned_false(tmp_path, monkeypatch):
@@ -110,7 +140,7 @@ def test_reused_code_sha_drift_rejected_before_any_native_call(kind):
     elif kind == 'runner':
         adapt = module(recovery.ROOT / 'scripts/run_scale_content_recovery_v2.py').adapted_runner_source
     else:
-        adapt = module(recovery.BASE / 'content-recovery-tail-v2.py').adapted_tail_source
+        adapt = module(TAIL_FIXTURES / 'content-recovery-tail-v2.py').adapted_tail_source
     with pytest.raises(ValueError, match='changed'):
         adapt(b'changed')
 
@@ -271,8 +301,9 @@ def test_v2_runner_keeps_actual_index_two_slots_full_review_and_proof_pins(tmp_p
 
 
 def test_tail_binds_new_code_and_opens_index38_only_after_rights_import_v4_gate():
-    tail = module(recovery.BASE / 'content-recovery-tail-v2.py')
-    source = tail.adapted_tail_source((recovery.BASE / 'content-recovery-tail-v1.py').read_bytes())
+    tail = module(TAIL_FIXTURES / 'content-recovery-tail-v2.py')
+    source = tail.adapted_tail_source((TAIL_FIXTURES / 'content-recovery-tail-v1.py').read_bytes())
+    assert recovery.sha(TAIL_FIXTURES / 'content-recovery-tail-v2.py') == '6bcb8d556de024bd7f36a28be99b13774e25332cb8f3d6f5b47bbaac808bc0f9'
     assert 'index = 38' in source and 'index==38' in source
     assert source.index('create_reviewed_export(parent') < source.index('operation.finalize(public')
     assert source.index('operation.finalize(public') < source.index('return continue_after_recovery_gate(')
@@ -283,7 +314,7 @@ def test_tail_binds_new_code_and_opens_index38_only_after_rights_import_v4_gate(
 
 @pytest.mark.parametrize('changed', ['path', 'bytes'])
 def test_first_ordinary_source_cannot_be_redirected_or_resealed(tmp_path, changed):
-    tail = module(recovery.BASE / 'content-recovery-tail-v2.py')
+    tail = module(TAIL_FIXTURES / 'content-recovery-tail-v2.py')
     seal = tmp_path / 'next' / 'manifest.json'
     digest = write(seal, {'window_index': 38})
     selected = seal.parent
