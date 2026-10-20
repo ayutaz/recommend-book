@@ -250,3 +250,25 @@ def test_ingest_failures_retain_bounded_qid_for_models_and_json_dicts(catalogue,
     with sqlite3.connect(catalogue.db_path) as db:
         assert [row[0] for row in db.execute('SELECT qid FROM ingestion_failures ORDER BY id')] == [
             'Q100', 'Q101', None, None, None]
+
+
+def test_verifier_admitted_theme_and_structure_are_stored_unchanged(catalogue, tmp_path, monkeypatch):
+    from recommend_book import scale_classification_v1
+    from recommend_book.classification.validation import load_taxonomy
+    catalogue.ingest([record(tmp_path)])
+    manifest = tmp_path / 'reviewed-manifest.json'
+    manifest_sha = save(manifest, {'fixture': 'authentic verifier contract, not an actual native review'})
+    labels = [{'label_id': next(row['label_id'] for row in load_taxonomy()['labels'] if row['axis'] == axis),
+               'axis': axis, 'decision': 'present', 'scope': 'work', 'raw_confidence': 0.71,
+               'relevance': None, 'evidence': []} for axis in ('theme', 'structure')]
+    admitted = {'qid': 'Q100', 'work_id': 'wd:Q100', 'labels': labels,
+                'provenance': {'artifacts': [{'path': str(manifest), 'sha256': manifest_sha}]}}
+    monkeypatch.setattr(scale_classification_v1, 'verify_catalogue_classification', lambda *args: [admitted])
+    assert catalogue.import_classifications(manifest, manifest_sha)['adopted'] == 1
+    assert catalogue.work_detail('Q100')['llm_features'] == labels
+    labels[0]['axis'] = 'genre'
+    with pytest.raises(ValueError, match='unadmitted labels'):
+        catalogue.import_classifications(manifest, manifest_sha)
+    labels[0].update(axis='theme', label_id='theme.nonexistent')
+    with pytest.raises(ValueError, match='unadmitted labels'):
+        catalogue.import_classifications(manifest, manifest_sha)

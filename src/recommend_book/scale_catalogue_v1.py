@@ -431,10 +431,12 @@ class ScaleCatalogue:
         a JSON flag or a model result alone cannot enter this projection.
         """
         from .scale_classification_v1 import verify_catalogue_classification
+        from .classification.validation import load_taxonomy
         self._conditions()
         manifest_path = str(Path(manifest_path).resolve())
         self._artifact(manifest_path, expected_sha256)
         rows = verify_catalogue_classification(manifest_path, expected_sha256)
+        label_axes = {label['label_id']: label['axis'] for label in load_taxonomy()['labels']}
         result = {'raw_classified': 0, 'adopted': 0, 'failed': 0, 'unchanged': 0, 'failures': []}
         with self._connect() as db:
             db.execute('BEGIN IMMEDIATE')
@@ -443,7 +445,9 @@ class ScaleCatalogue:
                 if native['work_id'] != 'wd:' + qid:
                     raise ValueError('native classification catalogue identity differs')
                 labels = native['labels']
-                if any(label.get('decision') != 'present' or label.get('scope') != 'work' or label.get('axis') != 'genre'
+                if any(label.get('decision') != 'present' or label.get('scope') != 'work'
+                       or label.get('label_id') not in label_axes
+                       or label.get('axis') != label_axes.get(label.get('label_id'))
                        for label in labels):
                     raise ValueError('native classifier verifier returned unadmitted labels')
                 proof = {'manifest_path': manifest_path, 'manifest_sha256': expected_sha256,
