@@ -175,6 +175,7 @@ def test_display_hold_stores_but_does_not_serve(tmp_path, catalogue):
     assert held.catalogue_stats()['held_works'] == 1
     assert held.search_catalogue()['items'] == []
     assert held.work_detail('Q100') is None
+    assert held.catalogue_facets() == {'languages': [], 'genres': []}
 
 
 def test_source_declared_count_includes_novels_without_genre(catalogue, tmp_path):
@@ -613,6 +614,9 @@ def test_source_only_search_and_similarity_do_not_depend_on_unused_native_output
     found = catalogue.search_catalogue()
     assert found['total'] == 2
     assert all('llm_features' not in row and 'content_sources' not in row for row in found['items'])
+    assert catalogue.catalogue_facets() == {
+        'languages': [{'value': 'en', 'count': 2}],
+        'genres': [{'qid': 'Q200', 'label': 'Fantasy', 'count': 2}]}
     similar = catalogue.similar_works('Q100')
     assert similar['mode'] == 'source_similarity' and similar['items'][0]['qid'] == 'Q101'
     assert {reason['kind'] for reason in similar['items'][0]['reasons']} <= {

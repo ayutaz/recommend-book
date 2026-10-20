@@ -656,6 +656,23 @@ class ScaleCatalogue:
                     db.execute('INSERT OR IGNORE INTO crosswalk VALUES(?,?,?)', (old_id, qid, _json(proof)))
         return result
 
+    def catalogue_facets(self):
+        """Source-only filter choices, independent of native classification proofs."""
+        _, rights = self._conditions()
+        if rights['display'] != 'allowed':
+            return {'languages': [], 'genres': []}
+        with self._connect() as db:
+            db.execute('BEGIN')
+            languages = [dict(r) for r in db.execute(
+                'SELECT language AS value,count(*) AS count FROM works '
+                'WHERE display_allowed=1 AND language IS NOT NULL '
+                'GROUP BY language ORDER BY count(*) DESC,language')]
+            genres = [dict(r) for r in db.execute(
+                'SELECT g.genre_qid AS qid,max(g.label) AS label,count(*) AS count '
+                'FROM work_genres g JOIN works w USING(qid) WHERE w.display_allowed=1 '
+                'GROUP BY g.genre_qid ORDER BY count(*) DESC,g.genre_qid')]
+        return {'languages': languages, 'genres': genres}
+
     def catalogue_stats(self):
         _, rights = self._conditions()
         with self._connect() as db:

@@ -89,6 +89,12 @@ class Catalogue:
                 'genres': [{'qid': 'Q1', 'label': '空想', 'count': 5}],
                 'private_history': 'PRIVATE-SENTINEL'}
 
+    def catalogue_facets(self):
+        return {'languages': [{'value': 'ja', 'count': 10, 'raw_path': 'PRIVATE-SENTINEL'}],
+                'genres': [{'qid': 'Q1', 'label': '空想', 'count': 5,
+                            'raw_path': 'PRIVATE-SENTINEL'}],
+                'private_history': 'PRIVATE-SENTINEL'}
+
     def item(self):
         return {'qid': 'Q2', 'work_id': 'wd:Q2', 'title': '<img src=x onerror=alert(1)>',
                 'aliases': ['別題'], 'authors': [{'qid': 'Q3', 'name': '著者'}],
@@ -153,6 +159,37 @@ def test_paginated_search_parameters_and_public_details(site):
     stats = json.loads(get(base + '/api/stats'))
     assert stats['raw_classified_works'] == 100 and stats['llm_works'] == 0
     assert stats['eligible_classified_works'] == 95
+
+
+def test_filter_choices_remain_available_while_native_statistics_are_waiting(site, monkeypatch):
+    base, catalogue = site
+    entered, release = threading.Event(), threading.Event()
+    original_stats = catalogue.catalogue_stats
+    def waiting_stats():
+        entered.set()
+        if not release.wait(10):
+            raise RuntimeError('test did not release statistics')
+        return original_stats()
+    monkeypatch.setattr(catalogue, 'catalogue_stats', waiting_stats)
+    outcomes = []
+    def request_stats():
+        with urlopen(base + '/api/stats', timeout=15) as response:
+            outcomes.append(json.load(response))
+    worker = threading.Thread(target=request_stats)
+    worker.start()
+    try:
+        assert entered.wait(5)
+        with urlopen(base + '/api/facets', timeout=3) as response:
+            facets = json.load(response)
+        assert not outcomes
+        assert facets == {'languages': [{'value': 'ja', 'count': 10}],
+                          'genres': [{'qid': 'Q1', 'label': '空想', 'count': 5}]}
+        assert 'PRIVATE-SENTINEL' not in json.dumps(facets)
+    finally:
+        release.set()
+        worker.join(15)
+    assert not worker.is_alive()
+    assert outcomes[0]['eligible_classified_works'] == 95
 
 
 def test_status_update_reversible_and_unknown_stays_distinct(site):
