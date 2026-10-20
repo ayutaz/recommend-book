@@ -26,8 +26,28 @@ from recommend_book.ingestion.wikipedia import section_text
 from recommend_book.wikipedia_prose import screen_section
 from recommend_book.ingestion.wikidata import claim_values, LANGUAGE_CODES
 
-GUARD_VERSION = 'usage-guard-v3.6'
+GUARD_VERSION = 'usage-guard-v3.7'
 METADATA_FIELDS = ('title', 'authors', 'original_language', 'first_publication_year', 'region', 'series')
+
+
+def _wikidata_title_values(entity):
+    """Exact published names; rank does not establish a title's original role.
+
+    Match WikidataAdapter's retained normal and preferred P1476 statements.
+    Other factual properties continue to use claim_values' best-rank rule.
+    """
+    values = {(v['value'], v.get('language', language))
+              for language, v in entity.get('labels', {}).items()}
+    values.update((v['value'], v.get('language', language))
+                  for language, group in entity.get('aliases', {}).items() for v in group)
+    for statement in entity.get('claims', {}).get('P1476', []):
+        snak = statement.get('mainsnak', {})
+        if statement.get('rank') == 'deprecated' or snak.get('snaktype', 'value') != 'value':
+            continue
+        value = snak.get('datavalue', {}).get('value')
+        if isinstance(value, dict) and isinstance(value.get('text'), str):
+            values.add((value['text'], value.get('language')))
+    return values
 
 
 def model_hash(value) -> str:
@@ -557,9 +577,7 @@ class UsageGuard:
                        'original_language': 'claims.P407', 'first_publication_year': 'claims.P577',
                        'region': 'claims.P495;linked.labels', 'series': 'claims.P179;linked.labels'}[field]
             if field == 'title':
-                values = {v['value'] for v in entity.get('labels', {}).values()}
-                values.update(v['value'] for group in entity.get('aliases', {}).values() for v in group)
-                values.update(v['text'] for v in claim_values(entity, 'P1476') if isinstance(v, dict) and 'text' in v)
+                values = {text for text, language in _wikidata_title_values(entity)}
             elif field == 'authors':
                 values = set()
                 for contributor in record.contributors:
@@ -893,7 +911,14 @@ class UsageGuard:
                     if len(works) != 1 or set(content) != {'work_id', 'title', 'language', 'role'} or content['work_id'] != works[0].work_id or content['title'] != works[0].title or content['role'] != 'unknown':
                         raise ValueError('title alias projection differs from source input')
                     source_models = [_record(b) for b in ledger['inputs'][originating_input_hashes[0]]['sources'].values()]
-                    if not any(t.value == content['title'] and t.language == content['language'] for r in source_models for t in r.titles):
+                    def title_language_bound(record):
+                        if not any(t.value == content['title'] and t.language == content['language'] for t in record.titles):
+                            return False
+                        if record.source != 'wikidata':
+                            return True
+                        entity = json.loads(Path(record.raw_path).read_bytes())['entities'][record.source_id]
+                        return (content['title'], content['language']) in _wikidata_title_values(entity)
+                    if not content['language'] or not any(title_language_bound(r) for r in source_models):
                         raise ValueError('alias language not bound to immutable title authority')
                 elif descriptor['kind'] == 'classification':
                     raise ValueError('classification requires typed native attempt manifest')

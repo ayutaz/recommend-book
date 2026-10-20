@@ -62,11 +62,11 @@ def test_private_conssa_receipt_does_not_authorize_public_display(tmp_path, monk
         guard._corpus(ev, [record], ledger, 'display', [])
 
 
-def fixture_ledger(tmp_path, *, policy='wikidata-cc0', kind='bibliographic', allowed_flag=True, normalized_title='Book', raw_entity=None, record_fields=None, raw_path_override=None):
+def fixture_ledger(tmp_path, *, policy='wikidata-cc0', kind='bibliographic', allowed_flag=True, normalized_title='Book', normalized_language='en', raw_entity=None, record_fields=None, raw_path_override=None):
     raw = tmp_path / 'raw.json'
     raw.write_text(json.dumps({'entities': {'Q1': raw_entity or {'id': 'Q1', 'labels': {'en': {'value': 'Book'}}, 'claims': {}}}}))
     ev = Evidence(evidence_id='wd:Q1:title', kind=kind, text='Book', source_url='https://www.wikidata.org/wiki/Q1', rights_policy_id=policy, llm_input_allowed=allowed_flag)
-    rec = SourceRecord(source='wikidata', source_id='Q1', source_url=ev.source_url, retrieved_at='2026-10-13T00:00:00Z', provider_id='wikidata', record_kind='work', titles=[Title(value=normalized_title, language='en')], evidence=[ev], raw_path=raw_path_override or str(raw), raw_sha256=hashlib.sha256(raw.read_bytes()).hexdigest(), rights_policy_id='wikidata-cc0', **(record_fields or {}))
+    rec = SourceRecord(source='wikidata', source_id='Q1', source_url=ev.source_url, retrieved_at='2026-10-13T00:00:00Z', provider_id='wikidata', record_kind='work', titles=[Title(value=normalized_title, language=normalized_language)], evidence=[ev], raw_path=raw_path_override or str(raw), raw_sha256=hashlib.sha256(raw.read_bytes()).hexdigest(), rights_policy_id='wikidata-cc0', **(record_fields or {}))
     dbpath = tmp_path / 'data.sqlite'
     db = DatasetDB(dbpath)
     db.ingest([rec])
@@ -99,6 +99,36 @@ def test_bound_complete_input_passes_and_serializes(tmp_path):
 def test_normalized_title_cannot_override_same_raw_identity(tmp_path):
     work, path, *_ = fixture_ledger(tmp_path, normalized_title='Injected title')
     assert not UsageGuard(path).check_input(work).allowed
+
+
+@pytest.mark.parametrize('rank,expected', [('normal', True), ('deprecated', False)])
+def test_published_title_normal_rank_remains_usable_beside_preferred(tmp_path, rank, expected):
+    def statement(text, statement_rank):
+        return {'rank': statement_rank, 'mainsnak': {'snaktype': 'value',
+            'datavalue': {'value': {'text': text, 'language': 'ja'}}}}
+    entity = {'id': 'Q1', 'labels': {'en': {'value': 'Book'}},
+              'claims': {'P1476': [statement('Preferred', 'preferred'), statement('Published', rank)]}}
+    work, path, *_ = fixture_ledger(tmp_path, normalized_title='Published', raw_entity=entity)
+    assert UsageGuard(path).check_input(work).allowed is expected
+
+
+@pytest.mark.parametrize('language,allowed', [('fr', True), ('en', False)])
+def test_title_alias_language_requires_exact_raw_title_assertion(tmp_path, language, allowed):
+    entity = {'id': 'Q1', 'labels': {'en': {'value': 'Book'}}, 'claims': {'P1476': [
+        {'rank': 'normal', 'mainsnak': {'snaktype': 'value',
+         'datavalue': {'value': {'text': 'Published', 'language': 'fr'}}}}]}}
+    work, path, raw, official, ledger = fixture_ledger(tmp_path, normalized_title='Published', normalized_language=language, raw_entity=entity)
+    payload = {'work_id': work.work_id, 'title': work.title, 'language': language, 'role': 'unknown'}
+    derived = tmp_path/'derived.json'
+    derived.write_text(json.dumps(payload))
+    recipe = tmp_path/'recipe.py'
+    recipe.write_text('typed alias derivation')
+    ledger['derived_artifacts'] = {model_hash(payload): {'kind': 'title_alias', 'raw_path': str(derived),
+        'raw_sha256': hashlib.sha256(derived.read_bytes()).hexdigest(), 'locator': '',
+        'originating_input_hashes': [model_hash(work)], 'value_sha256': model_hash(payload),
+        'recipe': {'path': str(recipe), 'sha256': hashlib.sha256(recipe.read_bytes()).hexdigest()}}}
+    path.write_text(json.dumps(ledger))
+    assert UsageGuard(path).check_derived(payload, [model_hash(work)], 'display').allowed is allowed
 
 
 @pytest.mark.parametrize('field,value', [('first_publication_year', 1999), ('original_language', 'ja'), ('region', ['Japan']), ('series', 'Fake series')])

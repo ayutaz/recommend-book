@@ -86,6 +86,25 @@ def test_purpose_proposals_keep_inventory_and_aliases_are_complete_inputs(source
     assert set(alias.source_record_ids) == set(next(w for w in proposals['bibliographic'] if w.work_id == alias.work_id).source_record_ids)
 
 
+def test_alias_proposals_preserve_foreign_language_and_hold_ambiguous_language(source_database):
+    from recommend_book.models import SourceRecord
+    with sqlite3.connect(source_database) as db:
+        source = SourceRecord.model_validate_json(db.execute('SELECT record_json FROM source_records LIMIT 1').fetchone()[0])
+    db.close()
+    source.titles.extend([Title(value='Titre publié', language='fr', kind='alternative'),
+                         Title(value='Ambiguous', language='en', kind='alternative'),
+                         Title(value='Ambiguous', language='de', kind='alternative'),
+                         Title(value='Unknown language', kind='alternative')])
+    with DatasetDB(source_database) as db:
+        db.ingest([source])
+    proposals = api().build_next_input_proposals(source_database)
+    assert [w.title for w in proposals['aliases']] == ['Titre publié']
+    alias = proposals['aliases'][0]
+    assert not alias.evidence
+    assert proposals['alias_metadata'][api().input_hash(alias)]['language'] == 'fr'
+    assert proposals['alias_metadata'][api().input_hash(alias)]['role'] == 'unknown'
+
+
 def test_new_database_keeps_original_tables_but_never_adopts_legacy_features(source_database, tmp_path):
     output = tmp_path / 'next-v3'
     before = sha(source_database)

@@ -288,3 +288,112 @@ def test_cli_rejects_nonpositive_or_noninteger_token_limit(tmp_path, monkeypatch
 def test_preflight_rejects_invalid_token_limit_before_runtime_access(tmp_path, limit):
     with pytest.raises(builder.argparse.ArgumentTypeError, match='positive integer'):
         builder.preflight(tmp_path, None, None, None, None, 'fixture', limit)
+
+@pytest.fixture
+def storage_root(tmp_path, monkeypatch):
+    """Small synthetic references with the real source transform, never real DBs."""
+    root = tmp_path / 'project'
+    paths = [*(ROOT / 'src/recommend_book').rglob('*.py'), *(ROOT / 'schemas').glob('*.json'),
+             *(ROOT / 'config').glob('*.json'), *(ROOT / 'scripts').glob('*.py'),
+             ROOT / 'pyproject.toml', ROOT / 'uv.lock', ROOT / 'docs/source-rights-review-scope-v3.md']
+    for source in paths:
+        target = root / source.relative_to(ROOT)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(source.read_bytes())
+    reference = root / 'data/autonomous-next-v3/reference/research-codebook'
+    reference.mkdir(parents=True)
+    for name in ('native-v3-source-contract.json', 'keywords.xml', 'book.pdf'):
+        (reference / name).write_bytes((name.encode() + b' fixed reference\n') * 4096)
+    monkeypatch.setattr(builder, 'ROOT', root)
+    return root
+
+
+def test_new_runtimes_share_verified_references_without_shared_source_inodes(storage_root):
+    root = storage_root
+    first = root / 'data/autonomous-next-v3/preparation/first'
+    second = first.with_name('second')
+    builder.build(first)
+    builder.build(second)
+    one, two = builder.verify_source(first), builder.verify_source(second)
+    assert one['reference_storage']['version'] == 'native-reference-storage-v1'
+    assert one['reference_storage']['cache_new_content_bytes'] > 0
+    assert two['reference_storage']['cache_new_content_bytes'] == 0
+    assert one['reference_storage']['runtime_reference_content_bytes'] == 0
+    assert one['reference_storage']['binding_sha256'] == two['reference_storage']['binding_sha256']
+    for relative, binding in one['reference_storage']['artifacts'].items():
+        cached = Path(binding['path'])
+        assert cached.read_bytes() == (root / relative).read_bytes()
+        assert not cached.samefile(root / relative)
+        assert cached.stat().st_nlink == 1
+        assert not (first / 'runtime' / relative).exists()
+    # The second namespace allocates only a tiny binding instead of references.
+    reference_bytes = sum(binding['bytes'] for binding in one['reference_storage']['artifacts'].values())
+    assert reference_bytes > (second / 'runtime/config/native-reference-bindings-v1.json').stat().st_size * 100
+
+
+def test_shared_reference_tamper_is_rejected_and_never_repaired(storage_root):
+    root = storage_root
+    first = root / 'data/autonomous-next-v3/preparation/first'
+    builder.build(first)
+    report = builder.verify_source(first)
+    item = next(iter(report['reference_storage']['artifacts'].values()))
+    cached = Path(item['path'])
+    cached.chmod(0o644)  # Same-owner override: read-only is not an ACL/security claim.
+    cached.write_bytes(b'tampered')
+    with pytest.raises(ValueError, match='reference.*(differs|drift)'):
+        builder.verify_source(first)
+    with pytest.raises(ValueError, match='reference.*(differs|drift)'):
+        builder.build(first.with_name('second'))
+    assert cached.read_bytes() == b'tampered'
+
+
+def test_historical_copy_manifest_still_verifies(tmp_path, monkeypatch):
+    root = tmp_path / 'root'
+    source = root / 'src/recommend_book/example.py'
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b'original')
+    output = root / 'data/autonomous-next-v3/preparation/old'
+    target = output / 'runtime/src/recommend_book/example.py'
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b'original')
+    builder.save(output / 'source-snapshot-manifest.json', {
+        'version': 'native-snapshot-runtime-v1', 'runtime_root': str(output / 'runtime'),
+        'copied_original_sha256': {'src/recommend_book/example.py': builder.sha(b'original')}, 'transformed': {}})
+    monkeypatch.setattr(builder, 'ROOT', root)
+    assert 'reference_storage' not in builder.verify_source(output)
+
+
+def test_fresh_runtime_config_binds_verified_shared_references(storage_root):
+    import subprocess
+    root = storage_root
+    output = root / 'data/autonomous-next-v3/preparation/config-probe'
+    builder.build(output)
+    code = "from recommend_book.classification.runner_v4 import build_run_config; from recommend_book.classification.validation import load_taxonomy; import json; print(json.dumps(build_run_config('fixture','fixture',load_taxonomy(),5,execution_spec='native-context-v3')))"
+    env = dict(os.environ, PYTHONPATH=str(output / 'runtime/src'), PYTHONDONTWRITEBYTECODE='1')
+    def config():
+        return subprocess.run([sys.executable, '-c', code], cwd=root, env=env,
+                              capture_output=True, text=True, timeout=30, check=False)
+    completed = config()
+    assert completed.returncode == 0, completed.stderr
+    value = json.loads(completed.stdout)
+    assert value['dependency_sha256']['config/native-reference-bindings-v1.json']
+    helper = 'src/recommend_book/classification/native_reference_store_v1.py'
+    assert value['dependency_sha256'][helper] == value['runtime_source_sha256'][helper]
+    assert len(value['native_codebook_sha256']) == 3
+    source_report = builder.verify_source(output)
+    item = source_report['reference_storage']['artifacts']['data/autonomous-next-v3/reference/research-codebook/book.pdf']
+    cached = Path(item['path'])
+    cached.chmod(0o644)
+    cached.write_bytes(b'tampered')
+    completed = config()
+    assert completed.returncode != 0
+    assert 'Shared reference content differs' in completed.stderr
+
+
+def test_binding_tamper_is_rejected_before_shared_content_use(storage_root):
+    output = storage_root / 'data/autonomous-next-v3/preparation/binding-probe'
+    builder.build(output)
+    path = output / 'runtime/config/native-reference-bindings-v1.json'
+    path.write_text('{}', encoding='utf-8')
+    with pytest.raises(ValueError, match='reference binding drift'):
+        builder.verify_source(output)

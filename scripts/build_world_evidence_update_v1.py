@@ -34,6 +34,43 @@ def save(path, value):
         stream.write(encoded(value))
 
 
+def pin_profile_artifacts(contract, pin, *, feature_recipe=None):
+    """Permit only exact historical feature-recipe bytes from a frozen runtime.
+
+    This validates evidence for the existing profile, never imports archived
+    code or changes its contract. All other artifacts retain their current pins.
+    """
+    proof = None
+    if feature_recipe is not None:
+        relative = 'src/recommend_book/next_database.py'
+        descriptor = contract['artifacts']['feature_recipe']
+        if Path(descriptor['path']).resolve(strict=True) != (ROOT / relative).resolve(strict=True):
+            raise ValueError('Profile feature recipe original path differs')
+        archived = Path(feature_recipe).resolve(strict=True)
+        preparation = (BASE / 'preparation').resolve(strict=True)
+        if not archived.is_relative_to(preparation):
+            raise ValueError('Profile feature recipe archive must be inside preparation')
+        parts = archived.relative_to(preparation).parts
+        if len(parts) != 5 or parts[1:] != ('runtime', 'src', 'recommend_book', 'next_database.py'):
+            raise ValueError('Profile feature recipe archived relative path differs')
+        namespace = preparation / parts[0]
+        manifest = pin(namespace / 'source-snapshot-manifest.json')
+        snapshot = json.loads(manifest.read_bytes())
+        if (snapshot.get('version') != 'native-snapshot-runtime-v1'
+                or Path(snapshot['runtime_root']).resolve(strict=True) != namespace / 'runtime'
+                or snapshot.get('copied_original_sha256', {}).get(relative) != descriptor['sha256']):
+            raise ValueError('Profile feature recipe archived source manifest differs')
+        archived = pin(archived, descriptor['sha256'])
+        proof = {'version': 'profile-feature-recipe-archive-binding-v1', 'artifact_key': 'feature_recipe',
+            'original_path': descriptor['path'], 'archived_path': str(archived),
+            'sha256': descriptor['sha256'], 'source_snapshot_manifest_path': str(manifest),
+            'source_snapshot_manifest_sha256': sha(manifest)}
+    for key, descriptor in contract['artifacts'].items():
+        if key != 'feature_recipe' or feature_recipe is None:
+            pin(descriptor['path'], descriptor['sha256'])
+    return proof
+
+
 def validate_baseline(delivery):
     """Validate a public delivery snapshot before applying an update.
 
@@ -415,8 +452,8 @@ def build_batch(args):
             or model_hash(snapshots['public-rows.json']) != contract['public_rows_sha256']
             or len(private['private_rows']) != 2):
         raise ValueError('Pinned private purpose contract differs')
-    for descriptor in contract['artifacts'].values():
-        pin(descriptor['path'], descriptor['sha256'])
+    profile_context = pin_profile_artifacts(contract, pin,
+        feature_recipe=getattr(args, 'profile_feature_recipe', None))
     credits = json.loads((prior/'public-source-credits.json').read_bytes())
     updates, new_rows, proofs, new_credit_html = [], [], [], []
     for mapping in mappings:
@@ -510,6 +547,8 @@ def build_batch(args):
     (output/'index.html').write_text(html, encoding='utf-8', newline='\n')
     save(output/'feature-admissions.local.json', proofs)
     save(output/'purpose-readback.local.json', audits)
+    if profile_context is not None:
+        save(output/'profile-context.local.json', profile_context)
     withdrawal = output/'withdrawal'
     withdrawal.mkdir()
     revoked = json.loads(ledger.read_bytes())
@@ -576,6 +615,8 @@ if __name__ == '__main__':
     parser.add_argument('--database', type=Path, action='append', required=True)
     parser.add_argument('--authority-database', type=Path,
                         help='Separate hash-pinned authority database (default: historical master, metadata queries only)')
+    parser.add_argument('--profile-feature-recipe', type=Path,
+                        help='Exact contract-pinned historical feature recipe inside a frozen preparation runtime')
     parser.add_argument('--mapping', type=Path, required=True)
     parser.add_argument('--allow-new-candidates', action='store_true')
     parser.add_argument('--label-admission-request', type=Path,
