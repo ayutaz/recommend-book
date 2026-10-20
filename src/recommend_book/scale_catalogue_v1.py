@@ -27,6 +27,15 @@ CONFLICT_TYPES = {'Q3331189', 'Q53731850', 'Q49084', 'Q277759', 'Q1667921',
 READ_STATUSES = {'unknown', 'unread', 'reading', 'read'}
 
 
+def collective_description(entity):
+    """Return an explicit collective description, not a novel's series membership."""
+    for description in entity.get('descriptions', {}).values():
+        text = description.get('value', '')
+        if re.match(r'^(?:novel series\b|série de romans\b|dylogie de romans?\b)', text, re.IGNORECASE):
+            return text
+    return None
+
+
 def _display_native_labels(labels):
     """Apply a conservative semantic hold without rewriting authenticated output.
 
@@ -332,6 +341,8 @@ class ScaleCatalogue:
             raise ValueError('conflicting edition/story/collection/series/adaptation scope')
         if not types & {'Q8261', 'Q747381'}:
             raise ValueError('novel/light novel direct source assertion absent')
+        if collective_description(entity):
+            raise ValueError('explicit source description identifies a collective, not an individual novel')
         # Deliberately no subclass inference: a future extension must reproduce
         # every P279 link from independently pinned ontology raw artifacts.
         title_values = [x['value'] for x in entity.get('labels', {}).values()]
@@ -629,6 +640,7 @@ class ScaleCatalogue:
             displayed = {r['qid'] for r in db.execute('SELECT qid FROM works WHERE display_allowed=1')} if shown else set()
             native_n = len(adopted_qids & displayed)
             raw_classified_n = db.execute('SELECT count(*) FROM native_classifications').fetchone()[0]
+            eligible_classified_n = db.execute('SELECT count(*) FROM native_classifications n JOIN works w USING(qid) WHERE w.display_allowed=1').fetchone()[0] if shown else 0
             source_featured = {r['qid'] for r in db.execute('SELECT qid FROM works WHERE display_allowed=1 AND recommendable=1')} if shown else set()
             union_features = len((source_featured | adopted_qids) & displayed)
             languages = [dict(r) for r in db.execute('SELECT language AS value,count(*) AS count FROM works WHERE display_allowed=1 AND language IS NOT NULL GROUP BY language ORDER BY count(*) DESC,language')] if shown else []
@@ -639,6 +651,7 @@ class ScaleCatalogue:
                 'feature_bearing_works': union_features, 'recommendable_works': featured,
                 'source_declared_works': shown, 'source_genre_works': featured,
                 'strict72_works': native_n, 'llm_works': native_n, 'raw_classified_works': raw_classified_n,
+                'eligible_classified_works': eligible_classified_n,
                 'semantic_held_labels': semantic_held,
                 'personal_score_works': 0, 'content_history_links': 0, 'bibliographic_history_links': 0,
                 'personalized': False, 'languages': languages, 'genres': genres,

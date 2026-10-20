@@ -27,6 +27,7 @@ class Catalogue:
 
     def catalogue_stats(self):
         return {'works': 10001, 'feature_bearing_works': 5100, 'llm_works': 0, 'raw_classified_works': 100,
+                'eligible_classified_works': 95,
                 'languages': [{'value': '日本語', 'count': 10}],
                 'genres': [{'qid': 'Q1', 'label': '空想', 'count': 5}],
                 'private_history': 'PRIVATE-SENTINEL'}
@@ -94,6 +95,7 @@ def test_paginated_search_parameters_and_public_details(site):
     assert detail['llm_features'][0]['confidence'] == .6
     stats = json.loads(get(base + '/api/stats'))
     assert stats['raw_classified_works'] == 100 and stats['llm_works'] == 0
+    assert stats['eligible_classified_works'] == 95
 
 
 def test_status_update_reversible_and_unknown_stays_distinct(site):

@@ -101,6 +101,24 @@ def test_ingest_resume_query_and_native_genre_are_separate(catalogue, tmp_path):
     assert detail['source_record_json']['source_id'] == 'Q100'
 
 
+@pytest.mark.parametrize('description,held', [
+    ('novel series by Victor Dixen', True),
+    ('série de romans japonaise', True),
+    ('dylogie de roman de Victor Dixen', True),
+    ('fourth novel in the Inhibitor Cycle, the main novel series within the Revelation Space universe', False),
+    ("3rd volume of the Japanese light novel series I'm in Love with the Villainess", False),
+])
+def test_collective_descriptions_do_not_masquerade_as_individual_novels(catalogue, tmp_path, description, held):
+    source = record(tmp_path)
+    raw = Path(source.raw_path)
+    payload = json.loads(raw.read_bytes())
+    payload['entities']['Q100']['descriptions'] = {'en': {'language': 'en', 'value': description}}
+    source.raw_sha256 = save(raw, payload)
+    result = catalogue.ingest([source])
+    assert result['failed'] == int(held)
+    assert catalogue.catalogue_stats()['searchable_works'] == int(not held)
+
+
 def test_failure_isolation_scope_and_raw_tamper(catalogue, tmp_path):
     edition = record(tmp_path, 'Q110', extra_claims={'P629': [claim('Q100')]})
     conflict = record(tmp_path, 'Q111', extra_claims={'P7937': [claim('Q49084')]})
@@ -283,9 +301,14 @@ def test_authenticated_native_import_keeps_raw_and_admitted_counts_separate(cata
     assert result['raw_classified'] == 2 and result['adopted'] == 1
     assert catalogue.catalogue_stats()['llm_works'] == 1
     assert catalogue.catalogue_stats()['raw_classified_works'] == 2
+    assert catalogue.catalogue_stats()['eligible_classified_works'] == 2
     assert catalogue.catalogue_stats()['feature_bearing_works'] == 2
     assert catalogue.work_detail('old_work_100')['llm_features'] == [label]
     assert catalogue.work_detail('Q100')['llm_features'][0]['relevance'] is None
+    with catalogue._connect() as db:
+        db.execute("UPDATE works SET display_allowed=0 WHERE qid='Q101'")
+    assert catalogue.catalogue_stats()['raw_classified_works'] == 2
+    assert catalogue.catalogue_stats()['eligible_classified_works'] == 1
     save(manifest, {'tampered': True})
     with pytest.raises(ValueError, match='hash changed'):
         catalogue.work_detail('Q100')
