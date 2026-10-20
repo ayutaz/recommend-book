@@ -1,6 +1,6 @@
 # 自動PoCの進捗と完了証拠
 
-2026-10-16案内: 以下の件数と「完了」は2026-10-13の限定PoCの記録。現在は[計画 v15](autonomous-next-phase-plan-v15.md)と[実生成・検証報告 v3](autonomous-next-delivery-report-v3.md)を参照する。分類精度・校正・本人向け改善は未検証のままである。
+2026-10-20案内: 以下の件数と「完了」は2026-10-13の限定PoCの記録。現在は[実行計画v16](autonomous-next-phase-plan-v16.md)と[phase15報告](phase15-bounded-poc-and-delivery-v1.md)を参照する。分類精度・校正・本人向け改善は未検証のままである。
 
 2026-10-13時点。[最新計画](autonomous-completion-plan-v2.md)のA〜Fローカル自動PoCを、保留・未検証範囲を含めて完了した。[実行結果](autonomous-poc-final-report.md)に詳細を記録した。追加の本人評価・試読・採点・感想・履歴入力・画面確認は0件。既存335件の本人評価を再利用し、AI判断を本人評価や人手正解として登録しない。
 

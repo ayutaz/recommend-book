@@ -1,6 +1,8 @@
 # 2作品の限定処理とPoC再判定
 
-実施日: 2026-10-20。[計画v16](autonomous-next-phase-plan-v16.md)の直近1〜4を実行した。追加費用・外部委託・追加の本人作業は0。保存済み資料から2作品を分類・審査し、2候補・7特徴を追加した。履歴接続と独立正解は増えていない。
+実施日: 2026-10-20。[実行時の固定計画v16](https://github.com/ayutaz/recommend-book/blob/0bdc3086b7da01cb59c67832517965670e6abcd8/docs/autonomous-next-phase-plan-v16.md)の1〜4を実行した。追加費用・外部委託・追加の本人作業は0。保存済み資料から2作品を分類・審査し、2候補・7特徴を追加した。履歴接続と独立正解は増えていない。
+
+[PR #18](https://github.com/ayutaz/recommend-book/pull/18)でmainへ統合済み（`f1606ce`）。両OSのCI成功と、審査したtreeの一致・main同期を確認した。以後の作業順序は[現行の実行計画](autonomous-next-phase-plan-v16.md)を参照する。
 
 ## 1. 入力修正後の2作品を仕上げる
 
