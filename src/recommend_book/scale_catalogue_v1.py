@@ -27,6 +27,29 @@ CONFLICT_TYPES = {'Q3331189', 'Q53731850', 'Q49084', 'Q277759', 'Q1667921',
 READ_STATUSES = {'unknown', 'unread', 'reading', 'read'}
 
 
+def _display_native_labels(labels):
+    """Apply a conservative semantic hold without rewriting authenticated output.
+
+    Separate review found that 'romantic fiction' alone does not establish
+    the taxonomy's central love-relationship plot. Preserve source genres and
+    raw labels; a clear romance citation can still support the native label.
+    """
+    admitted, held = [], []
+    clear = {'romance novel', 'romance novels', 'romantic novel', '恋愛小説'}
+    for label in labels:
+        quotes = [' '.join(ref['quote'].casefold().split())
+                  for ref in label.get('evidence', [])
+                  if isinstance(ref, dict) and isinstance(ref.get('quote'), str)]
+        ambiguous = any('romantic fiction' in quote for quote in quotes)
+        supported = any(any(re.search(r'(?<!\w)' + re.escape(term) + r'(?!\w)', quote)
+                            for term in clear) for quote in quotes)
+        if label.get('label_id') == 'genre.romance' and ambiguous and not supported:
+            held.append({'label_id': 'genre.romance', 'reason': 'ambiguous_romantic_fiction_citation'})
+        else:
+            admitted.append(label)
+    return admitted, held
+
+
 class _NativeOperation(set):
     """Request-local pin set and parsed manifest data, never usage decisions."""
     def __init__(self):
@@ -457,7 +480,7 @@ class ScaleCatalogue:
             native = db.execute('SELECT * FROM native_classifications WHERE qid=?', (row['qid'],)).fetchone()
         if native:
             self._native_proofs(native, verified=native_verified)
-            row['llm_features'] = json.loads(native['labels_json'])
+            row['llm_features'], row['llm_held_features'] = _display_native_labels(json.loads(native['labels_json']))
         if detail:
             if _sha(stored['record_json'].encode('utf-8')) != stored['record_sha256']:
                 raise ValueError('source version record hash changed')
@@ -574,7 +597,7 @@ class ScaleCatalogue:
                 db.execute('INSERT OR REPLACE INTO native_classifications VALUES(?,?,?,?,?)',
                            (qid, manifest_path, expected_sha256, _json(labels), proof['provenance_json']))
                 result['raw_classified'] += 1
-                result['adopted'] += bool(labels)
+                result['adopted'] += bool(_display_native_labels(labels)[0])
                 old_id = native.get('input_work_id')
                 if old_id:
                     previous = db.execute('SELECT qid FROM crosswalk WHERE old_work_id=?', (old_id,)).fetchone()
@@ -596,11 +619,18 @@ class ScaleCatalogue:
             native_verified = _NativeOperation()
             for native in native_proofs:
                 self._native_proofs(native, verified=native_verified)
+            adopted_qids, semantic_held = set(), 0
             for native in db.execute('SELECT qid,labels_json,manifest_path,manifest_sha256 FROM native_classifications'):
                 self._native_label_binding(native, self._native_manifest(native, native_verified))
-            native_n = db.execute("SELECT count(*) FROM native_classifications n JOIN works w USING(qid) WHERE n.labels_json!='[]' AND w.display_allowed=1").fetchone()[0] if shown else 0
+                labels, held = _display_native_labels(json.loads(native['labels_json']))
+                semantic_held += len(held)
+                if labels:
+                    adopted_qids.add(native['qid'])
+            displayed = {r['qid'] for r in db.execute('SELECT qid FROM works WHERE display_allowed=1')} if shown else set()
+            native_n = len(adopted_qids & displayed)
             raw_classified_n = db.execute('SELECT count(*) FROM native_classifications').fetchone()[0]
-            union_features = db.execute("SELECT count(*) FROM works w LEFT JOIN native_classifications n USING(qid) WHERE w.display_allowed=1 AND (w.recommendable=1 OR coalesce(n.labels_json,'[]')!='[]')").fetchone()[0] if shown else 0
+            source_featured = {r['qid'] for r in db.execute('SELECT qid FROM works WHERE display_allowed=1 AND recommendable=1')} if shown else set()
+            union_features = len((source_featured | adopted_qids) & displayed)
             languages = [dict(r) for r in db.execute('SELECT language AS value,count(*) AS count FROM works WHERE display_allowed=1 AND language IS NOT NULL GROUP BY language ORDER BY count(*) DESC,language')] if shown else []
             genres = [dict(r) for r in db.execute('SELECT g.genre_qid AS qid,max(g.label) AS label,count(*) AS count FROM work_genres g JOIN works w USING(qid) WHERE w.display_allowed=1 GROUP BY g.genre_qid ORDER BY count(*) DESC,g.genre_qid')] if shown else []
             statuses = dict(db.execute("SELECT coalesce(r.status,'unknown'),count(*) FROM works w LEFT JOIN read_status r USING(qid) GROUP BY coalesce(r.status,'unknown')"))
@@ -609,6 +639,7 @@ class ScaleCatalogue:
                 'feature_bearing_works': union_features, 'recommendable_works': featured,
                 'source_declared_works': shown, 'source_genre_works': featured,
                 'strict72_works': native_n, 'llm_works': native_n, 'raw_classified_works': raw_classified_n,
+                'semantic_held_labels': semantic_held,
                 'personal_score_works': 0, 'content_history_links': 0, 'bibliographic_history_links': 0,
                 'personalized': False, 'languages': languages, 'genres': genres,
                 'read_status_counts': statuses, 'ingestion_failures': failures}

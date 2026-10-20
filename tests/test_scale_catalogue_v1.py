@@ -291,6 +291,34 @@ def test_authenticated_native_import_keeps_raw_and_admitted_counts_separate(cata
         catalogue.work_detail('Q100')
 
 
+def test_ambiguous_romance_hold_preserves_native_proof_and_other_features(catalogue, tmp_path):
+    catalogue.ingest([record(tmp_path, f'Q{i}', genre=None) for i in range(100, 103)])
+    ambiguous = {'label_id': 'genre.romance', 'axis': 'genre', 'evidence': [{'quote': 'romantic fiction'}]}
+    clear = dict(ambiguous, evidence=[{'quote': 'romantic fiction'}, {'quote': 'a romance novel'}])
+    fantasy = {'label_id': 'genre.fantasy', 'axis': 'genre', 'evidence': [{'quote': 'fantasy novel'}]}
+    original = [[ambiguous], [ambiguous, fantasy], [clear]]
+    manifest = tmp_path / 'romance.json'
+    sha = native_manifest(manifest, rows=[{'qid': f'Q{i}', 'work_id': f'wd:Q{i}', 'admitted_labels': labels}
+                                         for i, labels in zip(range(100, 103), original)])
+    with catalogue._connect() as db:
+        db.executemany('INSERT INTO native_classifications VALUES(?,?,?,?,?)',
+                       [(f'Q{i}', str(manifest), sha, json.dumps(labels), json.dumps({'artifacts': native_pins(manifest)}))
+                        for i, labels in zip(range(100, 103), original)])
+    assert catalogue.work_detail('Q100')['llm_features'] == []
+    assert catalogue.work_detail('Q100')['llm_held_features'][0]['reason'] == 'ambiguous_romantic_fiction_citation'
+    assert catalogue.work_detail('Q101')['llm_features'] == [fantasy]
+    assert catalogue.work_detail('Q102')['llm_features'] == [clear]
+    stats = catalogue.catalogue_stats()
+    assert stats['raw_classified_works'] == 3
+    assert stats['llm_works'] == stats['feature_bearing_works'] == 2
+    assert stats['semantic_held_labels'] == 2
+    with catalogue._connect() as db:
+        assert json.loads(db.execute("SELECT labels_json FROM native_classifications WHERE qid='Q100'").fetchone()[0]) == [ambiguous]
+        db.execute("UPDATE native_classifications SET labels_json='[]' WHERE qid='Q100'")
+    with pytest.raises(ValueError, match='native catalogue identity or labels differ'):
+        catalogue.work_detail('Q100')
+
+
 def test_legacy_crosswalk_uses_authority_not_same_title(catalogue, tmp_path):
     from recommend_book.database import DatasetDB
     from recommend_book.scale_catalogue_v1 import export_legacy_crosswalk
