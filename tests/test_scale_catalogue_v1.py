@@ -16,7 +16,7 @@ def save(path, payload):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def native_manifest(path, *, rows=(), artifacts=()):
+def native_manifest(path, *, rows=(), artifacts=(), version='scale-native-classification-export-v1'):
     preparation = path.parent / f'{path.stem}-preparation'
     run_manifest = preparation / 'runtime/data/autonomous-next-v3/classification/fixture/run/manifest.json'
     run_manifest.parent.mkdir(parents=True, exist_ok=True)
@@ -35,7 +35,7 @@ def native_manifest(path, *, rows=(), artifacts=()):
                                  'manifest_sha256': run_sha, 'exit_code': 0, 'process_exit_observed': True,
                                  'process_pid': 1234, 'parent_request_sha256': request_sha,
                                  'parent_exit_observation_sha256': exit_sha})
-    return save(path, {'version': 'scale-native-classification-export-v1',
+    return save(path, {'version': version,
                        'runtime_preparation': str(preparation), 'run_manifest': str(run_manifest),
                        'coordinator_sha256': coordinator_sha,
                        'artifact_sha256': {**{item['path']: item['sha256'] for item in artifacts},
@@ -377,19 +377,36 @@ def test_ingest_failures_retain_bounded_qid_for_models_and_json_dicts(catalogue,
             'Q100', 'Q101', None, None, None]
 
 
-def test_verifier_admitted_theme_and_structure_are_stored_unchanged(catalogue, tmp_path, monkeypatch):
-    from recommend_book import scale_classification_v1
+@pytest.mark.parametrize('version,module_name', [
+    ('scale-native-classification-export-v1', 'recommend_book.scale_classification_v1'),
+    ('scale-content-native-classification-export-v1', 'recommend_book.scale_content_classification_v1'),
+])
+def test_verifier_admitted_theme_and_structure_are_stored_unchanged(catalogue, tmp_path, monkeypatch, version, module_name):
+    import importlib
+    import sys
+    from types import ModuleType
+    if version == 'scale-content-native-classification-export-v1':
+        verifier = ModuleType(module_name)
+        monkeypatch.setitem(sys.modules, module_name, verifier)
+    else:
+        verifier = importlib.import_module(module_name)
     from recommend_book.classification.validation import load_taxonomy
     catalogue.ingest([record(tmp_path)])
     manifest = tmp_path / 'reviewed-manifest.json'
     labels = [{'label_id': next(row['label_id'] for row in load_taxonomy()['labels'] if row['axis'] == axis),
                'axis': axis, 'decision': 'present', 'scope': 'work', 'raw_confidence': 0.71,
                'relevance': None, 'evidence': []} for axis in ('theme', 'structure')]
-    manifest_sha = native_manifest(manifest, rows=[{'qid': 'Q100', 'work_id': 'wd:Q100', 'admitted_labels': labels}])
+    manifest_sha = native_manifest(manifest, version=version,
+                                   rows=[{'qid': 'Q100', 'work_id': 'wd:Q100', 'admitted_labels': labels}])
     admitted = {'qid': 'Q100', 'work_id': 'wd:Q100', 'labels': labels,
                 'provenance': {'artifacts': native_pins(manifest)}}
-    monkeypatch.setattr(scale_classification_v1, 'verify_catalogue_classification', lambda *args: [admitted])
+    calls = []
+    def verify(path, digest):
+        calls.append((path, digest))
+        return [admitted]
+    monkeypatch.setattr(verifier, 'verify_catalogue_classification', verify, raising=False)
     assert catalogue.import_classifications(manifest, manifest_sha)['adopted'] == 1
+    assert calls == [(str(manifest.resolve()), manifest_sha)]
     assert catalogue.work_detail('Q100')['llm_features'] == labels
     labels[0]['axis'] = 'genre'
     with pytest.raises(ValueError, match='unadmitted labels'):
@@ -397,6 +414,17 @@ def test_verifier_admitted_theme_and_structure_are_stored_unchanged(catalogue, t
     labels[0].update(axis='theme', label_id='theme.nonexistent')
     with pytest.raises(ValueError, match='unadmitted labels'):
         catalogue.import_classifications(manifest, manifest_sha)
+
+
+def test_unknown_native_export_version_does_not_fall_back_to_metadata_verifier(catalogue, tmp_path, monkeypatch):
+    from recommend_book import scale_classification_v1
+    def forbidden(*args):
+        raise AssertionError('unknown version must be rejected before invoking a verifier')
+    monkeypatch.setattr(scale_classification_v1, 'verify_catalogue_classification', forbidden)
+    manifest = tmp_path / 'unknown-version.json'
+    digest = native_manifest(manifest, version='unsupported-native-export')
+    with pytest.raises(ValueError, match='Unknown classification export version'):
+        catalogue.import_classifications(manifest, digest)
 
 
 def test_native_proof_pins_stream_twice_per_request_without_retaining_bytes(catalogue, tmp_path, monkeypatch):

@@ -25,6 +25,8 @@ VERSION = 'scale-catalogue-v1'
 CONFLICT_TYPES = {'Q3331189', 'Q53731850', 'Q49084', 'Q277759', 'Q1667921',
                   'Q1279564', 'Q105420', 'Q2668072', 'Q104213567', 'Q5398426', 'Q11424', 'Q7725310'}
 READ_STATUSES = {'unknown', 'unread', 'reading', 'read'}
+NATIVE_EXPORT_VERSIONS = {'scale-native-classification-export-v1',
+                          'scale-content-native-classification-export-v1'}
 
 
 def collective_description(entity):
@@ -534,7 +536,7 @@ class ScaleCatalogue:
         if key not in verified.manifests:
             self._check_native_pin(*key, verified)
             document = self._payload(*key)
-            if document.get('version') != 'scale-native-classification-export-v1' or not isinstance(document.get('artifact_sha256'), dict):
+            if document.get('version') not in NATIVE_EXPORT_VERSIONS or not isinstance(document.get('artifact_sha256'), dict):
                 raise ValueError('unsupported native classification export')
             for artifact in coordinator_chain_pins(document):
                 self._check_native_pin(artifact['path'], artifact['sha256'], verified)
@@ -568,16 +570,24 @@ class ScaleCatalogue:
             raise ValueError('native proof changed during hash verification: ' + str(path))
 
     def import_classifications(self, manifest_path, expected_sha256):
-        """Adopt only the frozen v4 verifier's admitted, display-authorized labels.
+        """Adopt only a versioned authentic verifier's display-authorized labels.
 
         The verifier runs the actual read-only UsageGuard/native lineage loader;
         a JSON flag or a model result alone cannot enter this projection.
         """
-        from .scale_classification_v1 import verify_catalogue_classification
         from .classification.validation import load_taxonomy
         self._conditions()
         manifest_path = str(Path(manifest_path).resolve())
-        self._artifact(manifest_path, expected_sha256)
+        raw = Path(manifest_path).read_bytes()
+        if not expected_sha256 or _sha(raw) != expected_sha256:
+            raise ValueError('Classification export manifest SHA differs')
+        version = json.loads(raw).get('version')
+        if version == 'scale-native-classification-export-v1':
+            from .scale_classification_v1 import verify_catalogue_classification
+        elif version == 'scale-content-native-classification-export-v1':
+            from .scale_content_classification_v1 import verify_catalogue_classification
+        else:
+            raise ValueError('Unknown classification export version')
         rows = verify_catalogue_classification(manifest_path, expected_sha256)
         label_axes = {label['label_id']: label['axis'] for label in load_taxonomy()['labels']}
         result = {'raw_classified': 0, 'adopted': 0, 'failed': 0, 'unchanged': 0, 'failures': []}
