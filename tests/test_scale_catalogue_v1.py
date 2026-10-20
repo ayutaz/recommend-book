@@ -1,7 +1,9 @@
 import hashlib
 import json
+import os
 import sqlite3
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -272,3 +274,93 @@ def test_verifier_admitted_theme_and_structure_are_stored_unchanged(catalogue, t
     labels[0].update(axis='theme', label_id='theme.nonexistent')
     with pytest.raises(ValueError, match='unadmitted labels'):
         catalogue.import_classifications(manifest, manifest_sha)
+
+
+def test_native_proof_pins_hash_once_without_retaining_bytes(catalogue, tmp_path, monkeypatch):
+    manifest = tmp_path / 'native-manifest.json'
+    manifest_sha = save(manifest, {'fixture': 'native dependency hash cache'})
+    pins = []
+    for index in range(110):
+        path = tmp_path / f'pin-{index}.bin'
+        path.write_bytes(f'proof {index}'.encode())
+        pins.append({'path': str(path), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()})
+    native = {'manifest_path': str(manifest), 'manifest_sha256': manifest_sha,
+              'provenance_json': json.dumps({'artifacts': pins})}
+    hashes = []
+    file_digest = hashlib.file_digest
+
+    def counted_digest(stream, algorithm):
+        hashes.append(stream.name)
+        return file_digest(stream, algorithm)
+
+    read_bytes = Path.read_bytes
+
+    def forbid_proof_bytes(path):
+        if path == manifest or path.name.startswith('pin-'):
+            raise AssertionError('native proof verification must stream bytes, not retain them')
+        return read_bytes(path)
+
+    monkeypatch.setattr(hashlib, 'file_digest', counted_digest)
+    monkeypatch.setattr(Path, 'read_bytes', forbid_proof_bytes)
+    catalogue._native_proofs(native)
+    catalogue._native_proofs(native)
+    assert len(hashes) == len(set(hashes)) == 111
+    assert catalogue._raw_cache == {}
+
+
+def test_native_proof_detects_same_size_tamper_with_restored_mtime(catalogue, tmp_path):
+    path = tmp_path / 'mutable-proof.bin'
+    path.write_bytes(b'first')
+    expected_sha = hashlib.sha256(path.read_bytes()).hexdigest()
+    native = {'manifest_path': str(path), 'manifest_sha256': expected_sha,
+              'provenance_json': json.dumps({'artifacts': [{'path': str(path), 'sha256': expected_sha}]})}
+    catalogue._native_proofs(native)
+    original = path.stat()
+    path.write_bytes(b'other')
+    os.utime(path, ns=(original.st_atime_ns, original.st_mtime_ns))
+    assert path.stat().st_mtime_ns == original.st_mtime_ns
+    assert path.stat().st_size == original.st_size
+    with pytest.raises(ValueError, match='hash changed'):
+        catalogue._native_proofs(native)
+
+
+def test_native_proof_signature_cache_is_bounded_and_rehashes_evicted_pin(catalogue, tmp_path, monkeypatch):
+    from recommend_book import scale_catalogue_v1
+    monkeypatch.setattr(scale_catalogue_v1, '_NATIVE_SIGNATURE_CACHE_LIMIT', 3)
+    hashes = []
+    digest = hashlib.file_digest
+
+    def counted(stream, algorithm):
+        hashes.append(stream.name)
+        return digest(stream, algorithm)
+
+    monkeypatch.setattr(hashlib, 'file_digest', counted)
+    pins = []
+    for index in range(5):
+        path = tmp_path / f'bounded-{index}.bin'
+        path.write_bytes(str(index).encode())
+        sha = hashlib.sha256(path.read_bytes()).hexdigest()
+        pins.append((path, sha))
+        catalogue._native_proof_artifact(path, sha)
+    assert len(catalogue._native_signature_cache) == 3
+    catalogue._native_proof_artifact(*pins[-1])
+    assert len(hashes) == 5
+    catalogue._native_proof_artifact(*pins[0])
+    assert len(hashes) == 6
+
+
+def test_native_proof_rejects_change_during_streamed_hash(catalogue, tmp_path, monkeypatch):
+    path = tmp_path / 'changing.bin'
+    path.write_bytes(b'first')
+    expected_sha = hashlib.sha256(path.read_bytes()).hexdigest()
+    digest = hashlib.file_digest
+
+    def change_after_hash(stream, algorithm):
+        result = digest(stream, algorithm)
+        path.write_bytes(b'other')
+        return result
+
+    monkeypatch.setattr(hashlib, 'file_digest', change_after_hash)
+    with pytest.raises(ValueError, match='changed during hash verification'):
+        catalogue._native_proof_artifact(path, expected_sha)
+    assert not catalogue._native_signature_cache

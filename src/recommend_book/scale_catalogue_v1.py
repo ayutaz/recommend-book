@@ -8,8 +8,10 @@ from __future__ import annotations
 from collections import OrderedDict
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from functools import lru_cache
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import sqlite3
@@ -23,6 +25,49 @@ VERSION = 'scale-catalogue-v1'
 CONFLICT_TYPES = {'Q3331189', 'Q53731850', 'Q49084', 'Q277759', 'Q1667921',
                   'Q1279564', 'Q105420', 'Q2668072', 'Q104213567', 'Q5398426', 'Q11424', 'Q7725310'}
 READ_STATUSES = {'unknown', 'unread', 'reading', 'read'}
+_NATIVE_SIGNATURE_CACHE_LIMIT = 4096
+
+
+@lru_cache(maxsize=1)
+def _windows_proof_api():
+    import ctypes
+    from ctypes import wintypes
+
+    class FileBasicInfo(ctypes.Structure):
+        _fields_ = [(name, ctypes.c_longlong) for name in
+                    ('CreationTime', 'LastAccessTime', 'LastWriteTime', 'ChangeTime')] + [
+                        ('FileAttributes', wintypes.DWORD)]
+
+    api = ctypes.WinDLL('kernel32', use_last_error=True)
+    api.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                               wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    api.CreateFileW.restype = wintypes.HANDLE
+    api.GetFileInformationByHandleEx.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD]
+    api.GetFileInformationByHandleEx.restype = wintypes.BOOL
+    api.CloseHandle.argtypes = [wintypes.HANDLE]
+    api.CloseHandle.restype = wintypes.BOOL
+    return api, FileBasicInfo
+
+
+def _native_proof_signature(path):
+    stat = path.stat()
+    change_time = stat.st_ctime_ns
+    if os.name == 'nt':
+        # Python's Windows st_ctime is creation time. NTFS ChangeTime also
+        # detects a same-size rewrite whose LastWriteTime was restored.
+        import ctypes
+        api, basic_type = _windows_proof_api()
+        handle = api.CreateFileW(str(path), 0x80, 7, None, 3, 0, None)  # read attributes; share read/write/delete
+        if handle == ctypes.c_void_p(-1).value:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            info = basic_type()
+            if not api.GetFileInformationByHandleEx(handle, 0, ctypes.byref(info), ctypes.sizeof(info)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            change_time = info.ChangeTime
+        finally:
+            api.CloseHandle(handle)
+    return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, change_time)
 
 
 def _json(value):
@@ -126,6 +171,7 @@ class ScaleCatalogue:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._raw_cache = OrderedDict()
         self._json_cache = OrderedDict()
+        self._native_signature_cache = OrderedDict()
         self._registry = RightsRegistry.default()
         with self._connect() as db:
             # Bulk source-version writes must not block the running search UI.
@@ -417,12 +463,33 @@ class ScaleCatalogue:
         return row
 
     def _native_proofs(self, native):
-        self._artifact(native['manifest_path'], native['manifest_sha256'])
+        self._native_proof_artifact(native['manifest_path'], native['manifest_sha256'])
         proof = json.loads(native['provenance_json'])
         if not proof.get('artifacts'):
             raise ValueError('native classification mutable dependency pins absent')
         for artifact in proof['artifacts']:
-            self._artifact(artifact['path'], artifact['sha256'])
+            self._native_proof_artifact(artifact['path'], artifact['sha256'])
+
+    def _native_proof_artifact(self, path, sha):
+        """Cache successful byte verification only; retain no artifact bytes or decisions."""
+        path = Path(path)
+        if not path.is_absolute():
+            raise ValueError('native proof path must be absolute')
+        key = (str(path), sha)
+        signature = _native_proof_signature(path)
+        if self._native_signature_cache.get(key) == signature:
+            self._native_signature_cache.move_to_end(key)
+            return
+        with path.open('rb') as stream:
+            actual_sha = hashlib.file_digest(stream, 'sha256').hexdigest()
+        if actual_sha != sha:
+            raise ValueError('native proof hash changed: ' + str(path))
+        if _native_proof_signature(path) != signature:
+            raise ValueError('native proof changed during hash verification: ' + str(path))
+        self._native_signature_cache[key] = signature
+        self._native_signature_cache.move_to_end(key)
+        while len(self._native_signature_cache) > _NATIVE_SIGNATURE_CACHE_LIMIT:
+            self._native_signature_cache.popitem(last=False)
 
     def import_classifications(self, manifest_path, expected_sha256):
         """Adopt only the frozen v4 verifier's admitted, display-authorized labels.
