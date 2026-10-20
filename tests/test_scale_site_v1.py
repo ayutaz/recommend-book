@@ -5,6 +5,18 @@ from urllib.request import Request, urlopen
 
 import pytest
 
+
+def test_native_feature_shape_displays_confidence_and_quoted_evidence():
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = public_work({'qid': 'Q2', 'llm_features': [{
+        'label_id': 'genre.mystery', 'axis': 'genre', 'raw_confidence': .82,
+        'relevance': None, 'evidence': [{'evidence_id': 'internal-only',
+            'locator': 'claims.P136', 'quote': 'detective fiction'}]}]})
+    feature = row['llm_features'][0]
+    assert feature['confidence'] == .82 and feature['relevance'] is None
+    assert feature['label'] == 'Mystery' and feature['evidence'] == 'detective fiction'
+    assert 'internal-only' not in json.dumps(row)
+
 from recommend_book.recommendation.scale_site_v1 import create_server
 
 
