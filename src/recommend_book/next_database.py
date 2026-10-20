@@ -56,17 +56,24 @@ def build_next_input_proposals(source_database):
             if evidence:
                 result['classification'].append(work.model_copy(update={'evidence': evidence}, deep=True))
             by_title = defaultdict(list)
+            title_languages = defaultdict(set)
             for row in sources[work.work_id]:
                 record = SourceRecord.model_validate_json(row['record_json'])
                 if record.record_kind != 'work':
                     continue
                 for title in record.titles:
-                    if title.language == 'ja' and title.value != bibliography.title:
+                    if title.value != bibliography.title:
+                        title_languages[title.value].add(title.language)
                         by_title[title.value].append(row['version_id'])
             for title, versions in sorted(by_title.items()):
+                # WorkInput hashes contain a title string, not its language.
+                # Conflicting/unknown languages cannot share one typed alias.
+                languages = title_languages[title]
+                if len(languages) != 1 or not next(iter(languages)):
+                    continue
                 alias = bibliography.model_copy(update={'title': title}, deep=True)
                 result['aliases'].append(alias)
-                result['alias_metadata'][input_hash(alias)] = {'language': 'ja', 'role': 'unknown',
+                result['alias_metadata'][input_hash(alias)] = {'language': next(iter(languages)), 'role': 'unknown',
                     'source_version_ids': sorted(set(versions))}
         if _sha(path) != before:
             raise ValueError('Source database changed during projection')

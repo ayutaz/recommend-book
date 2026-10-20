@@ -14,6 +14,9 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 
+from recommend_book.classification.native_reference_store_v1 import (
+    BINDING_NAME, REFERENCE_NAMES, store_references, verify_binding)
+
 
 def sha(raw):
     return hashlib.sha256(raw).hexdigest()
@@ -32,6 +35,14 @@ def transform(relative, raw):
         text = text.replace('src/recommend_book/usage_guard.py', 'src/recommend_book/usage_guard_v4.py')
         text = text.replace('src/recommend_book/classification/native_attempt.py', 'src/recommend_book/classification/native_attempt_v4.py')
         text = replace(text, 'guarded-runner-v3.2', 'guarded-runner-v4.0')
+        text = replace(text, "        if execution_spec.startswith('native-'):\n",
+            "        from .native_reference_store_v1 import BINDING_NAME, reference_artifact_path\n"
+            "        config['dependency_sha256']['src/recommend_book/classification/native_reference_store_v1.py'] = hashlib.sha256((ROOT / 'src/recommend_book/classification/native_reference_store_v1.py').read_bytes()).hexdigest()\n"
+            "        if (ROOT / BINDING_NAME).exists():\n"
+            "            config['dependency_sha256'][BINDING_NAME] = hashlib.sha256((ROOT / BINDING_NAME).read_bytes()).hexdigest()\n"
+            "        if execution_spec.startswith('native-'):\n")
+        text = replace(text, "hashlib.sha256((ROOT / (codebook+p)).read_bytes()).hexdigest()",
+                       "hashlib.sha256(reference_artifact_path(ROOT, codebook+p).read_bytes()).hexdigest()")
         # Future snapshots hold failures immediately; unchanged inputs are not
         # automatically submitted again, including on a same-namespace resume.
         text = replace(text, '    store = JobStore(output_dir)\n',
@@ -78,7 +89,7 @@ def transform(relative, raw):
         text = replace(text, "    if version['argv'][-1] != '--version' or command_artifact_hashes(command) != request['executable_sha256']:\n        raise ValueError('Native executable artifact differs')", "    if version['argv'][-1] != '--version':\n        raise ValueError('Native executable version argv differs')\n    artifact_session.check_receipt(command, request['executable_sha256'])")
         text = replace(text, "    if attempt['actual_exit_code'] != 0", "    if not attempt.get('process_pid') or attempt.get('process_exit_observed') is not True:\n        raise ValueError('Native process PID/observed exit is absent')\n    if attempt['actual_exit_code'] != 0")
     elif relative.endswith('/usage_guard.py'):
-        text = replace(text, "GUARD_VERSION = 'usage-guard-v3.6'", "GUARD_VERSION = 'usage-guard-v4.0'")
+        text = replace(text, "GUARD_VERSION = 'usage-guard-v3.7'", "GUARD_VERSION = 'usage-guard-v4.0'")
         text = replace(text, '        self.ledger_path = Path(ledger_path).resolve()\n', '        from recommend_book.classification.native_validation_scope_v1 import NativeValidationScopes\n        self.native_scopes = NativeValidationScopes()\n        self.ledger_path = Path(ledger_path).resolve()\n')
         text = replace(text, 'from recommend_book.classification import native_attempt', 'from recommend_book.classification import native_attempt_v4 as native_attempt', 2)
         text = replace(text, 'from recommend_book import next_database', 'from recommend_book import next_database_v4 as next_database')
@@ -125,12 +136,16 @@ def build(output):
     codebook = ROOT / 'data/autonomous-next-v3/reference/research-codebook'
     paths += [codebook / name for name in ('native-v3-source-contract.json', 'keywords.xml', 'book.pdf')]
     originals = {path.relative_to(ROOT).as_posix():path.read_bytes() for path in sorted(set(paths))}
+    binding, cache_new_bytes = store_references(ROOT / 'data/autonomous-next-v3/reference/native-runtime-cache-v1', originals)
     output.mkdir(parents=True)
     runtime = output / 'runtime'
     for relative, raw in originals.items():
+        if relative in REFERENCE_NAMES:
+            continue
         path = runtime / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(raw)
+    save(runtime / BINDING_NAME, binding)
     transformed = {}
     for relative in ('src/recommend_book/classification/runner.py', 'src/recommend_book/classification/native_attempt.py', 'src/recommend_book/usage_guard.py', 'src/recommend_book/next_database.py'):
         target = relative[:-3] + '_v4.py'
@@ -139,11 +154,19 @@ def build(output):
         transformed[target] = {'source':relative,'original_sha256':sha(originals[relative]),'sha256':sha(value)}
     script = originals['scripts/run_guarded_classification.py'].decode('utf-8')
     script = script.replace('classification.runner import ', 'classification.runner_v4 import ').replace('recommend_book.usage_guard import ', 'recommend_book.usage_guard_v4 import ')
+    script = replace(script, '    for relative,expected in artifacts.items():\n',
+        '    from recommend_book.classification.native_reference_store_v1 import reference_artifact_path\n'
+        '    for relative,expected in artifacts.items():\n')
+    script = replace(script, '        source_artifact=ROOT/relative\n',
+        '        source_artifact=reference_artifact_path(ROOT, relative)\n')
     script = replace(script, "'src/recommend_book/classification/runner.py':config['runner_hash']", "'src/recommend_book/classification/runner_v4.py':config['runner_hash']")
     script = replace(script, "'src/recommend_book/usage_guard.py':config['usage_guard_hash']", "'src/recommend_book/usage_guard_v4.py':config['usage_guard_hash']")
     (runtime / 'scripts/run_guarded_classification_v4.py').write_text(script, encoding='utf-8')
     save(output / 'source-snapshot-manifest.json', {'version':'native-snapshot-runtime-v1','runtime_root':str(runtime),
-        'copied_original_sha256':{name:sha(raw) for name,raw in originals.items()},'transformed':transformed,
+        'copied_original_sha256':{name:sha(raw) for name,raw in originals.items() if name not in REFERENCE_NAMES},'transformed':transformed,
+        'reference_storage':{'version':'native-reference-storage-v1','binding_sha256':sha((runtime / BINDING_NAME).read_bytes()),
+            'artifacts':binding['artifacts'],'cache_new_content_bytes':cache_new_bytes,'runtime_reference_content_bytes':0,
+            'protection':'independent cache inodes; read-only accidental-write protection; verify exact bytes on use; never repair in place'},
         'data_db_raw_body_model_executable_copied':False})
     verify_source(output)
     return {'stage':'runtime_built_not_started','runtime_root':str(runtime),'transformed_files':len(transformed)}
@@ -153,8 +176,20 @@ def verify_source(output):
     output = Path(output).resolve()
     report = json.loads((output / 'source-snapshot-manifest.json').read_bytes())
     runtime = Path(report['runtime_root'])
-    for name, expected in report['copied_original_sha256'].items():
-        if sha((ROOT / name).read_bytes()) != expected or sha((runtime / name).read_bytes()) != expected:
+    shared = report.get('reference_storage')
+    if shared is not None:
+        raw = (runtime / BINDING_NAME).read_bytes()
+        if sha(raw) != shared['binding_sha256']:
+            raise ValueError('Shared reference binding drift')
+        binding = json.loads(raw)
+        if binding['artifacts'] != shared['artifacts']:
+            raise ValueError('Shared reference manifest drift')
+        verify_binding(binding)
+    original_receipts = {**report['copied_original_sha256'],
+        **({name:item['sha256'] for name,item in shared['artifacts'].items()} if shared else {})}
+    for name, expected in original_receipts.items():
+        target = Path(shared['artifacts'][name]['path']) if shared and name in shared['artifacts'] else runtime / name
+        if sha((ROOT / name).read_bytes()) != expected or sha(target.read_bytes()) != expected:
             raise ValueError('Original source/copy drift: ' + name)
     for name, binding in report['transformed'].items():
         if sha((runtime / name).read_bytes()) != binding['sha256']:
