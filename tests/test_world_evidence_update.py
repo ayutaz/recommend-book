@@ -264,3 +264,77 @@ def test_destination_rejects_identity_bound_to_stale_source_version(tmp_path):
     with pytest.raises(ValueError, match='current source head differs'):
         update.destination_authority_proof(database,
             {'delivery_work_id': 'right-destination', 'wikidata_qid': 'Q1'}, bridge)
+
+@pytest.fixture
+def archived_profile_recipe(tmp_path, monkeypatch):
+    import json
+    root = tmp_path / 'project'
+    base = root / 'data/autonomous-next-v3'
+    original = root / 'src/recommend_book/next_database.py'
+    original.parent.mkdir(parents=True)
+    original.write_bytes(b'current changed feature recipe')
+    namespace = base / 'preparation/historical-runtime'
+    archived = namespace / 'runtime/src/recommend_book/next_database.py'
+    archived.parent.mkdir(parents=True)
+    archived.write_bytes(b'exact historical feature recipe')
+    digest = update.sha(archived)
+    manifest = namespace / 'source-snapshot-manifest.json'
+    manifest.write_text(json.dumps({'version': 'native-snapshot-runtime-v1',
+        'runtime_root': str(namespace / 'runtime'),
+        'copied_original_sha256': {'src/recommend_book/next_database.py': digest}}), encoding='utf-8')
+    other = root / 'ranking.py'
+    other.write_bytes(b'pinned ranking')
+    contract = {'artifacts': {'feature_recipe': {'path': str(original), 'sha256': digest},
+                              'ranking': {'path': str(other), 'sha256': update.sha(other)}}}
+    monkeypatch.setattr(update, 'ROOT', root)
+    monkeypatch.setattr(update, 'BASE', base)
+    pins = {}
+    def pin(path, expected=None):
+        path = Path(path).resolve(strict=True)
+        actual = update.sha(path)
+        if expected and actual != expected:
+            raise ValueError('Batch source hash differs: ' + path.name)
+        pins[str(path)] = actual
+        return path
+    return contract, archived, manifest, pin, pins
+
+
+def test_profile_feature_recipe_default_still_rejects_current_drift(archived_profile_recipe):
+    contract, archived, manifest, pin, pins = archived_profile_recipe
+    with pytest.raises(ValueError, match='source hash differs'):
+        update.pin_profile_artifacts(contract, pin)
+
+
+def test_profile_feature_recipe_override_pins_exact_archive_and_manifest(archived_profile_recipe):
+    contract, archived, manifest, pin, pins = archived_profile_recipe
+    proof = update.pin_profile_artifacts(contract, pin, feature_recipe=archived)
+    assert proof['artifact_key'] == 'feature_recipe'
+    assert proof['original_path'] == contract['artifacts']['feature_recipe']['path']
+    assert proof['archived_path'] == str(archived.resolve())
+    assert proof['source_snapshot_manifest_sha256'] == update.sha(manifest)
+    assert pins[str(archived.resolve())] == contract['artifacts']['feature_recipe']['sha256']
+    assert pins[str(manifest.resolve())] == update.sha(manifest)
+    assert str(Path(contract['artifacts']['ranking']['path']).resolve()) in pins
+
+
+@pytest.mark.parametrize('failure', ['changed_bytes', 'wrong_manifest_hash', 'wrong_manifest_root', 'outside_preparation', 'wrong_relative_path', 'other_artifact_drift'])
+def test_profile_feature_recipe_override_refuses_unbound_archive(archived_profile_recipe, failure, tmp_path):
+    import json
+    contract, archived, manifest, pin, pins = archived_profile_recipe
+    if failure == 'changed_bytes':
+        archived.write_bytes(b'modified archive')
+    elif failure in ('wrong_manifest_hash', 'wrong_manifest_root'):
+        value = json.loads(manifest.read_bytes())
+        if failure == 'wrong_manifest_hash':
+            value['copied_original_sha256']['src/recommend_book/next_database.py'] = '0' * 64
+        else:
+            value['runtime_root'] = str(tmp_path)
+        manifest.write_text(json.dumps(value), encoding='utf-8')
+    elif failure in ('outside_preparation', 'wrong_relative_path'):
+        target = tmp_path / 'next_database.py' if failure == 'outside_preparation' else archived.with_name('unrelated.py')
+        target.write_bytes(archived.read_bytes())
+        archived = target
+    else:
+        Path(contract['artifacts']['ranking']['path']).write_bytes(b'changed ranking')
+    with pytest.raises(ValueError):
+        update.pin_profile_artifacts(contract, pin, feature_recipe=archived)
