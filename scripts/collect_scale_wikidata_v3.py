@@ -32,6 +32,8 @@ LANGUAGES = tuple(LANGUAGE_CODES.values())
 NOVEL_FORMS = ("Q8261", "Q747381")
 V2_ROOT = Path("data/autonomous-next-v3/scale-30000-v1/acquisition")
 CATALOGUE = Path("data/autonomous-next-v3/scale-v1/catalogue.sqlite")
+BASELINE_WORKS = Path("data/autonomous-next-v3/scale-100000-v1/baseline-works-32130.jsonl")
+BASELINE_WORKS_SHA256 = "aebcc125910a868227ea3d8156d764efc9e43209d3b3daaffbb4b9b149efa62b"
 
 
 def now() -> str:
@@ -91,11 +93,19 @@ def source_declared_query(*, limit: int, offset: int, start_year: int | None = N
     )
 
 
-def _old_exclusions(*, catalogue: Path, v2_root: Path) -> tuple[set[str], dict]:
+def _old_exclusions(*, catalogue: Path, v2_root: Path,
+                    baseline_works: Path = BASELINE_WORKS) -> tuple[set[str], dict]:
     """Read all v18 IDs, including IDs that were held before ingest."""
     ids: set[str] = set()
+    if baseline_works.exists():
+        if sha_file(baseline_works) != BASELINE_WORKS_SHA256:
+            raise ValueError("fixed v19 baseline works snapshot changed")
+        for line in baseline_works.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                ids.add(qid(json.loads(line)["qid"]))
+    else:
+        raise FileNotFoundError(baseline_works)
     with sqlite3.connect(f"file:{catalogue.resolve().as_posix()}?mode=ro", uri=True) as db:
-        ids.update(qid(row[0]) for row in db.execute("SELECT qid FROM works"))
         ids.update(qid(row[0]) for row in db.execute("SELECT DISTINCT qid FROM ingestion_failures") if row[0])
     discovery_path = v2_root / "discovery.json"
     if discovery_path.exists():
@@ -113,6 +123,8 @@ def _old_exclusions(*, catalogue: Path, v2_root: Path) -> tuple[set[str], dict]:
         "catalogue": str(catalogue.resolve()),
         "v2_discovery": str(discovery_path.resolve()),
         "v2_entity_state": str(entity_path.resolve()),
+        "baseline_works": str(baseline_works.resolve()),
+        "baseline_works_sha256": BASELINE_WORKS_SHA256,
         "count": len(ids),
         "created_at": now(),
         "rule": "catalogue works, all v18 discovered/attempted/completed/held IDs and all recorded ingest failures",
@@ -304,6 +316,9 @@ def _load_state(output: Path, *, exclusions: set[str], exclusion_meta: dict,
         state = load(path)
         if state.get("frame", {}).get("version") != "scale-discovery-v3":
             raise ValueError("v3 discovery frame changed")
+        expected = _sha(json.dumps(sorted(exclusions), separators=(",", ":")).encode())
+        if state.get("frame", {}).get("exclude_sha256") != expected:
+            raise ValueError("v3 exclusion ledger changed")
         return state
     state = {
         "frame": {"version": "scale-discovery-v3", "page_size": 500,
@@ -322,6 +337,9 @@ def acquire(*, output: Path, catalogue: Path, v2_root: Path, target_new: int,
             target_display: int, max_broad_offset: int = 100000) -> dict:
     output.mkdir(parents=True, exist_ok=True)
     exclusions, exclusion_meta = _old_exclusions(catalogue=catalogue, v2_root=v2_root)
+    with sqlite3.connect(f"file:{catalogue.resolve().as_posix()}?mode=ro", uri=True) as db:
+        runtime_exclusions = set(exclusions)
+        runtime_exclusions.update(qid(row[0]) for row in db.execute("SELECT qid FROM works"))
     conditions = _reuse_conditions(output, v2_root)
     fetcher = _make_fetcher(output, v2_root)
     state = _load_state(output, exclusions=exclusions, exclusion_meta=exclusion_meta,
@@ -355,7 +373,7 @@ def acquire(*, output: Path, catalogue: Path, v2_root: Path, target_new: int,
 
     def process(ids: Iterable[str]):
         nonlocal pending, attempted, completed, held, entity
-        candidates = [value for value in ids if value not in attempted and value not in held and value not in exclusions]
+        candidates = [value for value in ids if value not in attempted and value not in held and value not in runtime_exclusions]
         for start in range(0, len(candidates), 50):
             batch = candidates[start:start + 50]
             attempted.update(batch)
@@ -385,7 +403,7 @@ def acquire(*, output: Path, catalogue: Path, v2_root: Path, target_new: int,
     # a page whose entity work was interrupted after its checkpoint write.
     flush_pending(force=True)
     resume_ids = resume_candidates(state.get("ids", []), attempted=attempted,
-                                   held=held, exclusions=exclusions)
+                                   held=held, exclusions=runtime_exclusions)
     if resume_ids:
         process(resume_ids)
     chosen = set(state.get("ids", []))
@@ -400,19 +418,29 @@ def acquire(*, output: Path, catalogue: Path, v2_root: Path, target_new: int,
                    if v.get("route") == "broad-no-P136" and k.startswith("broad:") and v.get("status") == "success"]
         if offsets:
             last_broad = max(offsets)
+    route_blocked = False
     for offset in range(last_broad + 500, max_broad_offset, 500):
         if len(chosen) >= target_new or searchable_count() >= target_display:
             break
+        key = f"broad-continuation:{offset}"
+        prior = state["pages"].get(key)
+        if prior is not None:
+            if prior.get("status") == "success" and prior.get("count", 0) < 500:
+                break
+            # A historical held/started page is not a new outage response.
+            # Its IDs are never retried; resume advances to an unattempted page.
+            continue
         fresh, ok = discover_page(output=output, fetcher=fetcher, state=state,
-                                  key=f"broad-continuation:{offset}",
+                                  key=key,
                                   query=source_declared_query(limit=500, offset=offset),
-                                  exclusions=exclusions)
+                                  exclusions=runtime_exclusions)
         chosen.update(fresh)
         if not process(fresh):
             break
         if searchable_count() >= target_display:
             break
         if not ok:
+            route_blocked = True
             break
         if len(fresh) == 0 and state["pages"][f"broad-continuation:{offset}"].get("count", 0) < 500:
             break
@@ -422,16 +450,21 @@ def acquire(*, output: Path, catalogue: Path, v2_root: Path, target_new: int,
     periods = [(1800, 1850), (1850, 1900), (1900, 1925), (1925, 1950),
                (1950, 1975), (1975, 2000), (2000, 2010), (2010, 2020), (2020, 2035)]
     for start_year, end_year in periods:
-        if len(chosen) >= target_new or searchable_count() >= target_display:
+        if route_blocked or len(chosen) >= target_new or searchable_count() >= target_display:
             break
         for offset in range(0, 30000, 500):
             if len(chosen) >= target_new or searchable_count() >= target_display:
                 break
             key = f"period:{start_year}-{end_year}:{offset}"
+            prior = state["pages"].get(key)
+            if prior is not None:
+                if prior.get("status") == "success" and prior.get("count", 0) < 500:
+                    break
+                continue
             fresh, ok = discover_page(output=output, fetcher=fetcher, state=state, key=key,
                                       query=source_declared_query(limit=500, offset=offset,
                                                                    start_year=start_year, end_year=end_year),
-                                      exclusions=exclusions)
+                                      exclusions=runtime_exclusions)
             chosen.update(fresh)
             if not process(fresh):
                 break
@@ -439,6 +472,8 @@ def acquire(*, output: Path, catalogue: Path, v2_root: Path, target_new: int,
                 break
             page = state["pages"][key]
             if not ok or page.get("count", 0) < 500:
+                if not ok:
+                    route_blocked = True
                 break
     flush_pending(force=True)
     state["ids"] = sorted(chosen, key=lambda value: int(value[1:]))

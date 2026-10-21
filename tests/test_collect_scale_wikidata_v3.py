@@ -151,3 +151,88 @@ def test_restart_resumes_selected_unattempted_ids_and_source_records(tmp_path):
                                 "rights_policy_id": "wikidata-cc0"}) + "\n", encoding="utf-8")
     records = load_pending_records(path)
     assert len(records) == 1 and records[0].source_id == "Q102"
+
+
+def test_fixed_exclusion_frame_survives_new_catalogue_rows(tmp_path, monkeypatch):
+    baseline = tmp_path / "baseline.jsonl"
+    baseline.write_text('{"qid":"Q100"}\n', encoding="utf-8")
+    monkeypatch.setattr(_MODULE, "BASELINE_WORKS_SHA256", _MODULE.sha_file(baseline))
+    catalogue = tmp_path / "catalogue.sqlite"
+    with sqlite3.connect(catalogue) as db:
+        db.executescript("CREATE TABLE works(qid TEXT PRIMARY KEY); CREATE TABLE ingestion_failures(qid TEXT);")
+        db.execute("INSERT INTO works VALUES('Q100')")
+    old_root = tmp_path / "old"
+    old_root.mkdir()
+    output = tmp_path / "new"
+    excluded, metadata = _MODULE._old_exclusions(catalogue=catalogue, v2_root=old_root, baseline_works=baseline)
+    initial = _load_state(output, exclusions=excluded, exclusion_meta=metadata, target_new=1000)
+    with sqlite3.connect(catalogue) as db:
+        db.execute("INSERT INTO works VALUES('Q101')")
+    excluded_again, metadata_again = _MODULE._old_exclusions(catalogue=catalogue, v2_root=old_root, baseline_works=baseline)
+    resumed = _load_state(output, exclusions=excluded_again, exclusion_meta=metadata_again, target_new=1000)
+    assert excluded_again == {"Q100"}
+    assert resumed["frame"] == initial["frame"]
+    baseline.write_text('{"qid":"Q101"}\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="baseline works snapshot changed"):
+        _MODULE._old_exclusions(catalogue=catalogue, v2_root=old_root, baseline_works=baseline)
+
+
+def test_acquire_restart_skips_old_held_pages_and_resumes_unattempted_entities(tmp_path, monkeypatch):
+    output = tmp_path / "new"
+    catalogue = tmp_path / "catalogue.sqlite"
+    with sqlite3.connect(catalogue) as db:
+        db.execute("CREATE TABLE works(qid TEXT PRIMARY KEY, display_allowed INTEGER, recommendable INTEGER)")
+        db.execute("INSERT INTO works VALUES('Q101',1,1)")
+    state = _load_state(output, exclusions={"Q100"}, exclusion_meta={}, target_new=1000)
+    state["ids"] = ["Q101", "Q102"]
+    state["pages"]["broad-continuation:12000"] = {"status": "held", "status_code": 429}
+    _MODULE.save(output / "discovery.json", state)
+    _MODULE.save(output / "entity-state.json", {"attempted": ["Q101"], "completed": ["Q101"], "held": [], "errors": []})
+    conditions = tmp_path / "conditions.json"
+    conditions.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(_MODULE, "_old_exclusions", lambda **_: ({"Q100"}, {}))
+    monkeypatch.setattr(_MODULE, "_reuse_conditions", lambda *_: conditions)
+    queries, entity_calls = [], []
+
+    class OutageFetcher:
+        def get(self, *args, **kwargs):
+            queries.append(kwargs["params"]["query"])
+            return SimpleNamespace(status="failed", error="HTTP 429", status_code=429,
+                                   attempts=1, artifact=None)
+
+    class Adapter:
+        def __init__(self, fetcher):
+            pass
+
+        def fetch_entities(self, ids, **kwargs):
+            from recommend_book.models import SourceRecord
+            entity_calls.extend(ids)
+            records = [SourceRecord(source="wikidata", provider_id="wikidata", source_id=value,
+                                    source_url=f"https://www.wikidata.org/wiki/{value}",
+                                    retrieved_at="2026-10-21T00:00:00+00:00", record_kind="work",
+                                    titles=[], contributors=[], identifiers=[], work_kind="novel",
+                                    evidence=[], raw_sha256="a" * 64, raw_path=str(tmp_path / "raw"),
+                                    rights_policy_id="wikidata-cc0") for value in ids]
+            return SimpleNamespace(records=records, errors=[], status="success")
+
+    def ingest(**kwargs):
+        inserted = 0
+        with sqlite3.connect(catalogue) as db:
+            for record in kwargs["records"]:
+                inserted += db.execute("INSERT OR IGNORE INTO works VALUES(?,1,1)", (record.source_id,)).rowcount
+        return {"inserted": inserted, "failed": 0, "skipped_existing": len(kwargs["records"]) - inserted, "chunks": 1}
+
+    monkeypatch.setattr(_MODULE, "_make_fetcher", lambda *_: OutageFetcher())
+    monkeypatch.setattr(_MODULE, "WikidataAdapter", Adapter)
+    monkeypatch.setattr(_MODULE, "_ingest_records", ingest)
+    for _ in range(2):
+        result = _MODULE.acquire(output=output, catalogue=catalogue, v2_root=tmp_path / "old",
+                                 target_new=1000, target_display=1000, max_broad_offset=13500)
+        assert result["searchable"] == 2
+        assert result["target_met"] is False
+    assert entity_calls == ["Q102"]
+    assert len(queries) == 2  # one new outage response per invocation, no held-page resends
+    assert "OFFSET 12500" in queries[0]
+    assert "OFFSET 13000" in queries[1]
+    with sqlite3.connect(catalogue) as db:
+        assert db.execute("SELECT count(*) FROM works").fetchone()[0] == 2
