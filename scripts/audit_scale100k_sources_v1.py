@@ -13,6 +13,7 @@ import hashlib
 import json
 from pathlib import Path
 import sqlite3
+from urllib.parse import urlparse
 
 from recommend_book.models import SourceRecord
 from recommend_book.rights import RightsRegistry
@@ -22,23 +23,54 @@ from recommend_book.scale_catalogue_v1 import ScaleCatalogue
 ROOT = Path(__file__).resolve().parents[1]
 DATABASE = ROOT / "data/autonomous-next-v3/scale-v1/catalogue.sqlite"
 PURPOSES = ("acquire", "local_storage", "display", "external_llm", "commercial", "redistribution")
+RETAINED_CONDITION_VERSIONS = frozenset({
+    "scale-source-conditions-v1",
+    "scale-source-conditions-v2",
+    "scale-source-conditions-v19-reused-v1",
+    "scale-source-conditions-v19-qlever-v1",
+})
+
+
+class _ReceiptHashMismatch(ValueError):
+    """A receipt exists but its bytes do not match the immutable pin."""
 
 
 class _FileCache:
-    """Read each path once and retain only a compact verification summary."""
+    """Read each pinned artifact once per ``(path, sha256)`` binding."""
 
     def __init__(self) -> None:
-        self._summary: dict[Path, dict] = {}
+        self._summary: dict[tuple[Path, str | None], dict] = {}
+        self._raw: dict[tuple[Path, str], bytes] = {}
 
-    def inspect(self, path: Path, parser=None) -> dict:
+    def read_verified(self, path: Path, expected_sha: str) -> bytes:
         path = Path(path).resolve(strict=True)
-        if path in self._summary:
-            return self._summary[path]
+        key = (path, expected_sha)
+        if key in self._raw:
+            return self._raw[key]
         raw = path.read_bytes()
+        if _sha(raw) != expected_sha:
+            raise _ReceiptHashMismatch("pinned artifact hash differs")
+        self._raw[key] = raw
+        return raw
+
+    def inspect(self, path: Path, parser=None, *, expected_sha: str | None = None) -> dict:
+        path = Path(path).resolve(strict=True)
+        key = (path, expected_sha)
+        if key in self._summary:
+            return self._summary[key]
+        if expected_sha is not None:
+            try:
+                raw = self.read_verified(path, expected_sha)
+            except ValueError:
+                # Keep the observed digest so callers can report tampering
+                # without treating a hash mismatch as an auditor crash.
+                raw = path.read_bytes()
+        else:
+            raw = path.read_bytes()
         summary = {"sha256": _sha(raw)}
         if parser is not None:
             summary.update(parser(raw))
-        self._summary[path] = summary
+        self._summary[key] = summary
         return summary
 
 
@@ -118,21 +150,110 @@ def _identity_issue(record: dict, qid: str, raw_summary: dict) -> str | None:
 class _ReadOnlyScaleVerifier:
     """Reuse ScaleCatalogue's current-condition verifier without constructing it."""
 
-    def __init__(self, meta: dict, cache: _FileCache) -> None:
+    def __init__(self, meta: dict, cache: _FileCache, registry: RightsRegistry) -> None:
         self._meta = meta
-        self._registry = RightsRegistry.default()
+        self._registry = registry
         self._cache = cache
 
     def _artifact(self, path, sha):
         # The primary policy is one document. Return its actual verified bytes
         # to the existing condition checker, then let the caller release them.
-        raw = Path(path).read_bytes()
+        raw = self._cache.read_verified(path, sha)
         if _sha(raw) != sha:
             raise ValueError("primary snapshot hash differs")
         return raw
 
     def verify(self) -> tuple[dict, dict]:
         return ScaleCatalogue._conditions(self)
+
+
+def _condition_summary(raw: bytes) -> dict:
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError):
+        return {"condition_data": None}
+    return {"condition_data": value if isinstance(value, dict) else None}
+
+
+def _absolute_path(value: str) -> Path:
+    path = Path(value)
+    if not path.is_absolute():
+        raise ValueError("proof path must be absolute")
+    return path.resolve(strict=True)
+
+
+def _verify_retained_conditions(
+    path: Path, expected_sha: str, cache: _FileCache, registry: RightsRegistry
+) -> tuple[dict, dict]:
+    """Verify a row-pinned receipt without rebinding it to catalogue_meta."""
+    summary = cache.inspect(path, _condition_summary, expected_sha=expected_sha)
+    if summary["sha256"] != expected_sha:
+        raise _ReceiptHashMismatch("retained source conditions hash differs")
+    data = summary.get("condition_data")
+    if not isinstance(data, dict):
+        raise ValueError("retained source conditions are not an object")
+    if (data.get("version"), data.get("source"), data.get("policy_id"), data.get("metadataonly_scope")) not in {
+        (version, "wikidata", "wikidata-cc0", True) for version in RETAINED_CONDITION_VERSIONS
+    }:
+        raise ValueError("retained source conditions metadata scope differs")
+    try:
+        from datetime import datetime, timezone
+        date = datetime.fromisoformat(data["retrieved_at"].replace("Z", "+00:00"))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("retained source conditions timestamp invalid") from exc
+    now = datetime.now(timezone.utc)
+    if date.tzinfo is None or date > now or (now - date).days > 7:
+        raise ValueError("retained source conditions receipt is not current")
+    primary = data.get("policy_snapshot")
+    if not isinstance(primary, dict):
+        raise ValueError("retained source conditions primary snapshot missing")
+    usages_data = data.get("usages")
+    if not isinstance(usages_data, dict):
+        raise ValueError("retained source conditions usages invalid")
+    try:
+        primary_path = _absolute_path(primary["path"])
+        primary_raw = cache.read_verified(primary_path, primary["sha256"])
+    except (KeyError, OSError, TypeError, ValueError) as exc:
+        raise ValueError("retained source conditions primary snapshot invalid") from exc
+    if "cc0" not in primary_raw.decode("utf-8").lower():
+        raise ValueError("retained primary CC0 condition clause absent")
+    policy = registry.policies["wikidata-cc0"]
+    if policy.source != "wikidata" or policy.provider_id != "wikidata" or policy.license != "CC0-1.0":
+        raise ValueError("source registry metadata policy differs")
+    usages = {
+        usage: ("allowed" if state == "allowed" and policy.usages.get(usage) == "allowed" else "hold")
+        for usage, state in usages_data.items()
+    }
+    for usage in PURPOSES:
+        usages.setdefault(usage, "hold")
+    return data, usages
+
+
+def _assert_absolute_condition_paths(meta: dict, cache: _FileCache) -> None:
+    """Reject cwd-dependent global and primary receipt proof paths."""
+    receipt_path = _absolute_path(meta["source_conditions_path"])
+    summary = cache.inspect(receipt_path, _condition_summary, expected_sha=meta["source_conditions_sha256"])
+    if summary["sha256"] != meta["source_conditions_sha256"]:
+        raise _ReceiptHashMismatch("global source conditions hash differs")
+    data = summary.get("condition_data")
+    if not isinstance(data, dict) or not isinstance(data.get("policy_snapshot"), dict):
+        raise ValueError("global source conditions primary snapshot missing")
+    _absolute_path(data["policy_snapshot"]["path"])
+
+
+def _row_conditions_binding(row_json: str) -> tuple[str, str] | None:
+    try:
+        row = json.loads(row_json)
+    except (TypeError, ValueError):
+        return None
+    provenance = row.get("provenance") if isinstance(row, dict) else None
+    if not isinstance(provenance, dict):
+        return None
+    path = provenance.get("source_conditions_path")
+    sha = provenance.get("source_conditions_sha256")
+    if not isinstance(path, str) or not isinstance(sha, str):
+        return None
+    return path, sha
 
 
 def audit_sources(database: Path = DATABASE, *, output: Path | None = None) -> dict:
@@ -143,6 +264,8 @@ def audit_sources(database: Path = DATABASE, *, output: Path | None = None) -> d
     source_condition_sha = None
     condition_data: dict = {}
     raw_by_path: dict[Path, str] = {}
+    registry = RightsRegistry.default()
+    retained_condition_cache: dict[tuple[Path, str], tuple[str, tuple[dict, dict] | None]] = {}
     output_handle = None
     if output is not None:
         output = Path(output)
@@ -162,7 +285,8 @@ def audit_sources(database: Path = DATABASE, *, output: Path | None = None) -> d
                 meta = dict(db.execute("SELECT key,value FROM catalogue_meta"))
                 source_condition_sha = meta.get("source_conditions_sha256")
                 try:
-                    condition_data, rights = _ReadOnlyScaleVerifier(meta, cache).verify()
+                    _assert_absolute_condition_paths(meta, cache)
+                    condition_data, rights = _ReadOnlyScaleVerifier(meta, cache, registry).verify()
                 except (OSError, TypeError, ValueError, KeyError):
                     condition_data, rights = {}, {}
                     issues.append("source_conditions_invalid")
@@ -174,10 +298,11 @@ def audit_sources(database: Path = DATABASE, *, output: Path | None = None) -> d
                 current_sql = """
                     SELECT w.qid AS work_qid, w.version_id,
                            s.qid AS source_qid, s.record_sha256, s.record_json,
-                           s.raw_path, s.raw_sha256, s.conditions_sha256
+                           s.raw_path, s.raw_sha256, s.conditions_sha256, w.row_json
                     FROM works AS w
                     LEFT JOIN source_versions AS s ON s.version_id = w.version_id
                 """
+                source_condition_bindings: set[tuple[Path, str]] = set()
                 for row in db.execute(current_sql):
                     counts["current_rows_checked"] += 1
                     qid = row["work_qid"]
@@ -187,8 +312,67 @@ def audit_sources(database: Path = DATABASE, *, output: Path | None = None) -> d
                     counts["current_source_versions"] += 1
                     if row["source_qid"] != qid:
                         issues.append("current_source_qid_mismatch")
-                    if row["conditions_sha256"] != source_condition_sha:
-                        issues.append("current_source_conditions_sha_mismatch")
+                    binding = _row_conditions_binding(row["row_json"])
+                    row_condition_data = condition_data
+                    row_rights = rights
+                    if binding is None:
+                        issues.append("current_source_conditions_provenance_missing")
+                    else:
+                        receipt_path_text, receipt_sha = binding
+                        if receipt_sha != row["conditions_sha256"]:
+                            issues.append("current_source_conditions_provenance_mismatch")
+                        else:
+                            try:
+                                receipt_path_value = Path(receipt_path_text)
+                            except (OSError, TypeError, ValueError):
+                                issues.append("current_source_conditions_receipt_missing")
+                            else:
+                                if not receipt_path_value.is_absolute():
+                                    issues.append("current_source_conditions_receipt_relative")
+                                else:
+                                    try:
+                                        receipt_path = receipt_path_value.resolve(strict=True)
+                                    except (OSError, TypeError, ValueError):
+                                        issues.append("current_source_conditions_receipt_missing")
+                                    else:
+                                        receipt_key = (receipt_path, receipt_sha)
+                                        if receipt_key in source_condition_bindings:
+                                            counts["shared_source_conditions_reused"] += 1
+                                        else:
+                                            source_condition_bindings.add(receipt_key)
+                                            counts["unique_source_conditions_checked"] += 1
+                                        if receipt_key not in retained_condition_cache:
+                                            try:
+                                                retained_condition_cache[receipt_key] = (
+                                                    "valid",
+                                                    _verify_retained_conditions(
+                                                        receipt_path, receipt_sha, cache, registry
+                                                    ),
+                                                )
+                                            except FileNotFoundError:
+                                                retained_condition_cache[receipt_key] = ("missing", None)
+                                            except _ReceiptHashMismatch:
+                                                retained_condition_cache[receipt_key] = ("sha_mismatch", None)
+                                            except (OSError, TypeError, ValueError, KeyError, UnicodeError):
+                                                retained_condition_cache[receipt_key] = ("invalid", None)
+                                        receipt_status, receipt_result = retained_condition_cache[receipt_key]
+                                        if receipt_status == "missing":
+                                            issues.append("current_source_conditions_receipt_missing")
+                                        elif receipt_status == "sha_mismatch":
+                                            issues.append("current_source_conditions_receipt_sha_mismatch")
+                                        elif receipt_status == "invalid":
+                                            issues.append("current_source_conditions_receipt_invalid")
+                                        else:
+                                            assert receipt_result is not None
+                                            row_condition_data, row_rights = receipt_result
+                                            for purpose in PURPOSES:
+                                                if row_rights.get(purpose) != "allowed":
+                                                    issues.append(f"current_source_usage_hold:{purpose}")
+                                            if (
+                                                row_condition_data.get("source") != condition_data.get("source")
+                                                or row_condition_data.get("policy_id") != condition_data.get("policy_id")
+                                            ):
+                                                issues.append("current_source_conditions_policy_mismatch")
                     if row["version_id"] != f"wd:{qid}:{row['record_sha256']}":
                         issues.append("current_version_id_binding_mismatch")
                     record, record_issue = _json_record(row["record_json"])
@@ -206,6 +390,10 @@ def audit_sources(database: Path = DATABASE, *, output: Path | None = None) -> d
                         issues.append("current_rights_policy_mismatch")
                     if record.get("source") != condition_data.get("source"):
                         issues.append("current_source_policy_mismatch")
+                    source_hostname = urlparse(record.get("source_url", "")).hostname
+                    allowed_domains = row_condition_data.get("allowed_domains")
+                    if not isinstance(allowed_domains, list) or source_hostname not in allowed_domains:
+                        issues.append("current_source_allowed_domain_mismatch")
                     try:
                         raw_path = Path(row["raw_path"]).resolve(strict=True)
                     except (OSError, TypeError, ValueError):
