@@ -17,6 +17,63 @@ def test_native_feature_shape_displays_confidence_and_quoted_evidence():
     assert feature['label'] == 'Mystery' and feature['evidence'] == 'detective fiction'
     assert 'internal-only' not in json.dumps(row)
 
+
+def test_axis_summary_exposes_counts_without_internal_review_text():
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    result = public_work({'qid': 'Q2', 'classification_axes': [
+        {'axis': 'theme', 'adopted_count': 2, 'held_count': 1, 'unknown': False,
+         'review_path': 'PRIVATE-SENTINEL'},
+        {'axis': 'style', 'adopted_count': 0, 'held_count': 0, 'unknown': True},
+        {'axis': 'PRIVATE-SENTINEL', 'adopted_count': 99}]})
+    assert result['classification_axes'] == [
+        {'axis': 'theme', 'adopted_count': 2, 'held_count': 1, 'unknown': False},
+        {'axis': 'style', 'adopted_count': 0, 'held_count': 0, 'unknown': True}]
+    assert 'PRIVATE-SENTINEL' not in json.dumps(result)
+
+
+def test_summary_only_content_is_distinct_from_a_verbatim_quote():
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    result = public_work({'qid': 'Q2', 'content_sources': [
+        {'evidence_ids': ['summary'], 'display_allowed': True, 'quote_allowed': False},
+        {'evidence_ids': ['held'], 'display_allowed': False, 'quote_allowed': False}],
+        'llm_features': [{'label_id': 'theme.growth', 'evidence': [
+            {'evidence_id': 'summary', 'quote': None, 'summary': 'Reviewed model summary'},
+            {'evidence_id': 'summary', 'quote': 'PRIVATE-SENTINEL'},
+            {'evidence_id': 'held', 'summary': 'PRIVATE-SENTINEL'}]}]})
+    assert result['llm_features'][0]['evidence'] == ''
+    assert result['llm_features'][0]['evidence_summary'] == 'Reviewed model summary'
+    assert 'PRIVATE-SENTINEL' not in json.dumps(result)
+
+
+def test_content_attribution_is_public_and_nonpermitted_quotes_stay_private():
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = public_work({'qid': 'Q2', 'content_sources': [
+        {'evidence_ids': ['allowed'], 'source_url': 'https://en.wikipedia.org/w/index.php?oldid=123',
+         'license': 'CC-BY-SA-4.0', 'license_url': 'https://creativecommons.org/licenses/by-sa/4.0/',
+         'attribution': {'credit': 'Wikipedia contributors: Example novel',
+                         'permalink': 'https://en.wikipedia.org/w/index.php?oldid=123',
+                         'history_url': 'https://en.wikipedia.org/w/index.php?title=Example&action=history',
+                         'private_path': 'PRIVATE-SENTINEL'}, 'revision': 123, 'locator': 'Plot',
+         'output_license': 'CC-BY-SA-4.0', 'output_license_url': 'https://creativecommons.org/licenses/by-sa/4.0/',
+         'display_allowed': True, 'quote_allowed': True, 'changed_from_source': 'Excerpted and classified',
+         'raw_path': 'PRIVATE-SENTINEL'},
+        {'evidence_ids': ['private'], 'source_url': 'PRIVATE-SENTINEL',
+         'display_allowed': False, 'quote_allowed': False},
+        {'evidence_ids': ['no-quote'], 'source_url': 'javascript:alert(1)', 'license_url': 'http://[',
+         'display_allowed': True, 'quote_allowed': False}],
+        'llm_features': [{'label_id': 'theme.growth', 'evidence': [
+            {'evidence_id': 'allowed', 'quote': 'Publicly quotable plot excerpt'},
+            {'evidence_id': 'private', 'quote': 'PRIVATE-SENTINEL'},
+            {'evidence_id': 'no-quote', 'quote': 'PRIVATE-SENTINEL'}]}]})
+    assert 'PRIVATE-SENTINEL' not in json.dumps(row)
+    assert row['llm_features'][0]['evidence'] == 'Publicly quotable plot excerpt'
+    assert row['content_sources'][0]['revision'] == '123'
+    assert row['content_sources'][0]['attribution'] == 'Wikipedia contributors: Example novel'
+    assert row['content_sources'][0]['history_url'].endswith('&action=history')
+    assert row['content_sources'][0]['permalink'].endswith('oldid=123')
+    assert row['content_sources'][0]['output_license'] == 'CC-BY-SA-4.0'
+    assert row['content_sources'][1]['source_url'] == row['content_sources'][1]['license_url'] == ''
+
 from recommend_book.recommendation.scale_site_v1 import create_server
 
 
@@ -30,6 +87,12 @@ class Catalogue:
                 'eligible_classified_works': 95,
                 'languages': [{'value': '日本語', 'count': 10}],
                 'genres': [{'qid': 'Q1', 'label': '空想', 'count': 5}],
+                'private_history': 'PRIVATE-SENTINEL'}
+
+    def catalogue_facets(self):
+        return {'languages': [{'value': 'ja', 'count': 10, 'raw_path': 'PRIVATE-SENTINEL'}],
+                'genres': [{'qid': 'Q1', 'label': '空想', 'count': 5,
+                            'raw_path': 'PRIVATE-SENTINEL'}],
                 'private_history': 'PRIVATE-SENTINEL'}
 
     def item(self):
@@ -96,6 +159,37 @@ def test_paginated_search_parameters_and_public_details(site):
     stats = json.loads(get(base + '/api/stats'))
     assert stats['raw_classified_works'] == 100 and stats['llm_works'] == 0
     assert stats['eligible_classified_works'] == 95
+
+
+def test_filter_choices_remain_available_while_native_statistics_are_waiting(site, monkeypatch):
+    base, catalogue = site
+    entered, release = threading.Event(), threading.Event()
+    original_stats = catalogue.catalogue_stats
+    def waiting_stats():
+        entered.set()
+        if not release.wait(10):
+            raise RuntimeError('test did not release statistics')
+        return original_stats()
+    monkeypatch.setattr(catalogue, 'catalogue_stats', waiting_stats)
+    outcomes = []
+    def request_stats():
+        with urlopen(base + '/api/stats', timeout=15) as response:
+            outcomes.append(json.load(response))
+    worker = threading.Thread(target=request_stats)
+    worker.start()
+    try:
+        assert entered.wait(5)
+        with urlopen(base + '/api/facets', timeout=3) as response:
+            facets = json.load(response)
+        assert not outcomes
+        assert facets == {'languages': [{'value': 'ja', 'count': 10}],
+                          'genres': [{'qid': 'Q1', 'label': '空想', 'count': 5}]}
+        assert 'PRIVATE-SENTINEL' not in json.dumps(facets)
+    finally:
+        release.set()
+        worker.join(15)
+    assert not worker.is_alive()
+    assert outcomes[0]['eligible_classified_works'] == 95
 
 
 def test_status_update_reversible_and_unknown_stays_distinct(site):

@@ -25,6 +25,10 @@ VERSION = 'scale-catalogue-v1'
 CONFLICT_TYPES = {'Q3331189', 'Q53731850', 'Q49084', 'Q277759', 'Q1667921',
                   'Q1279564', 'Q105420', 'Q2668072', 'Q104213567', 'Q5398426', 'Q11424', 'Q7725310'}
 READ_STATUSES = {'unknown', 'unread', 'reading', 'read'}
+CLASSIFICATION_AXES = ('genre', 'theme', 'structure', 'protagonist', 'style', 'atmosphere')
+NATIVE_EXPORT_VERSIONS = {'scale-native-classification-export-v1',
+                          'scale-content-native-classification-export-v2',
+                          'scale-content-native-classification-export-v3'}
 
 
 def collective_description(entity):
@@ -57,6 +61,23 @@ def _display_native_labels(labels):
         else:
             admitted.append(label)
     return admitted, held
+
+
+def _native_axis_summary(native_row, displayed, display_held):
+    """Expose counts from the authenticated export, never SQL provenance text."""
+    raw = native_row.get('native_result', {})
+    labels = [*raw.get('labels', []), *native_row['admitted_labels']]
+    label_axes = {item['label_id']: item['axis'] for item in labels}
+    held = {item['label_id'] for item in [
+        *native_row.get('label_admission', {}).get('held_labels', []), *display_held]}
+    missing = {item['axis'] for item in raw.get('missing_axes', [])}
+    result = []
+    for axis in CLASSIFICATION_AXES:
+        adopted_count = sum(item.get('axis') == axis for item in displayed)
+        held_count = sum(label_axes.get(label_id, label_id.split('.', 1)[0]) == axis for label_id in held)
+        result.append({'axis': axis, 'adopted_count': adopted_count, 'held_count': held_count,
+                       'unknown': axis in missing or (adopted_count == 0 and held_count == 0)})
+    return result
 
 
 class _NativeOperation(set):
@@ -482,16 +503,21 @@ class ScaleCatalogue:
                         result['failures'].append(failure)
         result['chunks'] += 1
 
-    def _row(self, stored, *, detail=False, native_verified=None):
+    def _row(self, stored, *, detail=False, native_verified=None, include_native=True):
         row = json.loads(stored['row_json'])
         for artifact in row['provenance']['artifacts']:
             self._artifact(artifact['raw_path'], artifact['raw_sha256'])
         row['read_status'] = stored['read_status'] or 'unknown'
-        with self._connect() as db:
-            native = db.execute('SELECT * FROM native_classifications WHERE qid=?', (row['qid'],)).fetchone()
+        native = None
+        if detail and include_native:
+            with self._connect() as db:
+                native = db.execute('SELECT * FROM native_classifications WHERE qid=?', (row['qid'],)).fetchone()
         if native:
-            self._native_proofs(native, verified=native_verified)
+            native_row = self._native_proofs(native, verified=native_verified)
             row['llm_features'], row['llm_held_features'] = _display_native_labels(json.loads(native['labels_json']))
+            row['classification_axes'] = _native_axis_summary(native_row, row['llm_features'], row['llm_held_features'])
+            if detail and 'source_attributions' in native_row:
+                row['content_sources'] = native_row['source_attributions']
         if detail:
             if _sha(stored['record_json'].encode('utf-8')) != stored['record_sha256']:
                 raise ValueError('source version record hash changed')
@@ -517,7 +543,7 @@ class ScaleCatalogue:
         for artifact in proof['artifacts']:
             self._check_native_pin(artifact['path'], artifact['sha256'], verified)
         if 'qid' in native.keys() or 'labels_json' in native.keys():
-            self._native_label_binding(native, document)
+            return self._native_label_binding(native, document)
 
     def _check_native_pin(self, path, sha, verified):
         path = Path(path)
@@ -534,7 +560,7 @@ class ScaleCatalogue:
         if key not in verified.manifests:
             self._check_native_pin(*key, verified)
             document = self._payload(*key)
-            if document.get('version') != 'scale-native-classification-export-v1' or not isinstance(document.get('artifact_sha256'), dict):
+            if document.get('version') not in NATIVE_EXPORT_VERSIONS or not isinstance(document.get('artifact_sha256'), dict):
                 raise ValueError('unsupported native classification export')
             for artifact in coordinator_chain_pins(document):
                 self._check_native_pin(artifact['path'], artifact['sha256'], verified)
@@ -546,6 +572,7 @@ class ScaleCatalogue:
         rows = [row for row in document['verified_projection']['rows'] if row['qid'] == qid]
         if len(rows) != 1 or rows[0]['work_id'] != 'wd:' + qid or _json(json.loads(native['labels_json'])) != _json(rows[0]['admitted_labels']):
             raise ValueError('native catalogue identity or labels differ from pinned admitted export')
+        return rows[0]
 
     def _native_proof_artifact(self, path, sha):
         """Verify exact bytes per operation; timestamps never authorize reuse."""
@@ -568,16 +595,28 @@ class ScaleCatalogue:
             raise ValueError('native proof changed during hash verification: ' + str(path))
 
     def import_classifications(self, manifest_path, expected_sha256):
-        """Adopt only the frozen v4 verifier's admitted, display-authorized labels.
+        """Adopt only a versioned authentic verifier's display-authorized labels.
 
         The verifier runs the actual read-only UsageGuard/native lineage loader;
         a JSON flag or a model result alone cannot enter this projection.
         """
-        from .scale_classification_v1 import verify_catalogue_classification
         from .classification.validation import load_taxonomy
         self._conditions()
         manifest_path = str(Path(manifest_path).resolve())
-        self._artifact(manifest_path, expected_sha256)
+        raw = Path(manifest_path).read_bytes()
+        if not expected_sha256 or _sha(raw) != expected_sha256:
+            raise ValueError('Classification export manifest SHA differs')
+        version = json.loads(raw).get('version')
+        if version == 'scale-native-classification-export-v1':
+            from .scale_classification_v1 import verify_catalogue_classification
+        elif version == 'scale-content-native-classification-export-v2':
+            from .scale_content_classification_v2 import verify_catalogue_classification
+        elif version == 'scale-content-native-classification-export-v3':
+            from .scale_content_classification_v3 import verify_catalogue_classification
+        elif version == 'scale-content-native-classification-export-v1':
+            raise ValueError('Content classification output rights review required before publication')
+        else:
+            raise ValueError('Unknown classification export version')
         rows = verify_catalogue_classification(manifest_path, expected_sha256)
         label_axes = {label['label_id']: label['axis'] for label in load_taxonomy()['labels']}
         result = {'raw_classified': 0, 'adopted': 0, 'failed': 0, 'unchanged': 0, 'failures': []}
@@ -616,6 +655,23 @@ class ScaleCatalogue:
                         raise ValueError('native crosswalk conflicts with existing identity')
                     db.execute('INSERT OR IGNORE INTO crosswalk VALUES(?,?,?)', (old_id, qid, _json(proof)))
         return result
+
+    def catalogue_facets(self):
+        """Source-only filter choices, independent of native classification proofs."""
+        _, rights = self._conditions()
+        if rights['display'] != 'allowed':
+            return {'languages': [], 'genres': []}
+        with self._connect() as db:
+            db.execute('BEGIN')
+            languages = [dict(r) for r in db.execute(
+                'SELECT language AS value,count(*) AS count FROM works '
+                'WHERE display_allowed=1 AND language IS NOT NULL '
+                'GROUP BY language ORDER BY count(*) DESC,language')]
+            genres = [dict(r) for r in db.execute(
+                'SELECT g.genre_qid AS qid,max(g.label) AS label,count(*) AS count '
+                'FROM work_genres g JOIN works w USING(qid) WHERE w.display_allowed=1 '
+                'GROUP BY g.genre_qid ORDER BY count(*) DESC,g.genre_qid')]
+        return {'languages': languages, 'genres': genres}
 
     def catalogue_stats(self):
         _, rights = self._conditions()
@@ -697,7 +753,7 @@ class ScaleCatalogue:
                 'filters': {'query': query, 'genre': genre, 'language': language,
                             'year_from': year_from, 'year_to': year_to, 'read_filter': read_filter}}
 
-    def work_detail(self, qid, *, _native_verified=None):
+    def work_detail(self, qid, *, _native_verified=None, _include_native=True):
         _, rights = self._conditions()
         if rights['display'] != 'allowed':
             return None
@@ -707,7 +763,8 @@ class ScaleCatalogue:
             row = db.execute('''SELECT w.row_json,r.status AS read_status,s.record_json,s.record_sha256 FROM works w
                 JOIN source_versions s USING(version_id) LEFT JOIN read_status r ON r.qid=w.qid
                 WHERE w.qid=? AND w.display_allowed=1''', (qid,)).fetchone()
-        return self._row(row, detail=True, native_verified=native_verified) if row else None
+        return self._row(row, detail=True, native_verified=native_verified,
+                         include_native=_include_native) if row else None
 
     def _resolve_qid(self, value, *, native_verified=None):
         try:
@@ -774,7 +831,9 @@ class ScaleCatalogue:
         if not 1 <= limit <= 100:
             raise ValueError('limit must be 1..100')
         native_verified = _NativeOperation()
-        source = self.work_detail(qid, _native_verified=native_verified)
+        # This ranking uses source bibliography only and returns no native
+        # labels. Keep native proof work at the boundary that actually uses it.
+        source = self.work_detail(qid, _native_verified=native_verified, _include_native=False)
         result = {'mode': 'insufficient_evidence', 'personalized': False, 'items': [],
                   'explanation': '資料記載ジャンルが不足しています。個人向けスコアは計算していません。'}
         if source is None or not source['genres']:

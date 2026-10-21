@@ -27,7 +27,7 @@ def _terms(values):
             if isinstance(v, dict) else {'qid': '', 'label': _text(v)} for v in values or []]
 
 
-def _feature(value):
+def _feature(value, *, hidden_quote_evidence_ids=(), hidden_summary_evidence_ids=()):
     if not isinstance(value, dict):
         return {'label': _text(value)}
     result = {k: (_number(value[k]) if k in ('relevance', 'confidence', 'score') else _text(value[k]))
@@ -41,8 +41,37 @@ def _feature(value):
                                 if item['label_id'] == result['label_id']), result['label_id'])
     if isinstance(value.get('evidence'), list):
         result['evidence'] = ' / '.join(str(item['quote']) for item in value['evidence']
-                                      if isinstance(item, dict) and item.get('quote'))
+                                      if isinstance(item, dict) and item.get('quote')
+                                      and item.get('evidence_id') not in hidden_quote_evidence_ids)
+        result['evidence_summary'] = ' / '.join(item['summary'] for item in value['evidence']
+                                      if isinstance(item, dict) and isinstance(item.get('summary'), str)
+                                      and item['summary'].strip()
+                                      and item.get('evidence_id') not in hidden_summary_evidence_ids)
     return result
+
+
+def _link(value):
+    value = _text(value)
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return ''
+    return value if parsed.scheme in ('http', 'https') and parsed.netloc else ''
+
+
+def _attribution(value):
+    if isinstance(value, str):
+        return value
+    if not isinstance(value, dict):
+        return ''
+    parts = []
+    for key in ('credit', 'text', 'attribution', 'authors', 'author', 'contributors', 'source_name', 'title'):
+        item = value.get(key)
+        if isinstance(item, str):
+            parts.append(item)
+        elif isinstance(item, list):
+            parts.extend(v for v in item if isinstance(v, str))
+    return ' / '.join(dict.fromkeys(parts))
 
 
 def public_work(row):
@@ -61,9 +90,43 @@ def public_work(row):
                             for key in ('display', 'local_storage', 'external_llm')}
     if 'provenance' in row:
         result['provenance'] = {'retrieved_at': _text(row['provenance'].get('retrieved_at'))}
+    hidden_quotes, hidden_summaries = set(), set()
+    if 'content_sources' in row:
+        result['content_sources'] = []
+        for source in row['content_sources']:
+            if not isinstance(source, dict):
+                continue
+            displayed = source.get('display_allowed') is True
+            if not displayed or source.get('quote_allowed') is not True:
+                hidden_quotes.update(value for value in source.get('evidence_ids', []) if isinstance(value, str))
+            if not displayed:
+                hidden_summaries.update(value for value in source.get('evidence_ids', []) if isinstance(value, str))
+            if displayed:
+                attribution = source.get('attribution')
+                attribution = attribution if isinstance(attribution, dict) else {}
+                result['content_sources'].append({
+                    'source_url': _link(source.get('source_url')), 'license': _text(source.get('license')),
+                    'license_url': _link(source.get('license_url')), 'attribution': _attribution(source.get('attribution')),
+                    'permalink': _link(source.get('permalink') or attribution.get('permalink')),
+                    'history_url': _link(source.get('history_url') or attribution.get('history_url')),
+                    'output_license': _text(source.get('output_license')),
+                    'output_license_url': _link(source.get('output_license_url')),
+                    'locator': _text(source.get('locator')), 'revision': _text(source.get('revision')),
+                    'changed_from_source': _text(source.get('changed_from_source')),
+                })
     for key in ('strict72_features', 'llm_features'):
         if key in row:
-            result[key] = [_feature(v) for v in row[key]]
+            result[key] = [_feature(v, hidden_quote_evidence_ids=hidden_quotes,
+                                   hidden_summary_evidence_ids=hidden_summaries) for v in row[key]]
+    if 'classification_axes' in row:
+        from recommend_book.scale_catalogue_v1 import CLASSIFICATION_AXES
+        result['classification_axes'] = [
+            {'axis': value['axis'],
+             **{key: value[key] if type(value.get(key)) is int and value[key] >= 0 else 0
+                for key in ('adopted_count', 'held_count')},
+             'unknown': value.get('unknown') is True}
+            for value in row['classification_axes']
+            if isinstance(value, dict) and value.get('axis') in CLASSIFICATION_AXES]
     if 'recommendation_mode' in row:
         result['recommendation_mode'] = row['recommendation_mode'] if row['recommendation_mode'] in ('source_similarity', 'insufficient_evidence', 'llm_similarity') else 'insufficient_evidence'
     if 'score' in row:
@@ -96,9 +159,11 @@ function card(row){const c=node('article',undefined,'card'),title=node('button',
 function query(){const q=new URLSearchParams({page:state.page,page_size:30});for(const [key,id]of [['q','search-query'],['genre','genre'],['language','language'],['year_from','year-from'],['year_to','year-to']])if($(id).value)q.set(key,$(id).value);if($('exclude-read').checked)q.set('exclude_read','1');return q;}
 async function search(){const request=++state.request;$('message').textContent='';$('shown-count').textContent='検索中…';try{const data=await api('/api/works?'+query());if(request!==state.request)return;state.pages=data.pages;state.page=data.page;state.total=data.total;$('results').replaceChildren(...data.items.map(card));$('shown-count').textContent=data.total.toLocaleString()+'作品'+(data.total?' ・ '+((data.page-1)*data.page_size+1)+'–'+Math.min(data.page*data.page_size,data.total)+'件目':'');if(!data.total)$('results').append(node('p','条件に合う作品がありません。検索語や絞り込み条件を変えてください。'));$('page-label').textContent=data.page+' / '+Math.max(1,data.pages);$('page-prev').disabled=data.page<=1;$('page-next').disabled=data.page>=data.pages;}catch(e){if(request===state.request){$('shown-count').textContent='検索を完了できませんでした';$('message').textContent=e.message;}}}
 function section(parent,title){const section=node('section',undefined,'detail-section');section.append(node('h3',title));parent.append(section);return section;}
-async function showDetail(qid){const dialog=$('detail'),body=$('detail-body');body.replaceChildren(node('p','読み込み中…'));if(!dialog.open)dialog.showModal();try{const row=await api('/api/works/'+qid);body.replaceChildren(node('h2',row.title),node('p',describe(row)));if(row.aliases?.length)body.append(node('p','別題：'+row.aliases.join(' / ')));body.append(statusControl(row));if(row.source_url){const p=node('p'),a=node('a','出典の作品ページ');a.href=row.source_url;a.target='_blank';a.rel='noopener noreferrer';p.append(a);body.append(p);}if(row.provenance?.retrieved_at)body.append(node('p','取得日：'+row.provenance.retrieved_at,'muted'));const coarse=section(body,'資料記載のジャンル');tags(coarse,row.genres);coarse.append(node('p',row.genres?.length?'資料に記載された粗い特徴です。詳細分類の72ラベルと同一ではありません。':'資料記載のジャンルは未収録です。','muted'));const rich=section(body,'LLMの詳細分類');const features=[...(row.strict72_features||[]),...(row.llm_features||[])];if(!features.length)rich.append(node('p','詳細分類は未収録です。'));for(const f of features){const n=node('p',f.label||f.label_id||f.feature_id||'分類特徴');if(f.relevance!==undefined)n.append(node('span',' ・ 関連度 '+(f.relevance===null?'不明':f.relevance)));if(f.confidence!==undefined)n.append(node('span',' ・ モデル確信度 '+(f.confidence===null?'不明':f.confidence)));rich.append(n);if(f.evidence)rich.append(node('p',f.evidence,'muted'));}rich.append(node('p','関連度とモデル確信度は校正されていない生の値です。正解の確率や個人向け推薦スコアではありません。','muted'));const similar=section(body,'この作品に近い候補');similar.append(node('p','資料記載のジャンル・書誌特徴による類似候補です。個人の読書履歴に基づく推薦ではありません。','muted'));const data=await api('/api/works/'+qid+'/similar?exclude_read='+($('exclude-read').checked?'1':'0'));if(!data.items.length)similar.append(node('p','根拠のある類似候補はまだありません。'));for(const item of data.items){const div=node('div',undefined,'similar-row'),button=node('button',item.title);button.addEventListener('click',()=>showDetail(item.qid));div.append(button,node('p',describe(item),'muted'));const names={genre:'資料記載のジャンル',source_genre:'資料記載のジャンル',language:'原言語',same_language:'原言語',year:'刊行年代',publication_period:'刊行年代',author:'著者',same_author:'著者',region:'地域',llm_feature:'LLM分類'};for(const reason of item.reasons||[]){const shared=(reason.shared||[]).map(x=>{let label=typeof x==='string'?x:x.label;if(reason.kind==='same_language')return languageName(label);if(reason.kind==='publication_period')return label+'年';if(reason.kind==='same_author')return (item.authors||[]).find(a=>a.qid===label)?.name||'共通する著者';return label;}).join('・');div.append(node('p',(names[reason.kind]||'資料の共通点')+'：'+shared));}if(item.score!==undefined&&item.score!==null)div.append(node('p','類似度 '+Number(item.score).toFixed(3)+'（暫定・確率ではありません）','muted'));similar.append(div);}}catch(e){body.replaceChildren(node('p',e.message));}}
-async function stats(){try{const data=await api('/api/stats');const labels=[['works','台帳作品'],['searchable_works','検索可能'],['feature_bearing_works','推薦特徴あり'],['source_genre_works','資料ジャンルあり'],['eligible_classified_works','AI処理済み'],['llm_works','LLM特徴あり'],['personal_score_works','個人スコアあり'],['held_works','表示保留'],['content_history_links','履歴の内容接続'],['bibliographic_history_links','履歴の書誌接続']];$('stats').replaceChildren(...labels.map(([key,label])=>{const c=node('div',undefined,'stat');c.append(node('strong',data[key]===undefined?'未集計':Number(data[key]).toLocaleString()),node('span',label));return c;}));for(const item of data.genres||[]){const option=node('option',item.label+' ('+item.count.toLocaleString()+')');option.value=item.qid;$('genre').append(option);}for(const item of data.languages||[]){const option=node('option',(languageName(item.value)||'不明')+' ('+item.count.toLocaleString()+')');option.value=item.value;$('language').append(option);}}catch(e){$('message').textContent=e.message;}}
-$('search-form').addEventListener('submit',e=>{e.preventDefault();state.page=1;search();});for(const id of ['genre','language','exclude-read'])$(id).addEventListener('change',()=>{state.page=1;search();});$('page-prev').addEventListener('click',()=>{if(state.page>1){state.page--;search();window.scrollTo({top:0,behavior:'smooth'});}});$('page-next').addEventListener('click',()=>{if(state.page<state.pages){state.page++;search();window.scrollTo({top:0,behavior:'smooth'});}});$('reset').addEventListener('click',()=>{HTMLFormElement.prototype.reset.call($('search-form'));state.page=1;search();});$('close-detail').addEventListener('click',()=>$('detail').close());stats();search();
+function sourceCredits(parent,sources){if(!sources.length)return;const credits=section(parent,'内容分類の出典と利用条件');credits.append(node('p','分類はAIが生成し、出典・引用・利用条件を自動照合しています。人による確認は行っていません。再利用時は出典・変更内容の表示と同一ライセンスの条件を確認してください。原作の利用許諾は含みません。','muted'));for(const source of sources){const p=node('p');if(source.source_url){const a=node('a','出典の記事・版');a.href=source.source_url;a.target='_blank';a.rel='noopener noreferrer';p.append(a);}if(source.revision)p.append(node('span',' ・ 版 '+source.revision));if(source.history_url){const h=node('a','寄稿者の履歴');h.href=source.history_url;h.target='_blank';h.rel='noopener noreferrer';p.append(node('span',' ・ '),h);}credits.append(p);if(source.attribution)credits.append(node('p',source.attribution));if(source.locator){const sectionName=source.locator.match(/(?:^|;)section:([^;]+)/);credits.append(node('p','参照箇所：'+(sectionName?sectionName[1]:source.locator),'muted'));}if(source.license){const p=node('p');if(source.license_url){const a=node('a',source.license);a.href=source.license_url;a.target='_blank';a.rel='noopener noreferrer';p.append(a);}else p.textContent=source.license;credits.append(p);}if(source.output_license){const p=node('p','この分類・引用レコードの利用条件：');if(source.output_license_url){const a=node('a',source.output_license);a.href=source.output_license_url;a.target='_blank';a.rel='noopener noreferrer';p.append(a);}else p.append(node('span',source.output_license));credits.append(p);}if(source.changed_from_source)credits.append(node('p','変更内容：'+source.changed_from_source,'muted'));}}
+async function showDetail(qid){const dialog=$('detail'),body=$('detail-body');body.replaceChildren(node('p','読み込み中…'));if(!dialog.open)dialog.showModal();try{const row=await api('/api/works/'+qid);body.replaceChildren(node('h2',row.title),node('p',describe(row)));if(row.aliases?.length)body.append(node('p','別題：'+row.aliases.join(' / ')));body.append(statusControl(row));if(row.source_url){const p=node('p'),a=node('a','出典の作品ページ');a.href=row.source_url;a.target='_blank';a.rel='noopener noreferrer';p.append(a);body.append(p);}if(row.provenance?.retrieved_at)body.append(node('p','取得日：'+row.provenance.retrieved_at,'muted'));const coarse=section(body,'資料記載のジャンル');tags(coarse,row.genres);coarse.append(node('p',row.genres?.length?'資料に記載された粗い特徴です。詳細分類の72ラベルと同一ではありません。':'資料記載のジャンルは未収録です。','muted'));const rich=section(body,'LLMの詳細分類');const axes={genre:'ジャンル',theme:'テーマ',structure:'物語構造',protagonist:'主人公',style:'文体',atmosphere:'雰囲気'};for(const item of row.classification_axes||[])rich.append(node('p',axes[item.axis]+'：採用 '+item.adopted_count+'件 / 保留 '+item.held_count+'件'+(item.unknown?' / 不明':''),'muted'));const features=[...(row.strict72_features||[]),...(row.llm_features||[])];if(!features.length)rich.append(node('p','詳細分類は未収録です。'));for(const f of features){const n=node('p',f.label||f.label_id||f.feature_id||'分類特徴');if(f.relevance!==undefined)n.append(node('span',' ・ 関連度 '+(f.relevance===null?'不明':f.relevance)));if(f.confidence!==undefined)n.append(node('span',' ・ モデル確信度 '+(f.confidence===null?'不明':f.confidence)));rich.append(n);if(f.evidence)rich.append(node('p','出典の引用：'+f.evidence,'muted'));if(f.evidence_summary)rich.append(node('p','AIによる根拠の要約：'+f.evidence_summary,'muted'));}rich.append(node('p','関連度とモデル確信度は校正されていない生の値です。正解の確率や個人向け推薦スコアではありません。','muted'));sourceCredits(body,row.content_sources||[]);const similar=section(body,'この作品に近い候補');similar.append(node('p','資料記載のジャンル・書誌特徴による類似候補です。個人の読書履歴に基づく推薦ではありません。','muted'));const data=await api('/api/works/'+qid+'/similar?exclude_read='+($('exclude-read').checked?'1':'0'));if(!data.items.length)similar.append(node('p','根拠のある類似候補はまだありません。'));for(const item of data.items){const div=node('div',undefined,'similar-row'),button=node('button',item.title);button.addEventListener('click',()=>showDetail(item.qid));div.append(button,node('p',describe(item),'muted'));const names={genre:'資料記載のジャンル',source_genre:'資料記載のジャンル',language:'原言語',same_language:'原言語',year:'刊行年代',publication_period:'刊行年代',author:'著者',same_author:'著者',region:'地域',llm_feature:'LLM分類'};for(const reason of item.reasons||[]){const shared=(reason.shared||[]).map(x=>{let label=typeof x==='string'?x:x.label;if(reason.kind==='same_language')return languageName(label);if(reason.kind==='publication_period')return label+'年';if(reason.kind==='same_author')return (item.authors||[]).find(a=>a.qid===label)?.name||'共通する著者';return label;}).join('・');div.append(node('p',(names[reason.kind]||'資料の共通点')+'：'+shared));}if(item.score!==undefined&&item.score!==null)div.append(node('p','類似度 '+Number(item.score).toFixed(3)+'（暫定・確率ではありません）','muted'));similar.append(div);}}catch(e){body.replaceChildren(node('p',e.message));}}
+async function stats(){try{const data=await api('/api/stats');const labels=[['works','台帳作品'],['searchable_works','検索可能'],['feature_bearing_works','推薦特徴あり'],['source_genre_works','資料ジャンルあり'],['eligible_classified_works','AI処理済み'],['llm_works','LLM特徴あり'],['personal_score_works','個人スコアあり'],['held_works','表示保留'],['content_history_links','履歴の内容接続'],['bibliographic_history_links','履歴の書誌接続']];$('stats').replaceChildren(...labels.map(([key,label])=>{const c=node('div',undefined,'stat');c.append(node('strong',data[key]===undefined?'未集計':Number(data[key]).toLocaleString()),node('span',label));return c;}));}catch(e){$('message').textContent=e.message;}}
+async function facets(){try{const data=await api('/api/facets');for(const item of data.genres||[]){const option=node('option',item.label+' ('+item.count.toLocaleString()+')');option.value=item.qid;$('genre').append(option);}for(const item of data.languages||[]){const option=node('option',(languageName(item.value)||'不明')+' ('+item.count.toLocaleString()+')');option.value=item.value;$('language').append(option);}}catch(e){$('message').textContent=e.message;}}
+$('search-form').addEventListener('submit',e=>{e.preventDefault();state.page=1;search();});for(const id of ['genre','language','exclude-read'])$(id).addEventListener('change',()=>{state.page=1;search();});$('page-prev').addEventListener('click',()=>{if(state.page>1){state.page--;search();window.scrollTo({top:0,behavior:'smooth'});}});$('page-next').addEventListener('click',()=>{if(state.page<state.pages){state.page++;search();window.scrollTo({top:0,behavior:'smooth'});}});$('reset').addEventListener('click',()=>{HTMLFormElement.prototype.reset.call($('search-form'));state.page=1;search();});$('close-detail').addEventListener('click',()=>$('detail').close());stats();facets();search();
 '''
 
 
@@ -148,9 +213,9 @@ def create_server(database=None, *, catalogue=None, port=8766):
                     data, kind = {'/': (_HTML, 'text/html'), '/app.js': (_JS, 'text/javascript'), '/style.css': (_CSS, 'text/css')}[path]
                     self._send(200, data, kind + '; charset=utf-8')
                     return
-                if path == '/api/stats':
-                    raw = catalogue.catalogue_stats()
-                    result = {key: raw[key] for key in (*_STAT_KEYS, 'source_genre_works') if key in raw and isinstance(raw[key], int)}
+                if path in ('/api/stats', '/api/facets'):
+                    raw = catalogue.catalogue_stats() if path == '/api/stats' else catalogue.catalogue_facets()
+                    result = {key: raw[key] for key in (*_STAT_KEYS, 'source_genre_works') if key in raw and isinstance(raw[key], int)} if path == '/api/stats' else {}
                     result['languages'] = [{'value': _text(v.get('value')), 'count': int(v['count'])} for v in raw.get('languages', [])]
                     result['genres'] = [dict(_terms([v])[0], count=int(v['count'])) for v in raw.get('genres', [])]
                     self._send(200, result)
