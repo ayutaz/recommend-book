@@ -179,7 +179,7 @@ def _read_native_rows(catalogue, qids):
         for start in range(0, len(values), 500):
             params = values[start:start + 500]
             placeholders = ','.join('?' for _ in params)
-            for row in db.execute(f'SELECT * FROM native_classifications WHERE qid IN ({placeholders})', params):
+            for row in db.execute(f'SELECT qid,labels_json FROM native_classifications WHERE qid IN ({placeholders})', params):
                 result[row['qid']] = row
     return result
 

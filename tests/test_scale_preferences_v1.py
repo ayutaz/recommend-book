@@ -1,11 +1,13 @@
 import hashlib
 import json
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timezone
 
 import pytest
 
 from recommend_book.scale_catalogue_v1 import ScaleCatalogue
+from recommend_book.scale_preferences_v1 import _read_native_rows
 from test_scale_catalogue_v1 import claim, native_manifest, native_pins, record, save
 
 
@@ -33,6 +35,43 @@ def add_native(catalogue, tmp_path, rows):
         db.executemany('INSERT INTO native_classifications VALUES(?,?,?,?,?)', [
             (row['qid'], str(manifest), sha, json.dumps(row['admitted_labels']), proof) for row in rows])
     return manifest
+
+
+def test_read_native_rows_projects_only_raw_labels_and_chunks_over_500(preference_catalogue, monkeypatch):
+    qids = [f'Q{10000 + index}' for index in range(501)]
+    labels = [json.dumps([{'label_id': 'theme.revenge', 'axis': 'theme'}]) for _ in qids]
+    with sqlite3.connect(preference_catalogue.db_path) as db:
+        db.executemany(
+            'INSERT INTO native_classifications VALUES(?,?,?,?,?)',
+            [(qid, 'manifest.json', 'manifest-sha', value, 'large provenance payload')
+             for qid, value in zip(qids, labels)],
+        )
+
+    reads = []
+    statements = []
+    original_connect = preference_catalogue._connect
+
+    @contextmanager
+    def traced_connect():
+        with original_connect() as db:
+            db.set_authorizer(
+                lambda action, arg1, arg2, database, source: (
+                    reads.append((action, arg1, arg2)), sqlite3.SQLITE_OK
+                )[1]
+            )
+            db.set_trace_callback(statements.append)
+            yield db
+
+    monkeypatch.setattr(preference_catalogue, '_connect', traced_connect)
+    result = _read_native_rows(preference_catalogue, qids)
+
+    assert set(result) == set(qids)
+    assert result[qids[0]]['labels_json'] == labels[0]
+    assert sum(statement.startswith('SELECT qid,labels_json FROM native_classifications')
+               for statement in statements) == 2
+    assert {column for action, table, column in reads
+            if action == sqlite3.SQLITE_READ and table == 'native_classifications'} == {
+                'qid', 'labels_json'}
 
 
 def label(label_id, axis, *, quote='fixture evidence'):
