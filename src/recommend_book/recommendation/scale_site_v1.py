@@ -147,6 +147,11 @@ def _public_preference_facets(raw):
     if not isinstance(raw, dict):
         raise TypeError('invalid preference facets')
     axes = raw.get('axes') if isinstance(raw.get('axes'), dict) else raw
+    if isinstance(raw.get('native_features'), list):
+        axes = {axis: [] for axis in _PREFERENCE_AXES}
+        for value in raw['native_features']:
+            if isinstance(value, dict) and value.get('axis') in axes:
+                axes[value['axis']].append(value)
     result = {'axes': {}}
     for axis in _PREFERENCE_AXES:
         values = axes.get(axis, []) if isinstance(axes, dict) else []
@@ -234,9 +239,13 @@ def public_work(row):
                 continue
             reason = {'kind': _text(value.get('kind')), 'shared': _terms(value.get('shared')),
                       'weight': _number(value.get('weight'))}
-            for key in ('axis', 'label', 'detail', 'message', 'direction', 'evidence_status'):
+            for key in ('axis', 'label', 'detail', 'message', 'direction', 'relation', 'evidence_status'):
                 candidate = value.get(key)
                 if isinstance(candidate, (str, int, bool)) or (isinstance(candidate, float) and math.isfinite(candidate)):
+                    reason[key] = candidate
+            for key in ('model_confidence', 'relevance'):
+                candidate = value.get(key)
+                if isinstance(candidate, (int, float)) and not isinstance(candidate, bool) and math.isfinite(candidate):
                     reason[key] = candidate
             if value.get('source_url'):
                 reason['source_url'] = _link(value.get('source_url'))

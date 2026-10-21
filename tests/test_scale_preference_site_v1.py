@@ -77,6 +77,16 @@ def test_preference_facets_expose_only_adopted_public_choices(site):
     assert 'PRIVATE-SENTINEL' not in json.dumps(data)
 
 
+def test_preference_facets_accept_backend_native_feature_shape():
+    from recommend_book.recommendation.scale_site_v1 import _public_preference_facets
+    data = _public_preference_facets({'native_features': [
+        {'axis': 'theme', 'label_id': 'theme.growth', 'label': '成長', 'availability': 'verified_on_demand'},
+        {'axis': 'style', 'label_id': 'style.first_person', 'label': '一人称'},
+    ]})
+    assert data == {'axes': {'theme': [{'label_id': 'theme.growth', 'label': '成長'}],
+                             'structure': [], 'protagonist': [], 'atmosphere': []}}
+
+
 def test_preference_recommendation_passes_explicit_inputs_and_public_reasons(site):
     base, catalogue = site
     payload = {
