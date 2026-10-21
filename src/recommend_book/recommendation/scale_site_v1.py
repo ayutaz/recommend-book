@@ -75,6 +75,104 @@ def _attribution(value):
     return ' / '.join(dict.fromkeys(parts))
 
 
+def _recommendation_label_names():
+    """Resolve public Japanese labels without exposing taxonomy internals."""
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[3]
+    path = root / 'config' / 'recommendation-label-display-ja.json'
+    try:
+        value = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        value = {}
+    return value.get('labels', {}) if isinstance(value, dict) else {}
+
+
+def _reason_terms(values):
+    labels = _recommendation_label_names()
+    result = []
+    for value in values or []:
+        if isinstance(value, dict):
+            identifier = _text(value.get('qid') or value.get('label_id'))
+            label = _text(value.get('label') or value.get('name') or labels.get(identifier, identifier))
+            result.append({'qid': identifier, 'label': label})
+        elif isinstance(value, str):
+            result.append({'qid': value if re.fullmatch(r'[A-Za-z][A-Za-z0-9_.:-]*', value) else '',
+                           'label': labels.get(value, value)})
+    return result
+
+
+_AXIS_NAMES_JA = {
+    'genre': 'ジャンル', 'theme': 'テーマ', 'structure': '物語構造',
+    'protagonist': '主人公', 'style': '文体', 'atmosphere': '雰囲気',
+}
+
+
+def _public_feature_insufficiency(value):
+    """Turn internal per-axis proof diagnostics into a short user explanation."""
+    if isinstance(value, str):
+        return value
+    if not isinstance(value, list):
+        return ''
+    unknown = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        axis = item.get('axis')
+        if axis in _AXIS_NAMES_JA and axis not in unknown:
+            unknown.append(axis)
+    if not unknown:
+        return ''
+    labels = '・'.join(_AXIS_NAMES_JA[axis] for axis in unknown)
+    return f'{labels}は未確認です。避けたい特徴の有無を判断できません。'
+
+
+def _recommendation_sources(value):
+    """Flatten both source and nested source_attributions contracts."""
+    values = value if isinstance(value, list) else [value]
+    flattened = []
+    for item in values:
+        if not isinstance(item, dict):
+            continue
+        nested = item.get('source_attributions')
+        if isinstance(nested, list):
+            flattened.extend(source for source in nested if isinstance(source, dict))
+        else:
+            flattened.append(item)
+    return flattened
+
+
+def _annotate_recommendation_reasons(item, payload):
+    """Add truthful origin labels before the generic public serializer runs."""
+    reasons = item.get('reasons')
+    if not isinstance(reasons, list):
+        return
+    preferred = set(payload.get('preferred_features', []))
+    has_likes = bool(payload.get('liked_qids'))
+    for reason in reasons:
+        if not isinstance(reason, dict):
+            continue
+        kind = reason.get('kind')
+        shared = reason.get('shared') or []
+        shared_ids = {value if isinstance(value, str) else value.get('qid')
+                      for value in shared if isinstance(value, (str, dict))}
+        if kind == 'native_feature_match':
+            if preferred & shared_ids:
+                reason.update(direction='prefer', detail='指定した特徴と一致')
+            elif has_likes:
+                reason.update(direction='context', detail='基準作品との共通点')
+            else:
+                reason.update(direction='prefer', detail='指定した特徴と一致')
+        elif kind == 'source_genre':
+            reason.update(direction='context' if has_likes else 'prefer',
+                          detail='基準作品との共通点' if has_likes else '資料記載ジャンルが共通')
+        elif kind == 'same_language':
+            reason.update(direction='context', detail='原言語が共通')
+        elif kind == 'publication_period':
+            reason.update(direction='context', detail='刊行年代が近い')
+        elif kind == 'same_author':
+            reason.update(direction='context', detail='著者が共通')
+
+
 def _preference_tokens(value, *, name, maximum=50, maximum_length=128):
     if value is None:
         return []
@@ -152,7 +250,8 @@ def _public_preference_facets(raw):
         for value in raw['native_features']:
             if isinstance(value, dict) and value.get('axis') in axes:
                 axes[value['axis']].append(value)
-    result = {'axes': {}}
+    result = {'axes': {},
+              'coverage_note': '分類体系の選択肢です。作品ごとの採用件数は未集計で、推薦時に個別検証します。'}
     for axis in _PREFERENCE_AXES:
         values = axes.get(axis, []) if isinstance(axes, dict) else []
         if not isinstance(values, list):
@@ -191,17 +290,29 @@ def public_work(row):
     if 'provenance' in row:
         result['provenance'] = {'retrieved_at': _text(row['provenance'].get('retrieved_at'))}
     hidden_quotes, hidden_summaries = set(), set()
-    if 'content_sources' in row:
+    recommendation_source_fallback = False
+    content_sources = row.get('content_sources', row.get('source_attributions'))
+    if content_sources is None and row.get('recommendation_provenance'):
+        content_sources = _recommendation_sources(row['recommendation_provenance'])
+        recommendation_source_fallback = True
+    if content_sources is not None:
         result['content_sources'] = []
-        for source in row['content_sources']:
+        seen_sources = set()
+        for source in content_sources:
             if not isinstance(source, dict):
                 continue
-            displayed = source.get('display_allowed') is True
+            displayed = source.get('display_allowed') is True or (
+                recommendation_source_fallback and source.get('display_allowed') is not False)
             if not displayed or source.get('quote_allowed') is not True:
                 hidden_quotes.update(value for value in source.get('evidence_ids', []) if isinstance(value, str))
             if not displayed:
                 hidden_summaries.update(value for value in source.get('evidence_ids', []) if isinstance(value, str))
             if displayed:
+                source_key = (_link(source.get('source_url')), _text(source.get('revision')),
+                              _link(source.get('permalink')))
+                if source_key in seen_sources:
+                    continue
+                seen_sources.add(source_key)
                 attribution = source.get('attribution')
                 attribution = attribution if isinstance(attribution, dict) else {}
                 result['content_sources'].append({
@@ -237,8 +348,22 @@ def public_work(row):
         for value in row['reasons']:
             if not isinstance(value, dict):
                 continue
-            reason = {'kind': _text(value.get('kind')), 'shared': _terms(value.get('shared')),
+            relation = _text(value.get('relation'))
+            kind = _text(value.get('kind'))
+            direction = 'avoid' if kind == 'avoided_feature' or relation == 'penalty' else (
+                'prefer' if kind in ('native_feature_match', 'source_genre') or relation == 'match' else 'context')
+            detail = ('避けたい特徴に一致' if direction == 'avoid' else
+                      '重視した特徴に一致' if direction == 'prefer' else
+                      '資料記載ジャンルによる補完' if kind == 'fallback_source' else
+                      '詳細特徴が不足しています' if kind == 'feature_unavailable' else '')
+            reason = {'kind': kind, 'shared': _reason_terms(value.get('shared')),
                       'weight': _number(value.get('weight'))}
+            if direction:
+                reason['direction'] = direction
+            if relation:
+                reason['relation'] = relation
+            if detail:
+                reason['detail'] = detail
             for key in ('axis', 'label', 'detail', 'message', 'direction', 'relation', 'evidence_status'):
                 candidate = value.get(key)
                 if isinstance(candidate, (str, int, bool)) or (isinstance(candidate, float) and math.isfinite(candidate)):
@@ -253,11 +378,11 @@ def public_work(row):
                 reason['source_locator'] = _text(value.get('source_locator'))
             result['reasons'].append(reason)
     if 'feature_insufficiency' in row:
-        result['feature_insufficiency'] = _text(row.get('feature_insufficiency'))
+        result['feature_insufficiency'] = _public_feature_insufficiency(row.get('feature_insufficiency'))
     if 'recommendation_provenance' in row:
-        provenance = row.get('recommendation_provenance')
-        values = provenance if isinstance(provenance, list) else [provenance]
+        values = _recommendation_sources(row.get('recommendation_provenance'))
         result['recommendation_provenance'] = []
+        seen_provenance = set()
         for value in values:
             if not isinstance(value, dict):
                 continue
@@ -268,7 +393,16 @@ def public_work(row):
             for key in ('license', 'revision', 'locator', 'attribution'):
                 if isinstance(value.get(key), (str, int, float)):
                     item[key] = _text(value.get(key))
-            if item:
+            if isinstance(value.get('attribution'), dict):
+                item['attribution'] = _attribution(value.get('attribution'))
+            item['output_license'] = _text(value.get('output_license')) if value.get('output_license') else ''
+            item['changed_from_source'] = _text(value.get('changed_from_source')) if value.get('changed_from_source') else ''
+            key = (item.get('source_url', ''), item.get('revision', ''), item.get('license', ''))
+            if key in seen_provenance:
+                continue
+            seen_provenance.add(key)
+            if any(item.get(key) for key in ('source_url', 'license', 'revision', 'locator', 'attribution',
+                                             'output_license', 'changed_from_source')):
                 result['recommendation_provenance'].append(item)
     return result
 
@@ -277,11 +411,11 @@ _HTML = '''<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name
 <body><header><div class="wrap"><p class="eyebrow">FICTION CATALOGUE</p><h1>次に読む一冊を、探す。</h1><p>小説・ライトノベルの書誌と、根拠のある類似作品をたどる本棚。</p></div></header>
 <main class="wrap"><section aria-label="収録状況"><div id="stats" class="stats"></div><p class="muted">資料のジャンルは粗い特徴です。LLM分類と区別して表示します。推薦の品質・個人向け改善は未評価です。</p></section>
 <section class="panel"><form id="search-form"><label class="search-label" for="search-query">書名・別題・著者</label><div class="search-row"><input id="search-query" name="q" type="search" placeholder="気になる作品や著者を検索"><button type="submit">検索</button></div><div class="filters"><label>ジャンル<select id="genre"><option value="">すべて</option></select></label><label>原言語<select id="language"><option value="">すべて</option></select></label><label>刊行年から<input id="year-from" type="number" min="-5000" max="3000" placeholder="例 1900"></label><label>まで<input id="year-to" type="number" min="-5000" max="3000" placeholder="例 2026"></label><label class="check"><input id="exclude-read" type="checkbox">既読を除く</label><button type="button" id="reset">条件をリセット</button></div></form></section>
-<section class="panel preference-panel" aria-labelledby="preference-title"><h2 id="preference-title">好みから探す</h2><p class="muted">検索結果や詳細画面で「好きな作品に追加」を押すと、複数作品を基準にできます。特徴は採用済みの分類だけを使います。</p><div class="preference-favorites"><strong>好きな作品</strong><div id="favorite-works" class="selected-list"><span class="muted">まだ選択されていません。</span></div></div><div id="preference-facets" class="preference-facets"></div><div class="filters"><label>ジャンル<select id="preference-genre"><option value="">すべて</option></select></label><label>原言語<select id="preference-language"><option value="">すべて</option></select></label><label>刊行年から<input id="preference-year-from" type="number" min="-5000" max="3000"></label><label>まで<input id="preference-year-to" type="number" min="-5000" max="3000"></label><label class="check"><input id="preference-exclude-read" type="checkbox" checked>既読を除く</label><button type="button" class="primary" id="recommend">この条件で推薦</button></div><p class="muted">推薦スコアは未校正の順位付けです。個人の読書履歴による精度改善や的中確率を示しません。</p><p id="preference-message" role="status" aria-live="polite"></p><div id="recommendations" class="recommendations"></div></section>
+<section class="panel preference-panel" aria-labelledby="preference-title"><h2 id="preference-title">好みから探す</h2><p class="muted">検索結果や詳細画面で「好きな作品に追加」を押すと、複数作品を基準にできます。選択肢は分類体系に定義されたラベルです。作品ごとの採用件数は未集計で、推薦時に個別検証します。</p><div class="preference-favorites"><strong>好きな作品</strong><div id="favorite-works" class="selected-list"><span class="muted">まだ選択されていません。</span></div></div><div id="preference-facets" class="preference-facets"></div><div id="axis-weights" class="axis-weights" aria-label="分類軸の重み"></div><div class="filters"><label>ジャンル<select id="preference-genre"><option value="">すべて</option></select></label><label>原言語<select id="preference-language"><option value="">すべて</option></select></label><label>刊行年から<input id="preference-year-from" type="number" min="-5000" max="3000"></label><label>まで<input id="preference-year-to" type="number" min="-5000" max="3000"></label><label class="check"><input id="preference-exclude-read" type="checkbox" checked>既読を除く</label><button type="button" class="primary" id="recommend">この条件で推薦</button></div><p class="muted">推薦スコアは未校正の順位付けです。個人の読書履歴による精度改善や的中確率を示しません。</p><p id="preference-message" role="status" aria-live="polite"></p><div id="recommendations" class="recommendations"></div></section>
 <div class="result-heading"><h2 id="shown-count">読み込み中…</h2><span class="muted">読書状態が不明の作品も表示します</span></div><p id="message" role="status" aria-live="polite"></p><div id="results" class="grid"></div><nav class="pagination" aria-label="ページ"><button id="page-prev">前のページ</button><span id="page-label"></span><button id="page-next">次のページ</button></nav>
 <dialog id="detail"><div class="dialog-head"><span>作品の詳細</span><button id="close-detail" aria-label="詳細を閉じる">閉じる</button></div><div id="detail-body"></div></dialog></main><footer class="wrap">読書状態の変更はこの端末に保存され、いつでも戻せます。</footer></body></html>'''
 
-_CSS = '''*{box-sizing:border-box}body{margin:0;background:#f6f4ee;color:#24362f;font-family:system-ui,"Yu Gothic",sans-serif;line-height:1.7}header{background:#203e34;color:#faf7ee;padding:48px 0 38px}.wrap{max-width:1180px;margin:auto;padding:0 28px}.eyebrow{font-size:12px;letter-spacing:.2em;color:#c9d7a6}h1{font-size:clamp(27px,4vw,43px);margin:10px 0}h2{font-size:19px}h3{margin:0 0 8px;font-size:20px;line-height:1.5}p{margin:8px 0}main{padding-top:26px!important}.stats{display:flex;flex-wrap:wrap;gap:12px}.stat{background:#fff;padding:12px 16px;border-radius:10px;flex:1;min-width:128px}.stat strong{display:block;font-size:24px}.stat span,.muted{font-size:13px;color:#66716b}.panel{background:white;border:1px solid #dedfd4;border-radius:14px;padding:24px;margin:24px 0}.search-label{font-weight:650}.search-row{display:flex;gap:12px;margin:8px 0 18px}.search-row input{flex:1;min-width:0}input,select,button{font:inherit;border:1px solid #bec8bb;border-radius:7px;padding:9px 12px;background:#fff;color:inherit}button{cursor:pointer}button:hover{background:#e8efdf}button:disabled{opacity:.4;cursor:default}.search-row button,.primary{background:#315845;color:#fff}.filters{display:flex;gap:14px;flex-wrap:wrap;align-items:end}.filters label:not(.check){display:flex;flex-direction:column;font-size:13px;gap:5px}.filters input[type=number]{width:115px}.check{padding:9px 0}.check input{accent-color:#315845}.result-heading{display:flex;justify-content:space-between;align-items:center;gap:14px}.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px}.card{background:white;border:1px solid #dedfd4;border-radius:12px;padding:22px;display:flex;flex-direction:column;gap:8px;min-width:0}.title-button{padding:0;border:0;text-align:left;font-size:20px;font-weight:700;background:none;overflow-wrap:anywhere}.title-button:hover{background:none;text-decoration:underline}.tag{font-size:12px;border-radius:5px;padding:3px 7px;background:#edf1e3;display:inline-block;margin:3px}.card-bottom{margin-top:auto;padding-top:10px;font-size:13px}.card select{font-size:13px;width:100%;margin-top:6px}.preference-panel h2{margin-top:0}.preference-favorites{border-top:1px solid #dedfd4;padding-top:12px;margin-top:16px}.selected-list{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0 16px}.selected-item{display:inline-flex;gap:7px;align-items:center;background:#edf1e3;border-radius:7px;padding:5px 8px;font-size:13px}.selected-item button{padding:0 4px;border:0;background:transparent}.preference-facets{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-bottom:18px}.facet-group{border:1px solid #dedfd4;border-radius:9px;padding:12px}.facet-group h3{font-size:15px}.facet-options{display:flex;flex-wrap:wrap;gap:7px}.facet-option{font-size:13px;padding:5px 8px;background:#f6f4ee;border-radius:6px}.facet-option input{accent-color:#315845;margin-right:5px}.facet-option.avoid{background:#f8e9e3}.recommendations{display:grid;gap:12px;margin-top:14px}.recommendation-card{border-top:1px solid #dedfd4;padding:14px 0}.recommendation-card h3 button{padding:0;border:0;background:transparent;text-align:left;font-weight:700}.recommendation-reason{font-size:13px;margin-left:1em}.recommendation-provenance{font-size:12px}.recommendation-warning{color:#8a4531;font-size:13px}.pagination{display:flex;justify-content:center;align-items:center;gap:20px;padding:30px 0}footer{padding-top:24px!important;padding-bottom:36px!important;color:#66716b;font-size:13px}dialog{border:1px solid #bec8bb;border-radius:14px;width:min(820px,94vw);max-height:90vh;padding:26px}dialog::backdrop{background:#10221999}.dialog-head{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #dedfd4;padding-bottom:14px;margin-bottom:22px}.detail-section{border-top:1px solid #dedfd4;margin-top:22px;padding-top:14px}.similar-row{padding:14px 0;border-bottom:1px solid #eee}a{color:#315845}#message,#preference-message{color:#8a4531}@media(max-width:900px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}.preference-facets{grid-template-columns:1fr}}@media(max-width:580px){.grid{grid-template-columns:1fr}.wrap{padding:0 17px}.panel{padding:16px}.result-heading{display:block}.filters{gap:10px}.stat{min-width:110px}header{padding:28px 0}.pagination{gap:10px;font-size:13px}}'''
+_CSS = '''*{box-sizing:border-box}body{margin:0;background:#f6f4ee;color:#24362f;font-family:system-ui,"Yu Gothic",sans-serif;line-height:1.7}header{background:#203e34;color:#faf7ee;padding:48px 0 38px}.wrap{max-width:1180px;margin:auto;padding:0 28px}.eyebrow{font-size:12px;letter-spacing:.2em;color:#c9d7a6}h1{font-size:clamp(27px,4vw,43px);margin:10px 0}h2{font-size:19px}h3{margin:0 0 8px;font-size:20px;line-height:1.5}p{margin:8px 0}main{padding-top:26px!important}.stats{display:flex;flex-wrap:wrap;gap:12px}.stat{background:#fff;padding:12px 16px;border-radius:10px;flex:1;min-width:128px}.stat strong{display:block;font-size:24px}.stat span,.muted{font-size:13px;color:#66716b}.panel{background:white;border:1px solid #dedfd4;border-radius:14px;padding:24px;margin:24px 0}.search-label{font-weight:650}.search-row{display:flex;gap:12px;margin:8px 0 18px}.search-row input{flex:1;min-width:0}input,select,button{font:inherit;border:1px solid #bec8bb;border-radius:7px;padding:9px 12px;background:#fff;color:inherit}button{cursor:pointer}button:hover{background:#e8efdf}button:disabled{opacity:.4;cursor:default}.search-row button,.primary{background:#315845;color:#fff}.filters{display:flex;gap:14px;flex-wrap:wrap;align-items:end}.filters label:not(.check){display:flex;flex-direction:column;font-size:13px;gap:5px}.filters input[type=number]{width:115px}.check{padding:9px 0}.check input{accent-color:#315845}.result-heading{display:flex;justify-content:space-between;align-items:center;gap:14px}.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px}.card{background:white;border:1px solid #dedfd4;border-radius:12px;padding:22px;display:flex;flex-direction:column;gap:8px;min-width:0}.title-button{padding:0;border:0;text-align:left;font-size:20px;font-weight:700;background:none;overflow-wrap:anywhere}.title-button:hover{background:none;text-decoration:underline}.tag{font-size:12px;border-radius:5px;padding:3px 7px;background:#edf1e3;display:inline-block;margin:3px}.card-bottom{margin-top:auto;padding-top:10px;font-size:13px}.card select{font-size:13px;width:100%;margin-top:6px}.preference-panel h2{margin-top:0}.preference-favorites{border-top:1px solid #dedfd4;padding-top:12px;margin-top:16px}.selected-list{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0 16px}.selected-item{display:inline-flex;gap:7px;align-items:center;background:#edf1e3;border-radius:7px;padding:5px 8px;font-size:13px}.selected-item button{padding:0 4px;border:0;background:transparent}.preference-facets{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-bottom:18px}.axis-weights{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:18px}.axis-weight{display:flex;flex-direction:column;gap:4px;font-size:13px}.axis-weight input{padding:0}.facet-group{border:1px solid #dedfd4;border-radius:9px;padding:12px}.facet-group h3{font-size:15px}.facet-options{display:flex;flex-wrap:wrap;gap:7px}.facet-option{font-size:13px;padding:5px 8px;background:#f6f4ee;border-radius:6px}.facet-option input{accent-color:#315845;margin-right:5px}.facet-option.avoid{background:#f8e9e3}.recommendations{display:grid;gap:12px;margin-top:14px}.recommendation-card{border-top:1px solid #dedfd4;padding:14px 0}.recommendation-card h3 button{padding:0;border:0;background:transparent;text-align:left;font-weight:700}.recommendation-reason{font-size:13px;margin-left:1em}.recommendation-provenance{font-size:12px}.recommendation-warning{color:#8a4531;font-size:13px}.pagination{display:flex;justify-content:center;align-items:center;gap:20px;padding:30px 0}footer{padding-top:24px!important;padding-bottom:36px!important;color:#66716b;font-size:13px}dialog{border:1px solid #bec8bb;border-radius:14px;width:min(820px,94vw);max-height:90vh;padding:26px}dialog::backdrop{background:#10221999}.dialog-head{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #dedfd4;padding-bottom:14px;margin-bottom:22px}.detail-section{border-top:1px solid #dedfd4;margin-top:22px;padding-top:14px}.similar-row{padding:14px 0;border-bottom:1px solid #eee}a{color:#315845}#message,#preference-message{color:#8a4531}@media(max-width:900px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}.preference-facets{grid-template-columns:1fr}.axis-weights{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:580px){.grid{grid-template-columns:1fr}.wrap{padding:0 17px}.panel{padding:16px}.result-heading{display:block}.filters{gap:10px}.stat{min-width:110px}header{padding:28px 0}.pagination{gap:10px;font-size:13px}}'''
 
 _JS = r'''"use strict";
 const $=id=>document.getElementById(id), state={page:1,pages:1,total:0,request:0,favorites:new Map(),preferenceFacets:{}};
@@ -303,10 +437,10 @@ function sourceCredits(parent,sources){if(!sources.length)return;const credits=s
 async function showDetail(qid){const dialog=$('detail'),body=$('detail-body');body.replaceChildren(node('p','読み込み中…'));if(!dialog.open)dialog.showModal();try{const row=await api('/api/works/'+qid);body.replaceChildren(node('h2',row.title),node('p',describe(row)),favoriteControl(row));if(row.aliases?.length)body.append(node('p','別題：'+row.aliases.join(' / ')));body.append(statusControl(row));if(row.source_url){const p=node('p'),a=node('a','出典の作品ページ');a.href=row.source_url;a.target='_blank';a.rel='noopener noreferrer';p.append(a);body.append(p);}if(row.provenance?.retrieved_at)body.append(node('p','取得日：'+row.provenance.retrieved_at,'muted'));const coarse=section(body,'資料記載のジャンル');tags(coarse,row.genres);coarse.append(node('p',row.genres?.length?'資料に記載された粗い特徴です。詳細分類の72ラベルと同一ではありません。':'資料記載のジャンルは未収録です。','muted'));const rich=section(body,'LLMの詳細分類');const axes={genre:'ジャンル',theme:'テーマ',structure:'物語構造',protagonist:'主人公',style:'文体',atmosphere:'雰囲気'};for(const item of row.classification_axes||[])rich.append(node('p',axes[item.axis]+'：採用 '+item.adopted_count+'件 / 保留 '+item.held_count+'件'+(item.unknown?' / 不明':''),'muted'));const features=[...(row.strict72_features||[]),...(row.llm_features||[])];if(!features.length)rich.append(node('p','詳細分類は未収録です。'));for(const f of features){const n=node('p',f.label||f.label_id||f.feature_id||'分類特徴');if(f.relevance!==undefined)n.append(node('span',' ・ 関連度 '+(f.relevance===null?'不明':f.relevance)));if(f.confidence!==undefined)n.append(node('span',' ・ モデル確信度 '+(f.confidence===null?'不明':f.confidence)));rich.append(n);if(f.evidence)rich.append(node('p','出典の引用：'+f.evidence,'muted'));if(f.evidence_summary)rich.append(node('p','AIによる根拠の要約：'+f.evidence_summary,'muted'));}rich.append(node('p','関連度とモデル確信度は校正されていない生の値です。正解の確率や個人向け推薦スコアではありません。','muted'));sourceCredits(body,row.content_sources||[]);const similar=section(body,'この作品に近い候補');similar.append(node('p','資料記載のジャンル・書誌特徴による類似候補です。個人の読書履歴に基づく推薦ではありません。','muted'));const data=await api('/api/works/'+qid+'/similar?exclude_read='+($('exclude-read').checked?'1':'0'));if(!data.items.length)similar.append(node('p','根拠のある類似候補はまだありません。'));for(const item of data.items){const div=node('div',undefined,'similar-row'),button=node('button',item.title);button.addEventListener('click',()=>showDetail(item.qid));div.append(button,node('p',describe(item),'muted'));const names={genre:'資料記載のジャンル',source_genre:'資料記載のジャンル',language:'原言語',same_language:'原言語',year:'刊行年代',publication_period:'刊行年代',author:'著者',same_author:'著者',region:'地域',llm_feature:'LLM分類'};for(const reason of item.reasons||[]){const shared=(reason.shared||[]).map(x=>{let label=typeof x==='string'?x:x.label;if(reason.kind==='same_language')return languageName(label);if(reason.kind==='publication_period')return label+'年';if(reason.kind==='same_author')return (item.authors||[]).find(a=>a.qid===label)?.name||'共通する著者';return label;}).join('・');div.append(node('p',(names[reason.kind]||'資料の共通点')+'：'+shared));}if(item.score!==undefined&&item.score!==null)div.append(node('p','類似度 '+Number(item.score).toFixed(3)+'（暫定・確率ではありません）','muted'));similar.append(div);}}catch(e){body.replaceChildren(node('p',e.message));}}
 async function stats(){try{const data=await api('/api/stats');const labels=[['works','台帳作品'],['searchable_works','検索可能'],['feature_bearing_works','推薦特徴あり'],['source_genre_works','資料ジャンルあり'],['eligible_classified_works','AI処理済み'],['llm_works','LLM特徴あり'],['personal_score_works','個人スコアあり'],['held_works','表示保留'],['content_history_links','履歴の内容接続'],['bibliographic_history_links','履歴の書誌接続']];$('stats').replaceChildren(...labels.map(([key,label])=>{const c=node('div',undefined,'stat');c.append(node('strong',data[key]===undefined?'未集計':Number(data[key]).toLocaleString()),node('span',label));return c;}));}catch(e){$('message').textContent=e.message;}}
 async function facets(){try{const data=await api('/api/facets');for(const item of data.genres||[]){for(const id of ['genre','preference-genre']){const option=node('option',item.label+' ('+item.count.toLocaleString()+')');option.value=item.qid;$(id).append(option);}}for(const item of data.languages||[]){for(const id of ['language','preference-language']){const option=node('option',(languageName(item.value)||'不明')+' ('+item.count.toLocaleString()+')');option.value=item.value;$(id).append(option);}}}catch(e){$('message').textContent=e.message;}}
-function renderPreferenceFacets(data){state.preferenceFacets=data.axes||{};const parent=$('preference-facets');parent.replaceChildren();for(const axis of ['theme','structure','protagonist','atmosphere']){const group=node('fieldset',undefined,'facet-group');group.append(node('h3',axisNames[axis]));const options=node('div',undefined,'facet-options');for(const item of state.preferenceFacets[axis]||[]){if(!item.label_id&&!item.qid)continue;const id=item.label_id||item.qid,label=node('label',undefined,'facet-option');const prefer=document.createElement('input');prefer.type='checkbox';prefer.value=id;prefer.dataset.axis=axis;prefer.dataset.direction='prefer';prefer.setAttribute('aria-label',axisNames[axis]+' '+(item.label||id)+'を重視');const avoid=document.createElement('input');avoid.type='checkbox';avoid.value=id;avoid.dataset.axis=axis;avoid.dataset.direction='avoid';avoid.setAttribute('aria-label',axisNames[axis]+' '+(item.label||id)+'を避ける');label.append(prefer,node('span',(item.label||id)+'を重視'),avoid,node('span','避ける'));options.append(label);}if(!options.childElementCount)options.append(node('span','採用済みの選択肢はありません。','muted'));group.append(options);parent.append(group);}}
+function renderPreferenceFacets(data){state.preferenceFacets=data.axes||{};const parent=$('preference-facets');parent.replaceChildren();if(data.coverage_note)parent.append(node('p',data.coverage_note,'muted'));for(const axis of ['theme','structure','protagonist','atmosphere']){const group=node('fieldset',undefined,'facet-group');group.append(node('h3',axisNames[axis]));const options=node('div',undefined,'facet-options');for(const item of state.preferenceFacets[axis]||[]){if(!item.label_id&&!item.qid)continue;const id=item.label_id||item.qid,label=node('label',undefined,'facet-option');const prefer=document.createElement('input');prefer.type='checkbox';prefer.value=id;prefer.dataset.axis=axis;prefer.dataset.direction='prefer';prefer.setAttribute('aria-label',axisNames[axis]+' '+(item.label||id)+'を重視');const avoid=document.createElement('input');avoid.type='checkbox';avoid.value=id;avoid.dataset.axis=axis;avoid.dataset.direction='avoid';avoid.setAttribute('aria-label',axisNames[axis]+' '+(item.label||id)+'を避ける');prefer.addEventListener('change',()=>{if(prefer.checked)avoid.checked=false;});avoid.addEventListener('change',()=>{if(avoid.checked)prefer.checked=false;});label.append(prefer,node('span',(item.label||id)+'を重視'),avoid,node('span','避ける'));options.append(label);}if(!options.childElementCount)options.append(node('span','この軸の選択肢はありません。','muted'));group.append(options);parent.append(group);}const weights=$('axis-weights');weights.replaceChildren(node('strong','分類軸の重み'));for(const axis of Object.keys(axisNames)){const label=node('label',undefined,'axis-weight');const input=document.createElement('input');input.type='range';input.min='0';input.max='2';input.step='.25';input.value='1';input.dataset.axis=axis;const output=node('output','1.00');input.addEventListener('input',()=>{output.textContent=Number(input.value).toFixed(2);});label.append(node('span',axisNames[axis]),input,output);weights.append(label);}}
 async function preferenceFacets(){try{renderPreferenceFacets(await api('/api/preference-facets'));}catch(e){$('preference-message').textContent=e.message;}}
-function preferencePayload(){const preferred=[],avoided=[],weights={};for(const input of document.querySelectorAll('#preference-facets input:checked')){(input.dataset.direction==='avoid'?avoided:preferred).push(input.value);weights[input.dataset.axis]=1;}for(const axis of Object.keys(axisNames))if(weights[axis]===undefined)weights[axis]=1;const value=(id)=>$(id).value;const payload={liked_qids:[...state.favorites.keys()],preferred_features:preferred,avoided_features:avoided,axis_weights:weights,genre:value('preference-genre'),language:value('preference-language'),year_from:value('preference-year-from')?Number(value('preference-year-from')):null,year_to:value('preference-year-to')?Number(value('preference-year-to')):null,exclude_read:$('preference-exclude-read').checked,limit:30};return payload;}
-function renderRecommendations(data){const parent=$('recommendations');parent.replaceChildren();if(data.explanation)parent.append(node('p',data.explanation,'muted'));if(!data.items?.length){parent.append(node('p','条件に合う候補がありません。特徴を減らすか、好きな作品を追加してください。','muted'));return;}for(const row of data.items){const article=node('article',undefined,'recommendation-card');const title=node('button',row.title||'書名不明');title.type='button';title.addEventListener('click',()=>showDetail(row.qid));article.append(node('h3',undefined).appendChild(title).parentNode,node('p',describe(row),'muted'),favoriteControl(row));if(row.score!==undefined&&row.score!==null)article.append(node('p','推薦スコア '+Number(row.score).toFixed(3)+'（未校正・順位付け用）','muted'));for(const reason of row.reasons||[]){const shared=(reason.shared||[]).map(item=>typeof item==='string'?item:item.label||item.qid).join('・');const text=reason.detail||reason.message||shared||reason.label||reason.kind||'一致した根拠';article.append(node('p',(reason.direction==='avoid'?'避けたい特徴：':'好みに合う理由：')+text,'recommendation-reason'));}if(row.feature_insufficiency)article.append(node('p','特徴不足：'+row.feature_insufficiency,'recommendation-warning'));for(const source of row.recommendation_provenance||[]){const p=node('p',undefined,'recommendation-provenance');if(source.source_url){const a=node('a','根拠の出典');a.href=source.source_url;a.target='_blank';a.rel='noopener noreferrer';p.append(a);}if(source.revision)p.append(node('span',' ・ 版 '+source.revision));article.append(p);}parent.append(article);}}
+function preferencePayload(){const preferred=[],avoided=[],weights={};for(const input of document.querySelectorAll('#preference-facets input:checked')){(input.dataset.direction==='avoid'?avoided:preferred).push(input.value);}for(const input of document.querySelectorAll('#axis-weights input[data-axis]'))weights[input.dataset.axis]=Number(input.value);for(const axis of Object.keys(axisNames))if(weights[axis]===undefined)weights[axis]=1;const value=(id)=>$(id).value;const payload={liked_qids:[...state.favorites.keys()],preferred_features:preferred,avoided_features:avoided,axis_weights:weights,genre:value('preference-genre'),language:value('preference-language'),year_from:value('preference-year-from')?Number(value('preference-year-from')):null,year_to:value('preference-year-to')?Number(value('preference-year-to')):null,exclude_read:$('preference-exclude-read').checked,limit:30};return payload;}
+function renderRecommendations(data){const parent=$('recommendations');parent.replaceChildren();if(data.explanation)parent.append(node('p',data.explanation,'muted'));if(!data.items?.length){parent.append(node('p','条件に合う候補がありません。特徴を減らすか、好きな作品を追加してください。','muted'));return;}for(const row of data.items){const article=node('article',undefined,'recommendation-card');const title=node('button',row.title||'書名不明');title.type='button';title.addEventListener('click',()=>showDetail(row.qid));article.append(node('h3',undefined).appendChild(title).parentNode,node('p',describe(row),'muted'),favoriteControl(row));if(row.score!==undefined&&row.score!==null)article.append(node('p','推薦スコア '+Number(row.score).toFixed(3)+'（未校正・順位付け用）','muted'));for(const reason of row.reasons||[]){const shared=(reason.shared||[]).map(item=>typeof item==='string'?item:item.label||item.qid).join('・');const prefix=reason.direction==='avoid'?'避けたい特徴：':reason.direction==='context'?'補助的な一致：':reason.direction==='prefer'?'好みに合う理由：':'推薦根拠：';const detail=reason.detail||reason.message||reason.label||reason.kind||'一致した根拠';const text=shared?detail+'（'+shared+'）':detail;article.append(node('p',prefix+text,'recommendation-reason'));}if(row.feature_insufficiency)article.append(node('p','特徴不足：'+row.feature_insufficiency,'recommendation-warning'));if(row.content_sources?.length)sourceCredits(article,row.content_sources);for(const source of row.recommendation_provenance||[]){const p=node('p',undefined,'recommendation-provenance');if(source.source_url){const a=node('a','根拠の出典');a.href=source.source_url;a.target='_blank';a.rel='noopener noreferrer';p.append(a);}if(source.revision)p.append(node('span',' ・ 版 '+source.revision));article.append(p);}parent.append(article);}}
 async function recommend(){const button=$('recommend');button.disabled=true;$('preference-message').textContent='';try{renderRecommendations(await api('/api/recommendations',{method:'POST',headers:{'Content-Type':'application/json','X-Catalogue-Request':'1'},body:JSON.stringify(preferencePayload())}));}catch(e){$('preference-message').textContent=e.message;}finally{button.disabled=false;}}
 $('search-form').addEventListener('submit',e=>{e.preventDefault();state.page=1;search();});for(const id of ['genre','language','exclude-read'])$(id).addEventListener('change',()=>{state.page=1;search();});$('page-prev').addEventListener('click',()=>{if(state.page>1){state.page--;search();window.scrollTo({top:0,behavior:'smooth'});}});$('page-next').addEventListener('click',()=>{if(state.page<state.pages){state.page++;search();window.scrollTo({top:0,behavior:'smooth'});}});$('reset').addEventListener('click',()=>{HTMLFormElement.prototype.reset.call($('search-form'));state.page=1;search();});$('recommend').addEventListener('click',recommend);$('close-detail').addEventListener('click',()=>$('detail').close());renderFavorites();stats();facets();preferenceFacets();search();
 '''
@@ -423,13 +557,14 @@ def create_server(database=None, *, catalogue=None, port=8766):
                         if not isinstance(value, dict):
                             continue
                         item = dict(value)
+                        _annotate_recommendation_reasons(item, payload)
                         item.setdefault('recommendation_mode', 'preference_recommendation')
                         items.append(public_work(item))
                     response = {'mode': 'preference_recommendation', 'personalized': False,
                                 'preference_based': True, 'history_evaluation': 'unverified',
                                 'items': items, 'explanation': _text(raw.get('explanation'))}
                     if raw.get('feature_insufficiency'):
-                        response['feature_insufficiency'] = _text(raw['feature_insufficiency'])
+                        response['feature_insufficiency'] = _public_feature_insufficiency(raw['feature_insufficiency'])
                     self._send(200, response)
                 except (ValueError, TypeError, KeyError, json.JSONDecodeError):
                     self._send(400, {'error': '推薦条件を確認してください。'})
