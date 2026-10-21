@@ -157,12 +157,26 @@ def test_acquire_resume_restores_pending_skips_held_and_does_not_refetch(tmp_pat
     assert ingest_calls == [["Q100"], ["Q101"]]
 
     before = len(fetch_calls)
+    queries = []
+    original_connect = sqlite3.connect
+
+    def traced_connect(*args, **kwargs):
+        connection = original_connect(*args, **kwargs)
+        connection.set_trace_callback(queries.append)
+        return connection
+
+    monkeypatch.setattr(MODULE.sqlite3, "connect", traced_connect)
     second = MODULE.acquire(output=output, catalogue=catalogue, v2_root=tmp_path / "v2",
                             target_display=100000, max_offset=3, page_size=1)
     assert second["entity_completed"] == 1
     # The old held page and the successful page are never resent; the empty
     # offset-200 terminal page is also already successful on restart.
     assert fetch_calls[before:] == []
+    # Reopening a checkpoint must not count the whole catalogue for every
+    # historical page; only the final report needs a count in this run.
+    counts = [query for query in queries if query ==
+              "SELECT count(*) FROM works WHERE display_allowed=1"]
+    assert len(counts) <= 2
 
 
 def test_reuse_conditions_preserves_existing_receipt_and_rejects_mismatch(tmp_path):

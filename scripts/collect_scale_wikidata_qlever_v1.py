@@ -343,7 +343,7 @@ def acquire(*, output: Path, catalogue: Path, v2_root: Path, target_display: int
         entity_blocked = True
     chosen = set(state.get("ids", []))
     for offset in range(0, max_offset, page_size):
-        if discovery_blocked or entity_blocked or searchable() >= target_display:
+        if discovery_blocked or entity_blocked:
             break
         key = f"qlever-{'desc' if descending else 'asc'}:{offset}"
         if key in state["pages"]:
@@ -360,6 +360,10 @@ def acquire(*, output: Path, catalogue: Path, v2_root: Path, target_display: int
                     save(state_path, state)
                 continue
             discovery_blocked = True
+            break
+        # Historical pages never issue requests. Avoid a full works-table
+        # count for every such page when reopening a large checkpoint.
+        if searchable() >= target_display:
             break
         query = source_declared_query(limit=page_size, offset=offset, descending=descending)
         state["pages"][key] = {"status": "started", "query": query, "started_at": now()}
