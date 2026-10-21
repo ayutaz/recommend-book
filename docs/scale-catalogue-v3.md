@@ -78,6 +78,8 @@
 
 実データと証跡はGit対象外の `data/autonomous-next-v3/scale-100000-v1/` に保存する。
 
+目標到達後のDB・公開分類との照合には `scripts/audit_scale100k_catalogue_v1.py` を使う。既存参照版と分類行の保持、累計・新規の対象件数、台帳が固定した公開manifestのhash・作品ID・ラベル、実表示の採用/保留/不明を読み取り専用で確認する。12件のfixtureで確認したが、実データでの最終実行はまだ行っていない。この処理だけで用途条件・原資料の全バイト・UI・CI・main反映まで完了したとは扱わない。監査結果を再確認する場合は別の出力先を使い、既存の結果を上書きしない。
+
 - `requirements.json`: 作業開始時に固定した計画と完了条件。
 - `baseline-native-5000.jsonl`、`baseline-works-32130.jsonl`: 既存データ保持の比較用ID・hash。
 - `stats-profile-baseline-v1.json`: 統計処理1回の時間内訳。
