@@ -53,17 +53,18 @@ def run_worker(*, catalogue: Path = CATALOGUE, qlever_roots=QLEVER_ROOTS,
                baseline: Path = BASELINE, checkpoint: Path = DEFAULT_CHECKPOINT,
                cache_paths=(DEFAULT_CACHE,), limit: int = 1000,
                once: bool = False, max_idle: int = 6, poll_seconds: float = 5.0,
-               label_raw: Path = DEFAULT_LABEL_RAW, gate: Path = DEFAULT_GATE) -> dict:
+               label_raw: Path = DEFAULT_LABEL_RAW, gate: Path = DEFAULT_GATE,
+               cache_only: bool = False) -> dict:
     if limit < 1 or max_idle < 1 or poll_seconds < 0:
         raise ValueError("invalid worker bounds")
     state = load_checkpoint(checkpoint) if checkpoint.exists() else checkpoint_default()
     baseline = baseline_ids(baseline)
-    totals = {"selected": 0, "updated": 0, "held": 0, "stale": 0, "native": 0, "polls": 0}
+    totals = {"selected": 0, "updated": 0, "unchanged": 0, "held": 0, "stale": 0, "native": 0, "polls": 0}
     idle = 0
     while True:
         totals["polls"] += 1
         excluded_versions = {
-            qid: item.get("from", "")
+            qid: item.get("to") or item.get("from", "")
             for qid, item in state.get("processed_versions", {}).items()
             if isinstance(item, dict)
         }
@@ -83,7 +84,8 @@ def run_worker(*, catalogue: Path = CATALOGUE, qlever_roots=QLEVER_ROOTS,
         candidates = candidates[:limit]
         if candidates:
             result = process_batch(catalogue, candidates, state, checkpoint_path=checkpoint,
-                                   cache_paths=cache_paths, raw_root=label_raw, gate_path=gate)
+                                   cache_paths=cache_paths, raw_root=label_raw, gate_path=gate,
+                                   cache_only=cache_only)
             for key, value in result.items():
                 if key in totals:
                     totals[key] += value
@@ -93,7 +95,7 @@ def run_worker(*, catalogue: Path = CATALOGUE, qlever_roots=QLEVER_ROOTS,
         else:
             idle += 1
             save_json(checkpoint, state)
-            if once or (idle >= max_idle and pending_count() == 0):
+            if once or (idle >= max_idle and (cache_only or pending_count() == 0)):
                 break
             if poll_seconds:
                 time.sleep(poll_seconds)
@@ -113,12 +115,15 @@ def main() -> None:
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--max-idle", type=int, default=6)
     parser.add_argument("--poll-seconds", type=float, default=5.0)
+    parser.add_argument("--cache-only", action="store_true",
+                        help="use saved cache/checkpoint proofs only; never issue HTTP requests")
     args = parser.parse_args()
     result = run_worker(catalogue=args.catalogue, baseline=args.baseline, checkpoint=args.checkpoint,
                         cache_paths=tuple(args.cache or (DEFAULT_CACHE,)),
                         qlever_roots=tuple(args.qlever_root or QLEVER_ROOTS),
                         label_raw=args.label_raw, gate=args.gate, limit=args.limit,
-                        once=args.once, max_idle=args.max_idle, poll_seconds=args.poll_seconds)
+                        once=args.once, max_idle=args.max_idle, poll_seconds=args.poll_seconds,
+                        cache_only=args.cache_only)
     print(json.dumps(result, ensure_ascii=False), flush=True)
 
 

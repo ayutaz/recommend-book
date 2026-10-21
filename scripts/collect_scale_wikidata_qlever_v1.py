@@ -134,7 +134,7 @@ def catalogue_writer_lock(catalogue: Path, *, wait_seconds: float = 120.0,
     while stream is None:
         try:
             stream = lock.open("x", encoding="utf-8")
-        except FileExistsError as exc:
+        except (FileExistsError, PermissionError) as exc:
             if time.monotonic() >= deadline:
                 raise RuntimeError(f"catalogue writer lock wait expired: {lock}") from exc
             time.sleep(min(poll_seconds, deadline - time.monotonic()))

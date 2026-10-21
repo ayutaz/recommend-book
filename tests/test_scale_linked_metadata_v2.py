@@ -14,6 +14,7 @@ from recommend_book.scale_linked_metadata_v2 import (
     LinkedMetadataHold,
     checkpoint_default,
     fetch_missing_labels,
+    load_checkpoint,
     load_cached_proofs,
     process_batch,
     referenced_ids,
@@ -80,6 +81,25 @@ def test_cached_linked_labels_update_search_and_preserve_old_version(tmp_path):
         assert db.execute("SELECT label FROM work_genres WHERE qid='Q100' AND genre_qid='Q3'").fetchone()[0] == "Mystery"
 
 
+def test_batch_proof_merge_preserves_out_of_batch_verified_proof(tmp_path):
+    catalogue, _ = make_catalogue(tmp_path)
+    author_raw, author_sha = authority(tmp_path, "Q2", "Author Two")
+    genre_raw, genre_sha = authority(tmp_path, "Q3", "Mystery")
+    other_raw, other_sha = authority(tmp_path, "Q99", "Unrelated Label")
+    cache = tmp_path / "linked-entities.json"
+    other_cache = tmp_path / "other-linked-entities.json"
+    add_cache(cache, [("Q2", "Author Two", author_raw, author_sha), ("Q3", "Mystery", genre_raw, genre_sha)])
+    add_cache(other_cache, [("Q99", "Unrelated Label", other_raw, other_sha)])
+    state = checkpoint_default()
+    state["reference_proofs"] = load_cached_proofs({"Q99"}, [other_cache])
+    checkpoint = tmp_path / "checkpoint.json"
+    candidates = scan_candidates(catalogue.db_path, qlever_roots=[tmp_path], baseline_ids=set())
+    result = process_batch(catalogue.db_path, candidates, state, checkpoint_path=checkpoint, cache_paths=[cache])
+    assert result["updated"] == 1
+    persisted = json.loads(checkpoint.read_text(encoding="utf-8"))
+    assert "Q99" in persisted["reference_proofs"]
+
+
 def test_primary_raw_alteration_is_held_without_new_version(tmp_path):
     catalogue, source = make_catalogue(tmp_path)
     raw_path = Path(source.raw_path)
@@ -112,9 +132,14 @@ def test_tampered_cached_author_raw_is_held(tmp_path):
     author_raw.write_text(author_raw.read_text(encoding="utf-8").replace("Author Two", "Forged"), encoding="utf-8")
     checkpoint = tmp_path / "checkpoint.json"
     candidates = scan_candidates(catalogue.db_path, qlever_roots=[tmp_path], baseline_ids=set())
-    result = process_batch(catalogue.db_path, candidates, state, checkpoint_path=checkpoint, cache_paths=[cache])
+    reject = SimpleNamespace(get=lambda *args, **kwargs: SimpleNamespace(
+        status="error", status_code=403, error="robot policy"))
+    result = process_batch(catalogue.db_path, candidates, state, checkpoint_path=checkpoint,
+                           cache_paths=[cache], fetcher=reject)
     assert result["held"] == 1
-    assert "raw hash changed" in json.loads(checkpoint.read_text(encoding="utf-8"))["held_versions"]["Q100"]["reason"]
+    held = json.loads(checkpoint.read_text(encoding="utf-8"))["held_versions"]["Q100"]
+    assert held["reason"] == "linked labels unavailable"
+    assert held["missing"] == ["Q2"]
 
 
 def test_native_and_baseline_rows_are_excluded(tmp_path):
@@ -165,6 +190,78 @@ def test_missing_reference_labels_are_attempted_once_without_language_filter(tmp
     assert len(fake.calls) == 1
 
 
+def test_http_failure_stops_remaining_batches_and_persists(tmp_path):
+    class FakeFetcher:
+        def __init__(self):
+            self.calls = []
+
+        def get(self, url, *, source, params):
+            self.calls.append(params)
+            return SimpleNamespace(status="error", status_code=403, error="robot policy")
+
+    fake = FakeFetcher()
+    state = checkpoint_default()
+    checkpoint = tmp_path / "checkpoint.json"
+    targets = {f"Q{index}" for index in range(1, 52)}
+    assert fetch_missing_labels(targets, state, checkpoint_path=checkpoint, fetcher=fake) == {}
+    assert len(fake.calls) == 1
+    assert len(state["reference_attempted"]) == 50
+    assert len(state["reference_held"]) == 50
+    assert state["http_stop"]["status_code"] == 403
+    loaded = json.loads(checkpoint.read_text(encoding="utf-8"))
+    assert loaded["http_stop"]["status_code"] == 403
+    fetch_missing_labels(targets, state, checkpoint_path=checkpoint, fetcher=fake)
+    assert len(fake.calls) == 1
+
+
+def test_legacy_checkpoint_failure_status_infers_http_stop_without_http(tmp_path):
+    checkpoint = tmp_path / "legacy-checkpoint.json"
+    checkpoint.write_text(json.dumps({
+        "version": "scale-linked-metadata-worker-v2",
+        "processed_versions": {}, "held_versions": {}, "reference_attempted": [],
+        "reference_held": {"Q2": {"status_code": 403, "reason": "robot policy"}},
+        "reference_proofs": {}, "updated_at": "2026-10-21T00:00:00+00:00",
+    }), encoding="utf-8")
+    state = load_checkpoint(checkpoint)
+    assert state["http_stop"]["status_code"] == "403"
+
+    class MustNotFetch:
+        def get(self, *args, **kwargs):
+            raise AssertionError("legacy HTTP stop was not respected")
+
+    assert fetch_missing_labels({"Q3"}, state, fetcher=MustNotFetch()) == {}
+
+
+def test_cache_only_applies_known_labels_and_keeps_unknown_qid(tmp_path):
+    catalogue, _ = make_catalogue(tmp_path)
+    author_raw, author_sha = authority(tmp_path, "Q2", "Author Two")
+    cache = tmp_path / "linked-entities.json"
+    add_cache(cache, [("Q2", "Author Two", author_raw, author_sha)])
+    checkpoint = tmp_path / "checkpoint.json"
+    candidates = scan_candidates(catalogue.db_path, qlever_roots=[tmp_path], baseline_ids=set())
+    result = process_batch(catalogue.db_path, candidates, checkpoint_default(), checkpoint_path=checkpoint,
+                           cache_paths=[cache], cache_only=True)
+    assert result["updated"] == 1
+    with sqlite3.connect(catalogue.db_path) as db:
+        row, row_json = db.execute("SELECT search_text,row_json FROM works WHERE qid='Q100'").fetchone()
+        genre = db.execute("SELECT label FROM work_genres WHERE qid='Q100' AND genre_qid='Q3'").fetchone()[0]
+        assert "author two" in row
+        assert genre is None
+        assert any(item["qid"] == "Q3" and item["label"] is None for item in json.loads(row_json)["genres"])
+
+
+def test_cache_only_no_effect_does_not_append_version(tmp_path):
+    catalogue, _ = make_catalogue(tmp_path)
+    checkpoint = tmp_path / "checkpoint.json"
+    candidates = scan_candidates(catalogue.db_path, qlever_roots=[tmp_path], baseline_ids=set())
+    result = process_batch(catalogue.db_path, candidates, checkpoint_default(), checkpoint_path=checkpoint,
+                           cache_paths=[], cache_only=True)
+    assert result["updated"] == 0
+    assert result["unchanged"] == 1
+    with sqlite3.connect(catalogue.db_path) as db:
+        assert db.execute("SELECT count(*) FROM source_versions WHERE qid='Q100'").fetchone()[0] == 1
+
+
 def test_worker_once_processes_exactly_one_filtered_batch(tmp_path, monkeypatch):
     candidates = [{"qid": f"Q{index}", "version_id": f"v{index}"} for index in range(1, 4)]
     scans = []
@@ -202,3 +299,33 @@ def test_worker_filters_held_prefix_before_batch_limit(tmp_path, monkeypatch):
     worker.run_worker(catalogue=tmp_path / "catalogue.sqlite", baseline=tmp_path / "baseline.jsonl",
                       checkpoint=checkpoint, limit=1, once=True)
     assert [[item["qid"] for item in batch] for batch in batches] == [["Q2"]]
+
+
+def test_worker_cache_only_excludes_processed_to_on_second_run(tmp_path, monkeypatch):
+    catalogue, _ = make_catalogue(tmp_path)
+    author_raw, author_sha = authority(tmp_path, "Q2", "Author Two")
+    cache = tmp_path / "linked-entities.json"
+    add_cache(cache, [("Q2", "Author Two", author_raw, author_sha)])
+    checkpoint = tmp_path / "checkpoint.json"
+    monkeypatch.setattr(worker, "baseline_ids", lambda path: set())
+    first = worker.run_worker(catalogue=catalogue.db_path, qlever_roots=(tmp_path,), baseline=tmp_path / "baseline.jsonl",
+                              checkpoint=checkpoint, cache_paths=(cache,), limit=1, once=True, cache_only=True)
+    with sqlite3.connect(catalogue.db_path) as db:
+        versions_after_first = db.execute("SELECT count(*) FROM source_versions WHERE qid='Q100'").fetchone()[0]
+    second = worker.run_worker(catalogue=catalogue.db_path, qlever_roots=(tmp_path,), baseline=tmp_path / "baseline.jsonl",
+                               checkpoint=checkpoint, cache_paths=(cache,), limit=1, once=True, cache_only=True)
+    with sqlite3.connect(catalogue.db_path) as db:
+        versions_after_second = db.execute("SELECT count(*) FROM source_versions WHERE qid='Q100'").fetchone()[0]
+    assert first["updated"] == 1
+    assert second["selected"] == 0
+    assert versions_after_first == versions_after_second == 2
+
+
+def test_cache_only_worker_stops_after_idle_even_with_pending_records(tmp_path, monkeypatch):
+    monkeypatch.setattr(worker, "baseline_ids", lambda path: set())
+    monkeypatch.setattr(worker, "scan_candidates", lambda *args, **kwargs: [])
+    monkeypatch.setattr(worker, "pending_count", lambda: 3)
+    result = worker.run_worker(catalogue=tmp_path / "catalogue.sqlite", baseline=tmp_path / "baseline.jsonl",
+                               checkpoint=tmp_path / "checkpoint.json", max_idle=1, poll_seconds=0,
+                               cache_only=True)
+    assert result["polls"] == 1

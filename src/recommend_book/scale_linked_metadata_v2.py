@@ -32,6 +32,8 @@ DEFAULT_CACHE = Path("data/autonomous-next-v3/scale-v1/acquisition/linked-entiti
 DEFAULT_LABEL_RAW = Path("data/autonomous-next-v3/scale-100000-v1/linked-metadata-v2/raw")
 DEFAULT_CHECKPOINT = Path("data/autonomous-next-v3/scale-100000-v1/linked-metadata-v2/checkpoint.json")
 DEFAULT_GATE = Path("data/autonomous-next-v3/scale-30000-v1/acquisition/raw/http-rate-gate.sqlite3")
+LINKED_METADATA_USER_AGENT = "recommend-book/0.1 (+https://github.com/ayutaz/recommend-book) qlever linked metadata v2"
+HTTP_STOP_CODES = {401, 403, 408, 425, 429}
 
 
 class LinkedMetadataHold(ValueError):
@@ -153,7 +155,30 @@ def load_cached_proofs(targets: set[str], cache_paths: Iterable[Path] = (DEFAULT
 def checkpoint_default() -> dict:
     return {"version": "scale-linked-metadata-worker-v2", "processed_versions": {},
             "held_versions": {}, "reference_attempted": [], "reference_held": {},
-            "reference_proofs": {}, "updated_at": now()}
+            "reference_proofs": {}, "http_stop": None, "updated_at": now()}
+
+
+def _infer_http_stop(state: dict) -> dict | None:
+    """Recognize pre-v2 checkpoints that recorded a policy/rate failure only."""
+    counts: dict[str, int] = {}
+    for item in state.get("reference_held", {}).values():
+        if not isinstance(item, dict):
+            continue
+        code = item.get("status_code")
+        try:
+            code = int(code)
+        except (TypeError, ValueError):
+            continue
+        if code in HTTP_STOP_CODES:
+            counts[str(code)] = counts.get(str(code), 0) + 1
+    if not counts:
+        return None
+    return {
+        "reason": "HTTP label acquisition disabled from legacy checkpoint failure statuses; never retry or bypass policy",
+        "status_code": "/".join(sorted(counts)),
+        "counts": counts,
+        "policy": "legacy checkpoint inferred stop",
+    }
 
 
 def load_checkpoint(path: Path = DEFAULT_CHECKPOINT) -> dict:
@@ -164,11 +189,41 @@ def load_checkpoint(path: Path = DEFAULT_CHECKPOINT) -> dict:
         raise ValueError("linked metadata checkpoint version differs")
     for key, default in checkpoint_default().items():
         state.setdefault(key, default)
+    if not state.get("http_stop"):
+        inferred = _infer_http_stop(state)
+        if inferred:
+            state["http_stop"] = inferred
     return state
 
 
-def _checkpoint_proofs(state: dict) -> dict[str, dict]:
-    return {qid: item for qid, item in state.get("reference_proofs", {}).items() if isinstance(item, dict)}
+def _checkpoint_proofs(state: dict, targets: set[str] | None = None) -> dict[str, dict]:
+    proofs: dict[str, dict] = {}
+    for qid, item in state.get("reference_proofs", {}).items():
+        if targets is not None and qid not in targets:
+            continue
+        if not isinstance(item, dict):
+            continue
+        raw_path = Path(item.get("raw_path", ""))
+        expected = item.get("raw_sha256")
+        if not raw_path.is_file() or not isinstance(expected, str):
+            continue
+        try:
+            actual = sha256(raw_path)
+            payload = load_json(raw_path)
+            entity = payload.get("entities", {}).get(qid) if isinstance(payload, dict) else None
+            checked = _proof_from_entity(qid, entity, raw_path, actual) if isinstance(entity, dict) and actual == expected else None
+        except (OSError, ValueError, json.JSONDecodeError):
+            checked = None
+        if checked and checked["label"] == item.get("label"):
+            proofs[qid] = checked
+    return proofs
+
+
+def _merge_checkpoint_proofs(state: dict, proofs: dict[str, dict]) -> None:
+    """Merge a verified local batch without dropping the durable proof index."""
+    merged = dict(state.get("reference_proofs", {}))
+    merged.update(proofs)
+    state["reference_proofs"] = merged
 
 
 def _record_payload(record: SourceRecord) -> dict:
@@ -188,17 +243,17 @@ class _SavedFetcher:
                                                         retrieved_at=self.retrieved_at))
 
 
-def normalize_saved_record(record: SourceRecord, proofs: dict[str, dict]) -> SourceRecord:
+def normalize_saved_record(record: SourceRecord, proofs: dict[str, dict], *, allow_missing: bool = False) -> SourceRecord:
     """Re-run the existing Wikidata adapter against one saved primary response."""
     targets = referenced_ids(record)
     missing = targets - set(proofs)
-    if missing:
+    if missing and not allow_missing:
         raise LinkedMetadataHold("linked labels unavailable", missing=missing)
     path = Path(record.raw_path)
     raw = path.read_bytes()
     result = WikidataAdapter(_SavedFetcher(path, raw, record.raw_sha256, record.retrieved_at)).fetch_entities(
         [record.source_id], languages=LANGUAGES,
-        linked_labels={qid: proofs[qid]["label"] for qid in targets})
+        linked_labels={qid: proofs[qid]["label"] for qid in targets if qid in proofs})
     if result.errors or len(result.records) != 1:
         raise LinkedMetadataHold("saved Wikidata normalization failed: " + "; ".join(result.errors))
     normalized = result.records[0]
@@ -209,8 +264,10 @@ def normalize_saved_record(record: SourceRecord, proofs: dict[str, dict]) -> Sou
     extra = dict(normalized.extra)
     original_extra = dict(record.extra)
     original_extra.update(extra)
-    original_extra["linked_label_provenance"] = {qid: proofs[qid] for qid in sorted(targets)}
-    original_extra["linked_label_qids"] = sorted(targets)
+    original_extra["linked_label_provenance"] = {qid: proofs[qid] for qid in sorted(targets) if qid in proofs}
+    original_extra["linked_label_qids"] = sorted(set(targets) & set(proofs))
+    if missing:
+        original_extra["linked_label_missing_qids"] = sorted(missing)
     original_extra["source_record_version"] = "scale-linked-metadata-worker-v2"
     original_extra["metadata_repair_scope"] = "QLever primary raw linked labels; no primary refetch"
     return normalized.model_copy(update={"evidence": evidence, "extra": original_extra,
@@ -276,7 +333,7 @@ def catalogue_writer_lock(catalogue_path: Path, *, wait_seconds: float = 120.0, 
     while stream is None:
         try:
             stream = lock_path.open("x", encoding="utf-8")
-        except FileExistsError as exc:
+        except (FileExistsError, PermissionError) as exc:
             if time.monotonic() >= deadline:
                 raise RuntimeError(f"catalogue writer lock wait expired: {lock_path}") from exc
             time.sleep(min(poll_seconds, max(0.0, deadline - time.monotonic())))
@@ -303,6 +360,8 @@ def commit_normalized(catalogue_path: Path, candidate: dict, normalized: SourceR
                 return {"status": "native_present"}
             try:
                 checked, row = catalogue._projection(normalized, conditions, rights)
+                if current["row_json"] == _json(row):
+                    return {"status": "unchanged", "version_id": current["version_id"]}
                 for artifact in row["provenance"]["artifacts"]:
                     bound = db.execute("SELECT sha256 FROM raw_artifacts WHERE path=?", (artifact["raw_path"],)).fetchone()
                     if bound and bound[0] != artifact["raw_sha256"]:
@@ -329,7 +388,9 @@ def commit_normalized(catalogue_path: Path, candidate: dict, normalized: SourceR
 def fetch_missing_labels(targets: set[str], state: dict, *, checkpoint_path: Path | None = None,
                          raw_root: Path = DEFAULT_LABEL_RAW, gate_path: Path = DEFAULT_GATE,
                          fetcher: HTTPFetcher | None = None) -> dict[str, dict]:
-    proofs = _checkpoint_proofs(state)
+    proofs = _checkpoint_proofs(state, targets)
+    if state.get("http_stop") or _infer_http_stop(state):
+        return proofs
     attempted = set(state.get("reference_attempted", []))
     held = state.setdefault("reference_held", {})
     pending = sorted(targets - set(proofs) - set(held) - attempted)
@@ -337,7 +398,7 @@ def fetch_missing_labels(targets: set[str], state: dict, *, checkpoint_path: Pat
         return proofs
     if fetcher is None:
         raw_root.mkdir(parents=True, exist_ok=True)
-        fetcher = HTTPFetcher(RawStore(raw_root), user_agent="recommend-book/0.1 qlever linked metadata v2",
+        fetcher = HTTPFetcher(RawStore(raw_root), user_agent=LINKED_METADATA_USER_AGENT,
                               min_interval=1.1, max_attempts=1)
         fetcher.gate_path = gate_path
     for start in range(0, len(pending), 50):
@@ -353,7 +414,16 @@ def fetch_missing_labels(targets: set[str], state: dict, *, checkpoint_path: Pat
         if response.status != "success":
             for qid in batch:
                 held[qid] = {"reason": response.error or "label request failed", "status_code": response.status_code}
-            continue
+            state["http_stop"] = {
+                "reason": response.error or "label request failed",
+                "status_code": response.status_code,
+                "stopped_at": now(),
+                "policy": "HTTP label acquisition disabled after non-success response; do not retry or bypass policy",
+            }
+            state["updated_at"] = now()
+            if checkpoint_path is not None:
+                save_json(checkpoint_path, state)
+            break
         try:
             payload = json.loads(response.content)
             entities = payload["entities"]
@@ -366,21 +436,22 @@ def fetch_missing_labels(targets: set[str], state: dict, *, checkpoint_path: Pat
                 proofs[qid] = proof
             else:
                 held[qid] = {"reason": "entity has no usable label"}
-        state["reference_proofs"] = proofs
+        _merge_checkpoint_proofs(state, proofs)
         state["updated_at"] = now()
         if checkpoint_path is not None:
             save_json(checkpoint_path, state)
-    state["reference_proofs"] = proofs
+    _merge_checkpoint_proofs(state, proofs)
     return proofs
 
 
 def process_batch(catalogue_path: Path, candidates: list[dict], state: dict, *, checkpoint_path: Path,
                   cache_paths: Iterable[Path] = (DEFAULT_CACHE,), fetcher: HTTPFetcher | None = None,
-                  raw_root: Path = DEFAULT_LABEL_RAW, gate_path: Path = DEFAULT_GATE) -> dict:
+                  raw_root: Path = DEFAULT_LABEL_RAW, gate_path: Path = DEFAULT_GATE,
+                  cache_only: bool = False) -> dict:
     if not candidates:
         return {"selected": 0, "updated": 0, "held": 0}
     valid_candidates = []
-    result = {"selected": len(candidates), "updated": 0, "held": 0, "stale": 0, "native": 0}
+    result = {"selected": len(candidates), "updated": 0, "unchanged": 0, "held": 0, "stale": 0, "native": 0}
     for candidate in candidates:
         try:
             referenced_ids(candidate["record"])
@@ -396,22 +467,26 @@ def process_batch(catalogue_path: Path, candidates: list[dict], state: dict, *, 
         return result
     targets = set().union(*(referenced_ids(item["record"]) for item in valid_candidates))
     proofs = load_cached_proofs(targets, cache_paths)
-    proofs.update(_checkpoint_proofs(state))
-    state["reference_proofs"] = proofs
+    proofs.update(_checkpoint_proofs(state, targets))
+    _merge_checkpoint_proofs(state, proofs)
     save_json(checkpoint_path, state)
-    if targets - set(proofs):
+    if targets - set(proofs) and not cache_only:
         proofs = fetch_missing_labels(targets, state, checkpoint_path=checkpoint_path,
                                      raw_root=raw_root, gate_path=gate_path, fetcher=fetcher)
         save_json(checkpoint_path, state)
     for candidate in valid_candidates:
         version = candidate["version_id"]
         missing = referenced_ids(candidate["record"]) - set(proofs)
-        if missing:
+        if missing and not cache_only:
             state.setdefault("held_versions", {})[candidate["qid"]] = {"version_id": version, "missing": sorted(missing), "reason": "linked labels unavailable"}
             result["held"] += 1
             continue
         try:
-            normalized = normalize_saved_record(candidate["record"], {qid: proofs[qid] for qid in referenced_ids(candidate["record"])})
+            normalized = normalize_saved_record(
+                candidate["record"],
+                {qid: proofs[qid] for qid in referenced_ids(candidate["record"]) if qid in proofs},
+                allow_missing=cache_only,
+            )
             outcome = commit_normalized(catalogue_path, candidate, normalized)
         except LinkedMetadataHold as exc:
             state.setdefault("held_versions", {})[candidate["qid"]] = {"version_id": version, "missing": exc.missing, "reason": exc.reason}
@@ -424,6 +499,9 @@ def process_batch(catalogue_path: Path, candidates: list[dict], state: dict, *, 
         if outcome["status"] == "updated":
             state.setdefault("processed_versions", {})[candidate["qid"]] = {"from": version, "to": outcome["version_id"]}
             result["updated"] += 1
+        elif outcome["status"] == "unchanged":
+            state.setdefault("processed_versions", {})[candidate["qid"]] = {"from": version, "to": outcome["version_id"]}
+            result["unchanged"] += 1
         elif outcome["status"] == "stale_version":
             result["stale"] += 1
         elif outcome["status"] == "native_present":
