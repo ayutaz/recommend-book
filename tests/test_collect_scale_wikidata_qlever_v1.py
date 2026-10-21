@@ -71,6 +71,23 @@ def test_qlever_success_response_keeps_raw_artifact_metadata(tmp_path):
     assert MODULE.QLEVER_URL.startswith("https://qlever.dev/")
 
 
+def test_all_languages_fetcher_omits_filter_only_for_entity_request(tmp_path):
+    seen = []
+
+    class Inner:
+        def get(self, url, *, source, params=None, headers=None):
+            seen.append((url, dict(params or {})))
+            return "ok"
+
+    proxy = MODULE.AllLanguagesEntityFetcher(Inner())
+    assert proxy.get(MODULE.ENTITY_URL, source="wikidata",
+                     params={"ids": "Q101", "languages": "en|*"}) == "ok"
+    assert "languages" not in seen[0][1]
+    proxy.get(MODULE.QLEVER_URL, source="wikidata",
+              params={"query": "SELECT", "languages": "en|*"})
+    assert seen[1][1]["languages"] == "en|*"
+
+
 def test_acquire_resume_restores_pending_skips_held_and_does_not_refetch(tmp_path, monkeypatch):
     output = tmp_path / "acquisition"
     catalogue = tmp_path / "catalogue.sqlite"

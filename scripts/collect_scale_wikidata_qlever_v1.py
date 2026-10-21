@@ -182,6 +182,26 @@ def make_fetcher(output: Path, v2_root: Path) -> HTTPFetcher:
     return fetcher
 
 
+class AllLanguagesEntityFetcher:
+    """Remove the language filter for new entity batches only.
+
+    Wikibase's ``languages=*`` is not relied on: the request is sent without
+    the parameter, while the adapter still prefers the established language
+    order when selecting a title.  QLever discovery and all other requests
+    continue through the wrapped fetcher unchanged.
+    """
+
+    def __init__(self, inner: HTTPFetcher):
+        self.inner = inner
+
+    def get(self, url: str, *, source: str, params: dict | None = None,
+            headers: dict | None = None):
+        if url == ENTITY_URL and params and "languages" in params:
+            params = dict(params)
+            params.pop("languages", None)
+        return self.inner.get(url, source=source, params=params, headers=headers)
+
+
 def ingest_records(*, catalogue_path: Path, records: list[SourceRecord], conditions: Path) -> dict:
     if not records:
         return {"inserted": 0, "skipped_existing": 0, "failed": 0}
@@ -227,7 +247,8 @@ def ingest_records(*, catalogue_path: Path, records: list[SourceRecord], conditi
 
 
 def acquire(*, output: Path, catalogue: Path, v2_root: Path, target_display: int = 100000,
-            max_offset: int = 100000, page_size: int = 100, descending: bool = False) -> dict:
+            max_offset: int = 100000, page_size: int = 100, descending: bool = False,
+            all_languages: bool = False) -> dict:
     output.mkdir(parents=True, exist_ok=True)
     exclusions, exclusion_meta = old_exclusions(catalogue=catalogue, v2_root=v2_root)
     with sqlite3.connect(f"file:{catalogue.resolve().as_posix()}?mode=ro", uri=True) as db:
@@ -263,7 +284,8 @@ def acquire(*, output: Path, catalogue: Path, v2_root: Path, target_display: int
     attempted, completed, held = set(entity.get("attempted", [])), set(entity.get("completed", [])), set(entity.get("held", []))
     pending_path = output / "pending-records.jsonl"
     pending = list(read_jsonl(pending_path)) if pending_path.exists() else []
-    adapter = WikidataAdapter(fetcher)
+    adapter = WikidataAdapter(AllLanguagesEntityFetcher(fetcher) if all_languages else fetcher)
+    entity_languages = LANGUAGES
     discovery_blocked = False
     entity_blocked = False
 
@@ -292,7 +314,7 @@ def acquire(*, output: Path, catalogue: Path, v2_root: Path, target_display: int
             entity.update(attempted=sorted(attempted), completed=sorted(completed), held=sorted(held), last_batch=batch, updated_at=now())
             entity["in_flight_batch"] = {"ids": batch, "started_at": now()}
             save(entity_path, entity)
-            result = adapter.fetch_entities(batch, languages=LANGUAGES)
+            result = adapter.fetch_entities(batch, languages=entity_languages)
             successes = {r.source_id for r in result.records}
             pending.extend(result.records)
             # Durable pending records must precede completion/in-flight
@@ -385,10 +407,12 @@ def main() -> None:
     parser.add_argument("--max-offset", type=int, default=100000)
     parser.add_argument("--page-size", type=int, default=100)
     parser.add_argument("--order", choices=("asc", "desc"), default="asc")
+    parser.add_argument("--all-languages", action="store_true",
+                        help="request all Wikidata labels for never-attempted IDs; held IDs are never retried")
     args = parser.parse_args()
     if not 1 <= args.page_size <= 100 or args.target_display < 32126:
         parser.error("invalid QLever collection bounds")
-    print(json.dumps(acquire(output=args.output.resolve(), catalogue=args.catalogue.resolve(), v2_root=args.v2_root.resolve(), target_display=args.target_display, max_offset=args.max_offset, page_size=args.page_size, descending=args.order == "desc"), ensure_ascii=False), flush=True)
+    print(json.dumps(acquire(output=args.output.resolve(), catalogue=args.catalogue.resolve(), v2_root=args.v2_root.resolve(), target_display=args.target_display, max_offset=args.max_offset, page_size=args.page_size, descending=args.order == "desc", all_languages=args.all_languages), ensure_ascii=False), flush=True)
 
 
 if __name__ == "__main__":
