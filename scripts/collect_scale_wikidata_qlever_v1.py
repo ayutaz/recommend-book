@@ -172,6 +172,7 @@ def make_fetcher(output: Path, v2_root: Path) -> HTTPFetcher:
         user_agent="recommend-book/0.1 (https://github.com/ayutaz/recommend-book) qlever discovery v19",
         min_interval=1.1,
         max_attempts=1,
+        host_intervals={"qlever.dev": 10.0},
     )
     gate = v2_root / "raw" / "http-rate-gate.sqlite3"
     gate.parent.mkdir(parents=True, exist_ok=True)
