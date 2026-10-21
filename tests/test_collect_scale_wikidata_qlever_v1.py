@@ -38,12 +38,54 @@ def test_query_is_qlever_compatible_and_keeps_work_scope():
     assert "PREFIX wd:" in query and "PREFIX wdt:" in query
     assert "wd:Q8261" in query and "wd:Q747381" in query
     assert "wdt:P7937" in query and "wdt:P31" in query
+    assert "VALUES ?type" not in query
+    assert query.count("UNION") == 3
+    assert query.count("wdt:P7937 wd:Q8261.") == 1
+    assert query.count("wdt:P7937 wd:Q747381.") == 1
+    assert query.count("wdt:P31 wd:Q8261.") == 1
+    assert query.count("wdt:P31 wd:Q747381.") == 1
     assert "wdt:P629" in query and "wd:Q3331189" in query
     assert "LIMIT 100 OFFSET 200" in query
     assert "ORDER BY ?work" in query
     assert "ORDER BY DESC(?work)" in MODULE.source_declared_query(limit=100, offset=200, descending=True)
     with pytest.raises(ValueError):
         MODULE.source_declared_query(limit=101, offset=0)
+
+
+def test_constant_pattern_union_preserves_dedupe_exclusions_and_pagination():
+    """Compare finite relation semantics; no endpoint or SPARQL engine runs."""
+    import re
+    query = MODULE.source_declared_query(limit=2, offset=1, descending=True)
+    statements = {
+        ("Q105", "P7937", "Q8261"),  # collection exclusion
+        ("Q104", "P7937", "Q8261"),
+        ("Q103", "P7937", "Q747381"),  # edition exclusion
+        ("Q102", "P31", "Q8261"),
+        ("Q101", "P31", "Q747381"),
+        ("Q104", "P31", "Q747381"),  # duplicate work across patterns
+        ("Q100", "P31", "Q999999"),  # outside the four patterns
+    }
+    editions = {"Q103"}
+    collections = {"Q105"}
+    patterns = set(re.findall(r"\{\s*\?work\s+wdt:(P\d+)\s+wd:(Q\d+)\.\s*\}", query))
+    previous_works = {
+        work for work, prop, value in statements
+        if prop in {"P7937", "P31"} and value in {"Q8261", "Q747381"}
+        and work not in editions and work not in collections
+    }
+
+    # This is the endpoint-side meaning of the constant UNION: each matching
+    # work is included once, then the unchanged filters/order/page apply.
+    works = {
+        work for work, prop, value in statements
+        if (prop, value) in patterns and work not in editions and work not in collections
+    }
+    assert works == previous_works == {"Q104", "Q102", "Q101"}
+    page = sorted(works, reverse=True)[1:3]
+    assert page == ["Q102", "Q101"]
+    assert "FILTER NOT EXISTS { ?work wdt:P629 ?editionWork. }" in query
+    assert "FILTER NOT EXISTS { ?work wdt:P31 wd:Q3331189. }" in query
+    assert "ORDER BY DESC(?work) LIMIT 2 OFFSET 1" in query
 
 
 def test_parse_bindings_deduplicates_and_rejects_malformed_payload():

@@ -70,11 +70,16 @@ def source_declared_query(*, limit: int, offset: int, descending: bool = False) 
     """
     if not 1 <= limit <= 100 or offset < 0:
         raise ValueError("QLever pages require limit 1..100 and nonnegative offset")
+    # Bind classes inside each branch: the former VALUES join caused a full
+    # variable-object P31 scan and Sort(?type) in the saved failed query plan.
     return (
         "PREFIX wd: <http://www.wikidata.org/entity/> "
         "PREFIX wdt: <http://www.wikidata.org/prop/direct/> "
-        "SELECT DISTINCT ?work WHERE { VALUES ?type { wd:Q8261 wd:Q747381 } "
-        "{ ?work wdt:P7937 ?type. } UNION { ?work wdt:P31 ?type. } "
+        "SELECT DISTINCT ?work WHERE { "
+        "{ ?work wdt:P7937 wd:Q8261. } "
+        "UNION { ?work wdt:P7937 wd:Q747381. } "
+        "UNION { ?work wdt:P31 wd:Q8261. } "
+        "UNION { ?work wdt:P31 wd:Q747381. } "
         "FILTER NOT EXISTS { ?work wdt:P629 ?editionWork. } "
         "FILTER NOT EXISTS { ?work wdt:P31 wd:Q3331189. } "
         f"}} ORDER BY {'DESC(?work)' if descending else '?work'} LIMIT {limit} OFFSET {offset}"
