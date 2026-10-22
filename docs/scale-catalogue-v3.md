@@ -1,6 +1,34 @@
-# 10万作品への拡張と好み指定の推薦
+# 10万作品・1万分類と好み指定推薦の完了結果
 
-更新: 2026-10-22。[計画v19](autonomous-next-phase-plan-v19.md)の1〜3の実装・実データ確認結果を記録する。開始時は検索可能32,126作品、資料ジャンル付き24,741作品、詳細分類5,000作品、表示特徴あり4,658作品だった。以下の途中経過は観測時点の記録として残し、最終確認は末尾を参照する。[前段階の完了結果](scale-catalogue-v2.md)は変更しない。
+更新: 2026-10-22。[計画v19](autonomous-next-phase-plan-v19.md)の1〜3は完了し、[PR #28](https://github.com/ayutaz/recommend-book/pull/28)でmainへ反映した。次の計画は[v20](autonomous-next-phase-plan-v20.md)で、追加の実行はまだ始めていない。[前段階の結果](scale-catalogue-v2.md)と固定済みv19は履歴として保持する。
+
+## 完了した範囲
+
+| 項目 | 確認値 |
+|---|---:|
+| 保存した作品ID | 100,372 |
+| 検索可能な作品 | 100,368 |
+| 資料ジャンルによる推薦対象 | 26,079 |
+| 詳細分類した異なる作品 | 10,000 |
+| 表示可能な詳細特徴あり | 9,375 |
+| 既存335評価との確実な新台帳接続 | 0 |
+
+既存5,000分類を保持し、新規5,000作品を採用した。好きな作品の複数指定、特徴の重視・回避、軸の重み、基準作品・既読作品の除外、理由・出典表示を実HTTPとChromeで確認した。取得・分類・補完は終了した。
+
+台帳・原資料・取得時点別の利用条件・分類証跡の監査が通過した。実装確定コミット579ab29の[Python 3.14 CI](https://github.com/ayutaz/recommend-book/actions/runs/39696392433)は、Windowsで2,427 passed / 6 skipped、Ubuntuで2,426 passed / 7 skippedだった。共通のskipは過去のローカル取得物を必要とする6試験で、UbuntuはWindows専用lock試験1件も対象外。実データの確認はCIとは別に行った。
+
+成果は2026-10-22 09:01 JSTに9461c06としてmainへ反映した。マージ後のtreeは検証済みコミットと一致し、ローカル・remoteのmain同期と作業ツリーのクリーン状態を確認した。これは当該成果の反映記録であり、以後の文書更新のCI結果を意味しない。
+
+## 残る制約と次の作業
+
+推薦の最終HTTPはテーマ重み0で約20.4秒、重み2で約31.0秒だった。各1回の観測で、性能保証・負荷試験ではない。文体の本文根拠、言語・年代の偏り、独立した分類精度・確信度の校正・名寄せ精度、本人向け推薦精度は未解決または未評価として残す。検索10万件すべてに詳細分類や推薦根拠があるとは扱わない。
+
+次は保存資料と不足を一度集計し、日本語作品やジャンル・年代別の不足を優先して詳細分類累計2万作品へ差分追加する。性能と履歴管理は並行し、評価は新しい対応根拠が得られた範囲だけで行う。実施順序・移行条件・ToC候補までの範囲は[計画v20](autonomous-next-phase-plan-v20.md)を正本とする。追加費用・外注・本人の追加評価は前提にしない。
+
+<details>
+<summary>実行中の経過と当時の残作業（2026-10-21〜22、完了前の記録）</summary>
+
+以下の未来形・途中件数・残作業は記録時点の状態であり、現在の実行指示ではない。現在地は上の完了結果、次の作業は計画v20を参照する。
 
 ## 今回の到達条件
 
@@ -123,6 +151,8 @@
 - `content/`: 利用可能資料の在庫と、分類へ渡す資料の対応記録。在庫のREADY表示だけをモデル入力の許可と扱わない。
 
 
+</details>
+
 ## 1万分類到達後の確認記録
 
 Git対象外の同じ作業ディレクトリに、`native-10000-milestone-v1.json`、`audit/scale100k-catalogue-audit-v1.json`、`audit/scale100k-sources-audit-v2.json`、`audit/native-10000-stats-http-v1.json` を保存した。初回の原資料監査は修正前の誤判定を残した `audit/scale100k-sources-audit-v1.json` と区別する。個人履歴や原資料をGitへ追加しない。
@@ -169,4 +199,4 @@ Git対象外の同じ作業ディレクトリに、`native-10000-milestone-v1.js
 
 最初の測定要求は、HTTPが受け付ける4軸以外の指定を含めたため400となった。失敗記録を保持し、画面と同じ有効な入力に直した測定とは分ける。処理の成功を装う書換えはしていない。実HTTPは `audit/recommendation-http-after-projection-v2.json`、先の画面確認は `preference-ui-final-v1.json` に保存した。本人評価・読書状態の書換え・閲覧時のモデル呼出しはない。
 
-この文書を含む確定コミットで、既存のUbuntu・Windows Python 3.14 CIを1つのworkflow runとして実行する。文書更新ごとの同じCIを避けるため、push時の自動実行を抑え、対象ブランチへの `workflow_dispatch` を使う。両OSの成功と対象commit・treeを確認した後、許可済みのPRをマージし、mainのtreeとローカル・remoteの一致を確認する。実行結果と反映状態の正本は [PR #28](https://github.com/ayutaz/recommend-book/pull/28) と紐付くCI記録とし、これらを未確認の段階で成功済みとは扱わない。
+確定コミット579ab29を対象とする `workflow_dispatch` の[CI run 39696392433](https://github.com/ayutaz/recommend-book/actions/runs/39696392433)で、Ubuntu・Windowsとも成功を確認した。その後[PR #28](https://github.com/ayutaz/recommend-book/pull/28)をマージし、mainのtreeが検証対象と一致することと、ローカル・remoteの同期を確認した。実データとGit反映を照合した最終記録は `audit/goal-completion-audit-v1.json` に保存した。実装を変えない今回の文書整理では、同じ分類・取得・全試験・CIを再実行しない。
