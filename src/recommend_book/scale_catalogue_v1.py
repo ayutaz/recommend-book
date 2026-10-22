@@ -673,6 +673,15 @@ class ScaleCatalogue:
                 'GROUP BY g.genre_qid ORDER BY count(*) DESC,g.genre_qid')]
         return {'languages': languages, 'genres': genres}
 
+    def preference_facets(self):
+        """Return safe preference choices and source filters.
+
+        Native choices are resolved by the preference backend and are never
+        treated as proof merely because a row is present in SQLite.
+        """
+        from .scale_preferences_v1 import preference_facets
+        return preference_facets(self)
+
     def catalogue_stats(self):
         _, rights = self._conditions()
         with self._connect() as db:
@@ -826,6 +835,18 @@ class ScaleCatalogue:
             db.execute('INSERT OR REPLACE INTO read_status VALUES(?,?,?)',
                        (qid, status, datetime.now(timezone.utc).isoformat()))
         return {'qid': qid, 'work_id': 'wd:' + qid, 'read_status': status}
+
+    def recommend_preferences(self, *, liked_qids=None, preferred_features=None,
+                              avoided_features=None, axis_weights=None, genre=None,
+                              language=None, year_from=None, year_to=None,
+                              exclude_read=True, limit=12):
+        """Rank works using explicit preferences and authenticated features."""
+        from .scale_preferences_v1 import recommend_preferences
+        return recommend_preferences(
+            self, liked_qids=liked_qids, preferred_features=preferred_features,
+            avoided_features=avoided_features, axis_weights=axis_weights,
+            genre=genre, language=language, year_from=year_from, year_to=year_to,
+            exclude_read=exclude_read, limit=limit)
 
     def similar_works(self, qid, limit=12, exclude_read=True):
         if not 1 <= limit <= 100:
