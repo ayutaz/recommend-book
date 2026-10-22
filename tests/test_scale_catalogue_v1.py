@@ -2,6 +2,8 @@ import hashlib
 import json
 import os
 import sqlite3
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -534,6 +536,65 @@ def test_native_proof_rejects_change_during_streamed_hash(catalogue, tmp_path, m
     monkeypatch.setattr(hashlib, 'file_digest', change_after_hash)
     with pytest.raises(ValueError, match='changed during hash verification'):
         catalogue._native_proof_artifact(path, expected_sha)
+
+
+def test_native_proof_parallel_pins_are_bounded_unique_and_request_local(catalogue, tmp_path, monkeypatch):
+    manifest = tmp_path / 'parallel-native-manifest.json'
+    source_pins = []
+    for index in range(8):
+        path = tmp_path / f'parallel-pin-{index}.bin'
+        path.write_bytes(f'proof {index}'.encode())
+        source_pins.append({'path': str(path), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()})
+    manifest_sha = native_manifest(manifest, artifacts=source_pins)
+    pins = native_pins(manifest)
+    original = catalogue._native_proof_artifact
+    calls = []
+    lock = threading.Lock()
+    active = 0
+    peak = 0
+
+    def counted(path, sha):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+            calls.append((str(path), sha))
+        try:
+            original(path, sha)
+            time.sleep(0.02)
+        finally:
+            with lock:
+                active -= 1
+
+    monkeypatch.setattr(catalogue, '_native_proof_artifact', counted)
+    verified = set()
+    catalogue._check_native_pins_parallel([*pins, pins[0]], verified)
+    expected = {(pin['path'], pin['sha256']) for pin in pins}
+    assert set(calls) == expected
+    assert len(calls) == len(expected)
+    assert verified == expected
+    assert 2 <= peak <= 4
+
+    catalogue._check_native_pins_parallel(pins, verified)
+    assert len(calls) == len(expected)
+    fresh_verified = set()
+    catalogue._check_native_pins_parallel(pins, fresh_verified)
+    assert len(calls) == 2 * len(expected)
+    assert fresh_verified == expected
+
+
+def test_native_proof_parallel_pins_fail_closed_without_partial_verified(catalogue, tmp_path):
+    good_path = tmp_path / 'parallel-good.bin'
+    good_path.write_bytes(b'good')
+    good_pin = {'path': str(good_path), 'sha256': hashlib.sha256(good_path.read_bytes()).hexdigest()}
+    revoked_path = tmp_path / 'parallel-revoked.bin'
+    revoked_path.write_bytes(b'original')
+    revoked_pin = {'path': str(revoked_path), 'sha256': hashlib.sha256(revoked_path.read_bytes()).hexdigest()}
+    revoked_path.write_bytes(b'revoked')
+    verified = set()
+    with pytest.raises(ValueError, match='hash changed'):
+        catalogue._check_native_pins_parallel([good_pin, revoked_pin], verified)
+    assert verified == set()
 
 
 @pytest.mark.parametrize('operation', ['stats', 'detail'])
