@@ -4,7 +4,7 @@
 
 ## 現在使えるもの
 
-2026年10月22日の実データ確認値です。ローカルの試作です。台帳・原資料・分類証跡の監査と、拡張後の推薦画面・実HTTP確認を完了し、[PR #28](https://github.com/ayutaz/recommend-book/pull/28)でmainへ反映済みです。Python 3.14の[Ubuntu・Windows CI](https://github.com/ayutaz/recommend-book/actions/runs/39696392433)も通過しました。
+以下は2026年10月22日にmainへ反映したv19の完了時の値です。ローカルの試作です。台帳・原資料・分類証跡の監査と、拡張後の推薦画面・実HTTP確認を完了し、[PR #28](https://github.com/ayutaz/recommend-book/pull/28)でmainへ反映済みです。Python 3.14の[Ubuntu・Windows CI](https://github.com/ayutaz/recommend-book/actions/runs/39696392433)も通過しました。
 
 | 項目 | 状況 |
 |---|---|
@@ -40,7 +40,7 @@ uv run python scripts/serve_scale_catalogue_v1.py --database data/autonomous-nex
 
 ## ここから進めること
 
-実行中の計画は[v20](docs/autonomous-next-phase-plan-v20.md)、現在地と次の手順は[2万分類への実行状況](docs/scale-classification-v4.md)にまとめています。10月22日19:09時点で、作業ブランチの詳細分類は10,249作品です。取得済み資料から入力を準備し、累計2万作品への追加分類を進めています。読書状態の再起動後の保持と、実ブラウザーでのJSONファイル保存も確認しました。2万分類と最終CIは未完了です。
+実行中の計画は[v20](docs/autonomous-next-phase-plan-v20.md)、途中の件数・資料供給・保留と次の手順は[2万分類への実行状況](docs/scale-classification-v4.md)にまとめています。作業ブランチでは、取得済み資料から入力を準備し、累計2万作品への追加分類を進めています。読書状態の再起動後の保持と、実ブラウザーでのJSONファイル保存も確認しました。2万分類と最終CIは未完了です。
 
 1. 日本語作品やジャンル・年代別の不足と保存資料を確認し、新規作品だけを分類して累計2万作品を目指します。使える単位で順次反映します。
 2. 分類拡張と並行して推薦の待ち時間を改善し、履歴の保存・削除・持ち出しを整えます。
