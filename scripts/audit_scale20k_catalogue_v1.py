@@ -249,7 +249,8 @@ def audit(*, database=DATABASE, frozen=None, manifest_verifier=None, control_ver
             'eligible_native_source_genre_unknown': len(eligible - snapshot['genre_qids']),
             'eligible_native_recommendable_1': sum(works[q]['recommendable'] == 1 for q in eligible),
             'baseline_current_version_changes': sum(works.get(q, {}).get('version_id') != r['version_id'] for q, r in work_baseline.items()),
-            'display_feature_works': 0, 'new_display_feature_works': 0}
+            'display_feature_works': 0, 'new_display_feature_works': 0,
+            'display_content_non_genre_feature_works': 0, 'new_display_content_non_genre_feature_works': 0}
         report['counts'] = counts
         if report['issues']:
             return report
@@ -288,9 +289,15 @@ def audit(*, database=DATABASE, frozen=None, manifest_verifier=None, control_ver
                 if qid in eligible:
                     displayed = _count_axes(all_axes, row)
                     counts['display_feature_works'] += bool(displayed)
+                    content_ids = set(row['provenance'].get('content_evidence_ids', []))
+                    content_non_genre = any(label['axis'] != 'genre' and any(
+                        evidence.get('evidence_id') in content_ids for evidence in label.get('evidence', []))
+                        for label in displayed)
+                    counts['display_content_non_genre_feature_works'] += content_non_genre
                     if qid in new:
                         _count_axes(new_axes, row)
                         counts['new_display_feature_works'] += bool(displayed)
+                        counts['new_display_content_non_genre_feature_works'] += content_non_genre
                     languages[works[qid]['language'] or 'unknown'] += 1
                     periods[_period(works[qid]['year'])] += 1
                     stored = snapshot['regions'][qid]

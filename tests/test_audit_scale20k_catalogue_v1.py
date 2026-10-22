@@ -27,12 +27,13 @@ def digest(raw):
     return hashlib.sha256(raw).hexdigest()
 
 
-def fixture(tmp_path):
+def fixture(tmp_path, *, labels=None, content_ids=None):
     rows = []
     for qid in ('Q1', 'Q2'):
-        rows.append({'qid': qid, 'work_id': 'wd:' + qid, 'labels': [],
+        rows.append({'qid': qid, 'work_id': 'wd:' + qid, 'labels': (labels or {}).get(qid, []),
                      'provenance': {'native_result': {'missing_axes': [{'axis': 'style'}]},
-                                    'label_admission': {'held_labels': []}, 'artifacts': []}})
+                                    'label_admission': {'held_labels': []}, 'artifacts': [],
+                                    'content_evidence_ids': (content_ids or {}).get(qid, [])}})
     manifest = tmp_path / 'manifest.json'
     manifest.write_bytes(encoded({'version': 'scale-content-native-classification-export-v3',
         'verified_projection': {'rows': [dict(qid=r['qid'], work_id=r['work_id'],
@@ -97,6 +98,26 @@ def test_unknown_source_genre_is_eligible_without_feature_or_negative_inference(
     assert report['axes']['theme']['unknown_unavailable_works'] == 2
     assert report['axes']['theme']['no_display_feature_works'] == 2
     assert len(f[4]) == 1  # One real verifier boundary per distinct manifest.
+
+
+@pytest.mark.parametrize('axis,evidence_id,expected_new', [
+    ('genre', 'content-Q2', 0),
+    ('theme', 'metadata-Q2', 0),
+    ('theme', 'content-Q2', 1),
+])
+def test_content_nongenre_requires_displayed_nongenre_label_and_exact_content_id(
+        tmp_path, axis, evidence_id, expected_new):
+    def label(axis, label_id, evidence_id):
+        return {'axis': axis, 'label_id': label_id, 'decision': 'present', 'scope': 'work',
+                'evidence': [{'evidence_id': evidence_id}]}
+    f = fixture(tmp_path, labels={
+        'Q1': [label('theme', 'theme.family', 'content-Q1')],
+        'Q2': [label(axis, axis + '.test', evidence_id), label(axis, axis + '.other', evidence_id)]},
+        content_ids={'Q1': ['content-Q1'], 'Q2': ['content-Q2']})
+    report = run(f)
+    assert report['status'] == 'complete'
+    assert report['counts']['display_content_non_genre_feature_works'] == 1 + expected_new
+    assert report['counts']['new_display_content_non_genre_feature_works'] == expected_new
 
 
 @pytest.mark.parametrize('changed', ['baseline_file', 'native_row', 'source_ref'])
