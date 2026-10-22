@@ -40,7 +40,7 @@ uv run python scripts/serve_scale_catalogue_v1.py --database data/autonomous-nex
 
 ## ここから進めること
 
-実行中の計画は[v20](docs/autonomous-next-phase-plan-v20.md)、現在地と次の手順は[2万分類への実行状況](docs/scale-classification-v4.md)にまとめています。最初の100作品の入力・用途確認と、履歴管理・性能の改修を進めています。追加分類のDB採用はこれからです。
+実行中の計画は[v20](docs/autonomous-next-phase-plan-v20.md)、現在地と次の手順は[2万分類への実行状況](docs/scale-classification-v4.md)にまとめています。作業ブランチで新規100作品をDBへ採用し、詳細分類は10,100作品になりました。残り9,900作品の追加分類を優先し、資料取得と入力準備を並行します。履歴管理・性能の改修も実装・関連検証を進めており、2万分類と最終CIは未完了です。
 
 1. 日本語作品やジャンル・年代別の不足と保存資料を確認し、新規作品だけを分類して累計2万作品を目指します。使える単位で順次反映します。
 2. 分類拡張と並行して推薦の待ち時間を改善し、履歴の保存・削除・持ち出しを整えます。

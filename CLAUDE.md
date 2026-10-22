@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-実行中の計画は[v20](docs/autonomous-next-phase-plan-v20.md)。不足区分を優先する詳細分類累計2万作品への差分拡張と、性能・履歴管理・ToC準備を進めている。現在地・残作業は[実行状況](docs/scale-classification-v4.md)へ更新し、固定済み計画・入力・過去の証跡は変更しない。最初の100作品は真正入力・必須用途確認まで完了し、追加分類のDB採用はこれから。固定済み[v19](docs/autonomous-next-phase-plan-v19.md)の1〜3は[PR #28](https://github.com/ayutaz/recommend-book/pull/28)でmain反映済み。最新の完了結果は[結果文書](docs/scale-catalogue-v3.md)を参照。
+実行中の計画は[v20](docs/autonomous-next-phase-plan-v20.md)。不足区分を優先する詳細分類累計2万作品への差分拡張と、性能・履歴管理・ToC準備を進めている。現在地・残作業は[実行状況](docs/scale-classification-v4.md)へ更新し、固定済み計画・入力・過去の証跡は変更しない。作業ブランチで最初の100作品の分類・審査・DB採用を完了し、詳細分類は10,100作品。後続238作品の継続controllerを起動済み。書誌ジャンル不明の作品はその欄を不明のまま保ち、実本文に基づくnative特徴と分けて扱う。固定済み[v19](docs/autonomous-next-phase-plan-v19.md)の1〜3は[PR #28](https://github.com/ayutaz/recommend-book/pull/28)でmain反映済み。前段階の完了結果は[結果文書](docs/scale-catalogue-v3.md)を参照。
 
 2026-10-22の完了値: 検索可能100,368作品、資料ジャンルによる推薦対象26,079作品、詳細分類10,000作品、表示特徴あり9,375作品。既存5,000分類を保持し、新規5,000作品を採用した。台帳・原資料・利用条件・分類証跡と実HTTP・Chromeを確認し、[Python 3.14の両OS CI](https://github.com/ayutaz/recommend-book/actions/runs/39696392433)は成功した。成果は9461c06としてmainへ反映済み。推薦は最終HTTP各1回で約20.4秒・31.0秒、全分類証跡を照合する統計HTTPは約97.6秒で、待ち時間は残る。追加の分類・取得・補完を計画更新だけで起動しない。
 
