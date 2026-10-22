@@ -40,7 +40,7 @@ uv run python scripts/serve_scale_catalogue_v1.py --database data/autonomous-nex
 
 ## ここから進めること
 
-次の計画は[v20](docs/autonomous-next-phase-plan-v20.md)です。追加の収集・分類・性能改修はまだ実行していません。
+実行中の計画は[v20](docs/autonomous-next-phase-plan-v20.md)、現在地と次の手順は[2万分類への実行状況](docs/scale-classification-v4.md)にまとめています。最初の100作品の入力・用途確認と、履歴管理・性能の改修を進めています。追加分類のDB採用はこれからです。
 
 1. 日本語作品やジャンル・年代別の不足と保存資料を確認し、新規作品だけを分類して累計2万作品を目指します。使える単位で順次反映します。
 2. 分類拡張と並行して推薦の待ち時間を改善し、履歴の保存・削除・持ち出しを整えます。
@@ -51,6 +51,7 @@ uv run python scripts/serve_scale_catalogue_v1.py --database data/autonomous-nex
 データ購入・外部委託・有料APIへの切替は行わず、無料公開資料と既存のCodex CLIを使います。データのAI入力・表示・再配布・商用利用条件は資料と用途ごとに管理します。
 
 - [次の実行計画：不足を補う詳細分類2万作品と利用準備](docs/autonomous-next-phase-plan-v20.md)
+- [詳細分類2万作品への実行状況と残作業](docs/scale-classification-v4.md)
 - [品質評価仕様](docs/quality-evaluation-protocol-v1.md)
 - [初期設計](docs/world-novel-dataset-plan.md)
 - [利用条件の確認範囲](docs/source-rights-review-scope-v3.md)
