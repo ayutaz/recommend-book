@@ -8,3 +8,5 @@ scripts/verify_world_pilot_recovery_v2.py -text whitespace=cr-at-eol
 # Preserve source bytes already pinned by the first content-classification run.
 scripts/run_scale_content_classification_v1.py -text whitespace=cr-at-eol
 src/recommend_book/scale_content_classification_v1.py -text whitespace=cr-at-eol
+# Preserve the recovery controller bytes already used by the native v3 run.
+scripts/run_scale20k_native_v4.py -text whitespace=cr-at-eol,-blank-at-eof
