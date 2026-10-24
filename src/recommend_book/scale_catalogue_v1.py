@@ -6,6 +6,7 @@ adopt strict taxonomy labels, or inherit rights over a linked page's contents.
 from __future__ import annotations
 
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -29,6 +30,8 @@ CLASSIFICATION_AXES = ('genre', 'theme', 'structure', 'protagonist', 'style', 'a
 NATIVE_EXPORT_VERSIONS = {'scale-native-classification-export-v1',
                           'scale-content-native-classification-export-v2',
                           'scale-content-native-classification-export-v3'}
+_NATIVE_PIN_WORKERS = 4
+_CLI_ARCHIVE_ROOT = Path(__file__).resolve().parents[2] / 'data/autonomous-next-v3/reference/cli-artifacts'
 
 
 def collective_description(entity):
@@ -540,8 +543,7 @@ class ScaleCatalogue:
         required = {(str(Path(path)), sha) for path, sha in document['artifact_sha256'].items()}
         if not required <= supplied:
             raise ValueError('native provenance omits pinned export dependencies')
-        for artifact in proof['artifacts']:
-            self._check_native_pin(artifact['path'], artifact['sha256'], verified)
+        self._check_native_pins_parallel(proof['artifacts'], verified)
         if 'qid' in native.keys() or 'labels_json' in native.keys():
             return self._native_label_binding(native, document)
 
@@ -553,6 +555,43 @@ class ScaleCatalogue:
         if key not in verified:
             self._native_proof_artifact(path, sha)
             verified.add(key)
+
+    def _check_native_pins_parallel(self, artifacts, verified):
+        """Verify this operation's pending pins with bounded file I/O.
+
+        The unchanged byte verifier remains the authority. Keys enter the
+        existing request-local set only after every pending verification has
+        succeeded, so a failed batch cannot authorize a partial batch.
+        """
+        pending = []
+        seen = set()
+        for artifact in artifacts:
+            path = Path(artifact['path'])
+            if not path.is_absolute():
+                raise ValueError('native proof path must be absolute')
+            key = (str(path), artifact['sha256'])
+            if key in verified or key in seen:
+                continue
+            seen.add(key)
+            pending.append((path, artifact['sha256'], key))
+        if not pending:
+            return
+
+        def verify(item):
+            path, sha, _ = item
+            self._native_proof_artifact(path, sha)
+
+        failures = []
+        with ThreadPoolExecutor(max_workers=min(_NATIVE_PIN_WORKERS, len(pending))) as executor:
+            futures = [executor.submit(verify, item) for item in pending]
+            for future in futures:
+                try:
+                    future.result()
+                except Exception as exc:
+                    failures.append(exc)
+        if failures:
+            raise failures[0]
+        verified.update(item[2] for item in pending)
 
     def _native_manifest(self, native, verified):
         from .scale_coordinator_proof_v1 import coordinator_chain_pins
@@ -576,9 +615,13 @@ class ScaleCatalogue:
 
     def _native_proof_artifact(self, path, sha):
         """Verify exact bytes per operation; timestamps never authorize reuse."""
+        from .classification.native_cli_archive_v1 import resolve_cli_artifact
         path = Path(path)
         if not path.is_absolute():
             raise ValueError('native proof path must be absolute')
+        logical = path
+        logical_signature = _native_proof_signature(logical)
+        path = resolve_cli_artifact(path, sha, _CLI_ARCHIVE_ROOT)
         signature = _native_proof_signature(path)
         with path.open('rb') as stream:
             actual_sha = hashlib.file_digest(stream, 'sha256').hexdigest()
@@ -593,6 +636,8 @@ class ScaleCatalogue:
             confirmed_sha = hashlib.file_digest(stream, 'sha256').hexdigest()
         if confirmed_sha != sha or _native_proof_signature(path) != signature:
             raise ValueError('native proof changed during hash verification: ' + str(path))
+        if _native_proof_signature(logical) != logical_signature:
+            raise ValueError('native executable path changed during hash verification')
 
     def import_classifications(self, manifest_path, expected_sha256):
         """Adopt only a versioned authentic verifier's display-authorized labels.

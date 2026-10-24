@@ -7,7 +7,11 @@ from datetime import datetime, timezone
 import pytest
 
 from recommend_book.scale_catalogue_v1 import ScaleCatalogue
-from recommend_book.scale_preferences_v1 import _read_native_rows
+from recommend_book.scale_preferences_v1 import (
+    _decode_candidate_rows,
+    _merge_candidate_rows,
+    _read_native_rows,
+)
 from test_scale_catalogue_v1 import claim, native_manifest, native_pins, record, save
 
 
@@ -72,6 +76,23 @@ def test_read_native_rows_projects_only_raw_labels_and_chunks_over_500(preferenc
     assert {column for action, table, column in reads
             if action == sqlite3.SQLITE_READ and table == 'native_classifications'} == {
                 'qid', 'labels_json'}
+
+
+def test_candidate_rows_decode_once_and_keep_native_override(monkeypatch):
+    fallback = [{'row_json': json.dumps({'qid': 'Q100', 'title': 'fallback'})}]
+    native = [{'row_json': json.dumps({'qid': 'Q100', 'title': 'native'})}]
+    calls = []
+    original_loads = json.loads
+
+    def traced_loads(value, *args, **kwargs):
+        calls.append(value)
+        return original_loads(value, *args, **kwargs)
+
+    monkeypatch.setattr('recommend_book.scale_preferences_v1.json.loads', traced_loads)
+    merged = _merge_candidate_rows(_decode_candidate_rows(fallback), _decode_candidate_rows(native))
+
+    assert len(calls) == 2
+    assert [(row['qid'], row['title']) for row, _ in merged] == [('Q100', 'native')]
 
 
 def label(label_id, axis, *, quote='fixture evidence'):
