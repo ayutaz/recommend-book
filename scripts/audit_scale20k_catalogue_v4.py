@@ -155,7 +155,10 @@ def _load_legacy_recovery_audit(database: Path):
                                     database=database)
     # audit3 keeps the gate161 unstarted proof outside its adapted class.
     old_hold = audit3.verify_unstarted_hold(database, auditor.recovery["pins"])
-    return audit3, auditor, old_hold
+    # Return the in-memory adapted module: its parent source owns the actual
+    # ``canonical_name(index, generation='v3')`` API used for adjacent windows.
+    # The outer v3 file remains byte-for-byte untouched.
+    return adapted, auditor, old_hold
 
 
 def verify_current_gap(*, entry_path: Path = RECOVERY_ENTRY,
@@ -518,6 +521,10 @@ def _legacy_control_verifier(audit1, audit3, legacy, current_gap: dict[str, Any]
     ``legacy._source`` remains the single implementation of the detailed
     source, reservation, metadata and catalogue-gap checks.
     """
+    # audit3.py exposes this function through its SHA-fixed adapted module;
+    # _load_legacy_recovery_audit returns that module directly.
+    canonical_name = getattr(audit3, "canonical_name", None) if audit3 is not None else None
+
     def verify(path: str | Path, expected: str):
         export = Path(path).resolve()
         if export.parent.name.endswith("-v4"):
@@ -551,7 +558,10 @@ def _legacy_control_verifier(audit1, audit3, legacy, current_gap: dict[str, Any]
             if index == 198:
                 prior = current_gap["prior_control"]
             else:
-                prior_path = BASE / "window-controls" / (legacy.canonical_name(index - 1) + ".json")
+                if not callable(canonical_name):
+                    raise ValueError("Audit3 adapted RecoveryAudit has no canonical_name API")
+                prior_path = BASE / "window-controls" / (
+                    canonical_name(index - 1, generation="v3") + ".json")
                 prior = {"path": str(prior_path), "sha256": audit3.sha(prior_path)}
             prior_document = audit3.pinned(prior)
             expected_prior_index = 194 if index == 198 else index - 1

@@ -346,6 +346,81 @@ def test_final_v4_export_uses_dedicated_control_dispatch(tmp_path, monkeypatch):
     assert called["expected"] == "f" * 64
 
 
+def test_recovery_dispatch_uses_audit3_canonical_name_for_adjacent_window(tmp_path, monkeypatch):
+    m = module()
+    monkeypatch.setattr(m, "BASE", tmp_path / "base")
+    export = (m.BASE / "classification-exports-v3" /
+              "scale20k-content-10601-10700-v3" / "manifest.json")
+    export.parent.mkdir(parents=True)
+    export.write_text("{}", encoding="utf-8")
+    control_path = m.BASE / "window-controls" / (export.parent.name + ".json")
+    control_path.parent.mkdir(parents=True)
+    control_path.write_text("{}", encoding="utf-8")
+    prior_path = m.BASE / "window-controls" / "scale20k-content-10501-10600-v3.json"
+    prior_path.write_text(json.dumps({"window_index": 198, "gate": {"passed": True}}),
+                          encoding="utf-8")
+    expected = hashlib.sha256(export.read_bytes()).hexdigest()
+    prior_sha = hashlib.sha256(prior_path.read_bytes()).hexdigest()
+    code = {
+        str((m.ROOT / "scripts/run_scale20k_native_v4.py").resolve()): "native-code",
+        str((m.ROOT / "scripts/prepare_scale20k_content_sources_v4.py").resolve()): "source-code",
+    }
+    called = {}
+    class Driver:
+        @staticmethod
+        def verify_policy_control(path, sha):
+            assert Path(path).resolve() == control_path.resolve()
+            return {"window_index": 199, "gate": {"passed": True, "accepted": 100},
+                    "control_artifacts": {
+                        "export": {"path": str(export), "sha256": expected},
+                        "native_eligibility_controller": {
+                            "path": str(m.ROOT / "scripts/run_scale20k_native_v4.py"),
+                            "sha256": "native-code"},
+                        "native_eligibility_source_builder": {
+                            "path": str(m.ROOT / "scripts/prepare_scale20k_content_sources_v4.py"),
+                            "sha256": "source-code"}}}
+    class Legacy:
+        database = tmp_path / "catalogue.sqlite"
+        driver = Driver()
+        verified = set()
+        control_counts = {}
+        @staticmethod
+        def _source(receipt, public, index, name):
+            called.update(index=index, name=name, prior=public["prior_control_receipt"])
+    Legacy.code = code
+    class Audit3:
+        @staticmethod
+        def pinned(pin):
+            path = Path(pin["path"])
+            if path == export.resolve():
+                return {"prior_control_receipt": str(prior_path),
+                        "artifact_sha256": {str(prior_path): prior_sha}}
+            return json.loads(path.read_text(encoding="utf-8"))
+        @staticmethod
+        def sha(path):
+            return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+        @staticmethod
+        def canonical_name(index, generation="v2"):
+            start = 1 + (index - 93) * 100
+            return f"scale20k-content-{start:05d}-{start + 99:05d}-{generation}"
+
+    verify = m._legacy_control_verifier(None, Audit3, Legacy(),
+                                        {"prior_control": {}})
+    result = verify(export, expected)
+    assert result["window_index"] == 199
+    assert called == {"index": 199, "name": export.parent.name,
+                      "prior": str(prior_path)}
+
+
+def test_audit3_adapted_module_exposes_real_canonical_name_api():
+    path = Path(__file__).resolve().parents[1] / "scripts" / "audit_scale20k_catalogue_v3.py"
+    spec = importlib.util.spec_from_file_location("audit3_real_for_v4_test", path)
+    audit3 = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(audit3)
+    adapted = audit3.adapted_auditor()
+    assert adapted.canonical_name(198, generation="v3") == "scale20k-content-10501-10600-v3"
+
+
 def test_final_historical_snapshot_requires_v7_parent_and_witnesses(tmp_path, monkeypatch):
     m = module()
     monkeypatch.setattr(m, "BASE", tmp_path)
