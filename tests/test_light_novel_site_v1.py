@@ -178,7 +178,7 @@ def test_similarity_skips_only_featureless_typed_editions(site, monkeypatch, pat
     assert data['personalized'] is False
 
 
-@pytest.mark.parametrize('provider', ['futaba', 'orange', 'ecobalt', 'sbcr'])
+@pytest.mark.parametrize('provider', ['futaba', 'orange', 'ecobalt', 'sbcr', 'hj', 'arian', 'hjnovels'])
 def test_featureless_source_group_similarity_reuses_authenticated_detail(site, monkeypatch, provider):
     base, catalogue = site
     identifier = 'lng:pub:' + provider + ':' + 'a' * 32
@@ -412,6 +412,48 @@ def test_sbcr_group_http_keeps_unknown_roles_and_rights_explicit(site, monkeypat
     assert product['credits'] == [] and product['media_references'] == []
     assert product['label'] is None and product['form'] is None
     assert 'isbn' not in product and 'PRIVATE-SENTINEL' not in json.dumps(result)
+    fetch(base, '/api/recommendations', {'liked_entry_ids': [identifier]})
+    assert catalogue.calls[-1]['liked_entry_ids'] == [identifier]
+
+
+@pytest.mark.parametrize(('provider', 'kind', 'source_url'), [
+    ('hj', 'hj_native_index_source_group', 'https://firecross.jp/hjbunko/series/71'),
+    ('arian', 'arian_native_index_source_group', 'https://arianrose.jp/novel/?series_id=1'),
+    ('hjnovels', 'hj_native_index_source_group', 'https://firecross.jp/hjnovels/series/1'),
+])
+def test_native_index_group_http_keeps_unknown_membership_and_index_credits(
+        site, monkeypatch, provider, kind, source_url):
+    base, catalogue = site
+    identifier = 'lng:pub:' + provider + ':' + 'a' * 32
+    credits = [{'role_literal': '著者', 'name': '索引の表示名',
+                'role_scope': 'publisher_index_card', 'raw_path': 'PRIVATE-SENTINEL'},
+               {'role_literal': None, 'name': '役割未記載の表示名',
+                'role_scope': 'publisher_index_card'},
+               {'role_literal': '著者', 'name': 'PRIVATE-SENTINEL',
+                'role_scope': 'unverified_inferred_role'}]
+    row = {'entry_id': identifier, 'entry_kind': 'publisher_group', 'family': 'light_novel',
+        'title': '索引で確認した掲載単位', 'series_identity_basis': 'publisher_source_group',
+        'series_title_source': 'publisher_explicit_work_group',
+        'publisher_work_group_kind': kind, 'source_url': source_url,
+        'authors': [], 'members': [], 'light_novel_confirmed': False,
+        'source_frame_member_count': 0, 'frame_membership_complete': None,
+        'native_index_card_complete': True, 'index_frame_pages_complete': True,
+        'total_product_count': None, 'index_credit_literals': credits,
+        'publisher_product_references': [], 'raw_path': 'PRIVATE-SENTINEL'}
+    monkeypatch.setattr(catalogue, 'work_detail', lambda key: row if key == identifier else None)
+    result = fetch(base, '/api/entries/' + quote(identifier, safe=''))
+    assert result['entry_id'] == identifier
+    assert result['publisher_work_group_kind'] == kind
+    assert result['native_index_card_complete'] is True
+    assert result['index_frame_pages_complete'] is True
+    assert result['frame_membership_complete'] is None
+    assert result['total_product_count'] is None
+    assert result['source_frame_member_count'] == 0
+    assert result['authors'] == result['members'] == result['publisher_product_references'] == []
+    assert result['index_credit_literals'] == [
+        {'role_literal': '著者', 'name': '索引の表示名', 'role_scope': 'publisher_index_card'},
+        {'role_literal': None, 'name': '役割未記載の表示名', 'role_scope': 'publisher_index_card'}]
+    assert 'PRIVATE-SENTINEL' not in json.dumps(result)
     fetch(base, '/api/recommendations', {'liked_entry_ids': [identifier]})
     assert catalogue.calls[-1]['liked_entry_ids'] == [identifier]
 

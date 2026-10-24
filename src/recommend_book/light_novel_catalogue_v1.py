@@ -62,6 +62,33 @@ SOURCE_GROUP_PROVIDERS = {
         'public_kind': 'sbcr_ebook_source_group', 'complete_field': 'parent_page_membership_complete',
         'credit': '掲載グループ名・保存枠内の掲載参照: SBクリエイティブの電子書籍一覧',
     },
+    'hj': {
+        'schema': 'light-novel-hj-index-source-group-v1', 'record_provider': 'hj-bunko-index-only',
+        'module': 'light_novel_hj_index_groups_v1', 'verifier': 'verify_hj_index_groups',
+        'loader': '_hj_index_workgroups', 'reference_pattern': r'hj-index-group-local:[0-9a-f]{64}',
+        'member_pattern': r'(?!)', 'index_only': True,
+        'source_kind': 'official_publisher_native_index_group_reference',
+        'public_kind': 'hj_native_index_source_group', 'complete_field': 'native_index_card_complete',
+        'credit': '索引掲載グループ名・索引内クレジット: ホビージャパンHJ文庫のシリーズ一覧',
+    },
+    'arian': {
+        'schema': 'light-novel-arian-index-source-group-v1', 'record_provider': 'arian-rose-index-only',
+        'module': 'light_novel_arian_index_groups_v1', 'verifier': 'verify_arian_index_groups',
+        'loader': '_arian_index_workgroups', 'reference_pattern': r'arian-index-group-local:[0-9a-f]{64}',
+        'member_pattern': r'(?!)', 'index_only': True,
+        'source_kind': 'official_publisher_native_index_group_reference',
+        'public_kind': 'arian_native_index_source_group', 'complete_field': 'native_index_card_complete',
+        'credit': '索引掲載グループ名・索引内クレジット: アリアンローズのシリーズ一覧',
+    },
+    'hjnovels': {
+        'schema': 'light-novel-hjnovels-index-source-group-v1', 'record_provider': 'hj-novels-index-only',
+        'module': 'light_novel_hj_index_groups_v1', 'verifier': 'verify_hjnovels_index_groups',
+        'loader': '_hjnovels_index_workgroups', 'reference_pattern': r'hjnovels-index-group-local:[0-9a-f]{64}',
+        'member_pattern': r'(?!)', 'index_only': True,
+        'source_kind': 'official_publisher_native_index_group_reference',
+        'public_kind': 'hj_native_index_source_group', 'complete_field': 'native_index_card_complete',
+        'credit': '索引掲載グループ名・索引内クレジット: ホビージャパンHJノベルスのシリーズ一覧',
+    },
 }
 
 
@@ -90,7 +117,7 @@ def _qid(value):
 
 
 def _entry(value):
-    if not isinstance(value, str) or not re.fullmatch(r'(?:ln[sw]:wd:Q[1-9][0-9]*|ln[se]:ndl:[A-Za-z0-9._-]+|lng:pub:(?:futaba|orange|ecobalt|sbcr):[0-9a-f]{32}|lnr:pub:ecobalt:[0-9a-f]{32})', value):
+    if not isinstance(value, str) or not re.fullmatch(r'(?:ln[sw]:wd:Q[1-9][0-9]*|ln[se]:ndl:[A-Za-z0-9._-]+|lng:pub:(?:futaba|orange|ecobalt|sbcr|hj|arian|hjnovels):[0-9a-f]{32}|lnr:pub:ecobalt:[0-9a-f]{32})', value):
         raise ValueError('a typed light-novel entry ID is required')
     return value
 
@@ -539,6 +566,15 @@ class LightNovelCatalogue:
     def _sbcr_workgroups(self, path, sha256, cache):
         return self._publisher_source_groups('sbcr', path, sha256, cache)
 
+    def _hj_index_workgroups(self, path, sha256, cache):
+        return self._publisher_source_groups('hj', path, sha256, cache)
+
+    def _arian_index_workgroups(self, path, sha256, cache):
+        return self._publisher_source_groups('arian', path, sha256, cache)
+
+    def _hjnovels_index_workgroups(self, path, sha256, cache):
+        return self._publisher_source_groups('hjnovels', path, sha256, cache)
+
     def _ecobalt_source_frame(self, path, sha256, cache):
         from .light_novel_ecobalt_groups_v1 import verify_ecobalt_frame
         key = ('ecobalt_source_frame', str(_resolved_path(path, cache)), sha256)
@@ -568,7 +604,11 @@ class LightNovelCatalogue:
                         or group['original_work_identity_asserted'] is not False):
                     raise ValueError('publisher source workgroup contract differs')
                 ids = [member['publisher_reference_id'] for member in group['members']]
-                if not ids or len(ids) != len(set(ids)) or any(not re.fullmatch(profile['member_pattern'], identity) for identity in ids):
+                if profile.get('index_only'):
+                    if (group['members'] != [] or group['frame_membership_complete'] is not None
+                            or group['total_product_count'] is not None or group['index_frame_pages_complete'] is not True):
+                        raise ValueError('publisher native index card contract differs')
+                elif not ids or len(ids) != len(set(ids)) or any(not re.fullmatch(profile['member_pattern'], identity) for identity in ids):
                     raise ValueError('publisher source workgroup member identity differs')
                 groups[reference] = group
             cache[key] = groups
@@ -594,18 +634,23 @@ class LightNovelCatalogue:
             # The source's taxonomy URL key is stable across renames; local
             # UUID continuity additionally requires the complete literal title.
             local_key = {**local_key, 'literal': group['title']}
-        return {'manifest_path': path, 'manifest_sha256': sha256,
+        assertion = {'manifest_path': path, 'manifest_sha256': sha256,
                 'reference_id': group['reference_id'], 'local_reference_key': local_key,
                 'member_reference_ids': sorted(m['publisher_reference_id'] for m in group['members'])}
+        if SOURCE_GROUP_PROVIDERS[provider].get('index_only'):
+            assertion['title'] = group['title']
+        return assertion
 
     @classmethod
     def _futaba_source_continuity(cls, previous, following):
         return cls._publisher_source_continuity(previous, following)
 
     @classmethod
-    def _publisher_source_continuity(cls, previous, following):
+    def _publisher_source_continuity(cls, previous, following, *, provider=None):
         return (cls._publisher_source_key(previous) == cls._publisher_source_key(following)
-                and bool(set(previous['member_reference_ids']) & set(following['member_reference_ids'])))
+                and ((SOURCE_GROUP_PROVIDERS.get(provider, {}).get('index_only') and previous['member_reference_ids'] == following['member_reference_ids'] == []
+                      and previous['title'] == following['title'])
+                     or bool(set(previous['member_reference_ids']) & set(following['member_reference_ids']))))
 
     @staticmethod
     def _futaba_product_references(group):
@@ -639,6 +684,13 @@ class LightNovelCatalogue:
 
     @staticmethod
     def _publisher_source_display(provider, group):
+        if SOURCE_GROUP_PROVIDERS[provider].get('index_only'):
+            return {'robots_evidence': dict(group['robots_evidence']), 'usage_permissions': dict(group['usage_permissions']),
+                'native_index_card_complete': group['native_index_card_complete'],
+                'index_frame_pages_complete': group['index_frame_pages_complete'],
+                'frame_membership_complete': group['frame_membership_complete'], 'total_product_count': group['total_product_count'],
+                'index_credit_literals': [{key: credit[key] for key in ('role_literal', 'name', 'role_scope')}
+                    for credit in group['index_credit_literals']]}
         if provider == 'sbcr':
             return {'robots_evidence': dict(group['robots_evidence']),
                     'usage_permissions': dict(group['usage_permissions'])}
@@ -666,9 +718,9 @@ class LightNovelCatalogue:
             members = assertion['member_reference_ids']
             if (key in seen or not re.fullmatch(r'[0-9a-f]{64}', assertion['manifest_sha256'])
                     or not re.fullmatch(profile['reference_pattern'], assertion['reference_id'])
-                    or not members or members != sorted(set(members))
+                    or (members != [] if profile.get('index_only') else not members) or members != sorted(set(members))
                     or any(not re.fullmatch(profile['member_pattern'], member) for member in members)
-                    or index and not self._publisher_source_continuity(assertions[index - 1], assertion)):
+                    or index and not self._publisher_source_continuity(assertions[index - 1], assertion, provider=provider)):
                 raise ValueError('publisher source group assertion continuity differs')
             seen.add(key)
         active = assertions[-1]
@@ -690,7 +742,8 @@ class LightNovelCatalogue:
             'source_url': group['source_url'], 'publisher_series_reference_id': group['reference_id'],
             'publisher_product_references': self._publisher_product_references(provider, group),
             'source_frame_member_count': group['frame_member_count'], 'verified_bibliographic_member_count': 0,
-            'frame_membership_complete': True, 'exact_grouping_filter_complete': group.get('exact_grouping_filter_complete'),
+            'frame_membership_complete': None if profile.get('index_only') else True,
+            'exact_grouping_filter_complete': group.get('exact_grouping_filter_complete'),
             'global_membership_complete': None, 'story_series_identity_asserted': False,
             'original_work_identity_asserted': False, 'paper_electronic_same_edition_asserted': False,
             'source_attributions': [{'source': 'publisher', 'provider': profile['record_provider'],
@@ -711,6 +764,15 @@ class LightNovelCatalogue:
 
     def import_sbcr_source_groups(self, manifest_path, expected_sha256, *, reference_ids=None):
         return self._import_publisher_source_groups('sbcr', manifest_path, expected_sha256, reference_ids=reference_ids)
+
+    def import_hj_index_source_groups(self, manifest_path, expected_sha256, *, reference_ids=None):
+        return self._import_publisher_source_groups('hj', manifest_path, expected_sha256, reference_ids=reference_ids)
+
+    def import_arian_index_source_groups(self, manifest_path, expected_sha256, *, reference_ids=None):
+        return self._import_publisher_source_groups('arian', manifest_path, expected_sha256, reference_ids=reference_ids)
+
+    def import_hjnovels_index_source_groups(self, manifest_path, expected_sha256, *, reference_ids=None):
+        return self._import_publisher_source_groups('hjnovels', manifest_path, expected_sha256, reference_ids=reference_ids)
 
     def _ecobalt_publisher_references(self, path, sha256, cache):
         result = {}
@@ -879,6 +941,7 @@ class LightNovelCatalogue:
         with self._connect() as db:
             stored = {r['entry_id']: dict(r) for r in db.execute('SELECT * FROM entries WHERE ' + target_where, target_parameters)}
         keys, products, stable_references = {}, {}, set()
+        index_urls, index_titles = set(), set()
         records = {}
         for identity, entry in stored.items():
             if hashlib.sha256(entry['record_json'].encode()).hexdigest() != entry['record_sha256']:
@@ -890,6 +953,9 @@ class LightNovelCatalogue:
                 if row['entry_id'] != identity or row['entry_kind'] != entry['kind']:
                     raise ValueError('stored publisher source group typed identity differs')
                 assertion = record['source_group_assertions'][-1]
+                if profile.get('index_only'):
+                    index_urls.add(row['source_url'])
+                    index_titles.add(row['title'])
             else:
                 if provider != 'futaba':
                     raise ValueError('stored publisher source group typed identity differs')
@@ -912,6 +978,8 @@ class LightNovelCatalogue:
             previous = None
             if provider == 'orange' and reference in stable_references and not previous_ids:
                 reason = 'source_group_scope_or_title_changed'
+            elif profile.get('index_only') and not previous_ids and (group['source_url'] in index_urls or group['title'] in index_titles):
+                reason = 'source_group_scope_or_title_changed'
             elif len(previous_ids) > 1:
                 reason = 'ambiguous_existing_source_group'
             elif previous_ids:
@@ -924,9 +992,9 @@ class LightNovelCatalogue:
                     continue
                 old = record['source_group_assertions'][-1]
                 competing = set().union(*(products.get(m, set()) for m in assertion['member_reference_ids'])) - {identity}
-                if provider == 'sbcr' and record['title'] != group['title']:
+                if (provider == 'sbcr' or profile.get('index_only')) and record['title'] != group['title']:
                     reason = 'source_group_scope_or_title_changed'
-                elif competing or not self._publisher_source_continuity(old, assertion):
+                elif competing or not self._publisher_source_continuity(old, assertion, provider=provider):
                     reason = 'ambiguous_source_group_continuation'
                 elif old == assertion:
                     result['unchanged'] += 1
@@ -935,6 +1003,8 @@ class LightNovelCatalogue:
                 else:
                     record = {**record, 'source_group_assertions': [*record['source_group_assertions'], assertion],
                               'publisher_product_references': self._publisher_product_references(provider, group)}
+                    if profile.get('index_only'):
+                        record.update(self._publisher_source_display(provider, group))
             else:
                 if any(products.get(m) for m in assertion['member_reference_ids']):
                     reason = 'source_group_scope_or_title_changed'
@@ -2825,6 +2895,8 @@ class LightNovelCatalogue:
                 child_titles = [child['title'] for child in children]
                 if record['schema_version'] == SOURCE_GROUP_PROVIDERS['ecobalt']['schema']:
                     child_titles.append(record['heading_author_display'])
+                if record['schema_version'] in {p['schema'] for p in SOURCE_GROUP_PROVIDERS.values() if p.get('index_only')}:
+                    child_titles.extend(credit['name'] for credit in record['index_credit_literals'])
             elif record.get('schema_version') == ECOBALT_REFERENCE_SCHEMA:
                 child_titles = [record['author_display']]
             else:
@@ -2948,6 +3020,8 @@ class LightNovelCatalogue:
             child_terms.extend(c['name'] for child in children for c in child['credits'] if c['role'] == 'author')
             if row.get('publisher_work_group_kind') == SOURCE_GROUP_PROVIDERS['ecobalt']['public_kind']:
                 child_terms.append(row['heading_author_display'])
+            if row.get('publisher_work_group_kind') in {p['public_kind'] for p in SOURCE_GROUP_PROVIDERS.values() if p.get('index_only')}:
+                child_terms.extend(credit['name'] for credit in row['index_credit_literals'])
             if row['entry_kind'] == 'publisher_reference':
                 child_terms.append(row['author_display'])
             if key and key not in normalize_search(' '.join([row['title'], *row['aliases'], *[a['name'] or a['qid'] for a in row['authors']], *child_terms])):

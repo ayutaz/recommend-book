@@ -20,6 +20,41 @@ def claim(qid):
     return {'mainsnak': {'snaktype': 'value', 'datavalue': {'value': {'id': qid}}}}
 
 
+@pytest.mark.parametrize('provider', ['hj', 'arian', 'hjnovels'])
+def test_hj_index_source_group_has_a_distinct_typed_namespace(provider):
+    from recommend_book.light_novel_catalogue_v1 import _entry
+    identity = 'lng:pub:' + provider + ':' + 'a'*32
+    assert _entry(identity) == identity
+    for invalid in ['lng:pub:' + provider + ':Q1', 'lng:pub:' + provider + ':' + 'A'*32, 'lnr:pub:' + provider + ':' + 'a'*32]:
+        with pytest.raises(ValueError):
+            _entry(invalid)
+
+
+@pytest.mark.parametrize('provider', ['futaba', 'orange', 'ecobalt', 'sbcr'])
+def test_hj_empty_member_contract_does_not_relax_existing_provider_contracts(request, monkeypatch, provider):
+    import importlib
+    from recommend_book.light_novel_catalogue_v1 import SOURCE_GROUP_PROVIDERS
+    cat, _, path, sha, _ = request.getfixturevalue(provider + '_source_group_bundle')
+    profile = SOURCE_GROUP_PROVIDERS[provider]
+    module = importlib.import_module('recommend_book.' + profile['module'])
+    if provider == 'ecobalt':
+        original = module.verify_ecobalt_frame
+        def invalid(*args):
+            frame = original(*args)
+            frame['groups'][0].update(members=[], frame_member_count=0)
+            return frame
+        monkeypatch.setattr(module, 'verify_ecobalt_frame', invalid)
+    else:
+        original = getattr(module, profile['verifier'])
+        def invalid(*args):
+            groups = original(*args)
+            groups[0].update(members=[], frame_member_count=0)
+            return groups
+        monkeypatch.setattr(module, profile['verifier'], invalid)
+    with pytest.raises(ValueError, match='member identity'):
+        getattr(cat, profile['loader'])(path, sha, {})
+
+
 @pytest.fixture
 def futaba_source_group_bundle(futaba_source_raw):
     from recommend_book.light_novel_futaba_workgroups_v1 import verify_futaba_mnovels_workgroups
@@ -59,6 +94,219 @@ def sbcr_source_group_bundle(tmp_path):
     env = _sbcr_raw_fixture(root)
     path, sha = root / env['pin']['path'], env['pin']['sha256']
     return LightNovelCatalogue(tmp_path / 'sbcr.sqlite'), env, path, sha, verify_sbcr_groups(path, sha)
+
+
+@pytest.fixture
+def hj_source_group_bundle(tmp_path):
+    from test_light_novel_hj_index_groups_v1 import fixture
+    from recommend_book.light_novel_hj_index_groups_v1 import verify_hj_index_groups
+    root = tmp_path / 'hj-raw'
+    root.mkdir()
+    env = fixture(root)
+    path, sha = root / 'proof.json', env['pin']['sha256']
+    return LightNovelCatalogue(tmp_path / 'hj.sqlite'), env, path, sha, verify_hj_index_groups(path, sha)
+
+
+@pytest.fixture
+def hjnovels_source_group_bundle(tmp_path):
+    from test_light_novel_hj_index_groups_v1 import fixture
+    from recommend_book.light_novel_hj_index_groups_v1 import verify_hjnovels_index_groups
+    root = tmp_path / 'hjnovels-raw'
+    root.mkdir()
+    env = fixture(root, profile='hjnovels')
+    path, sha = root / 'proof.json', env['pin']['sha256']
+    return LightNovelCatalogue(tmp_path / 'hjnovels.sqlite'), env, path, sha, verify_hjnovels_index_groups(path, sha)
+
+
+@pytest.fixture
+def arian_source_group_bundle(tmp_path):
+    from test_light_novel_arian_index_groups_v1 import fixture
+    from recommend_book.light_novel_arian_index_groups_v1 import verify_arian_index_groups
+    root = tmp_path / 'arian-raw'
+    root.mkdir()
+    env = fixture(root)
+    path, sha = root / 'proof.json', env['pin']['sha256']
+    return LightNovelCatalogue(tmp_path / 'arian.sqlite'), env, path, sha, verify_arian_index_groups(path, sha)
+
+
+def _arian_next_snapshot(env, change=None):
+    from test_light_novel_arian_index_groups_v1 import fixture, change_raw, repin, old_id, url
+    root = env['root'] / 'next'
+    root.mkdir()
+    following = fixture(root)
+    following['proof']['capture_revision'] = 2
+    if change == 'title':
+        change_raw(following, '完全な索引題', '変更された索引題')
+        following['rows'][0]['title'] = '変更された索引題'
+        following['candidates']['groups'][0]['title'] = '変更された索引題'
+    elif change == 'url':
+        old, new = url(7), url(70)
+        change_raw(following, old, new)
+        reference = old_id(new)
+        for rows in [following['rows'], following['delta']['rows'], following['candidates']['groups']]:
+            rows[0].update(source_url=new, reference_id=reference)
+        following['delta']['uncovered_reference_ids'][0] = reference
+        following['candidates']['selected_by_provider']['arianrose-series'][0] = reference
+        following['proof']['selected_reference_ids'][0] = reference
+    repin(following)
+    return root / 'proof.json', following['pin']['sha256']
+
+
+def test_arian_index_source_group_keeps_native_listing_credits_and_unknown_product_count(arian_source_group_bundle):
+    cat, _, path, sha, groups = arian_source_group_bundle
+    result = cat.import_arian_index_source_groups(path, sha)
+    assert result['source_groups'] == result['inserted'] == 1 and result['held'] == 0
+    identity = result['reference_entries'][groups[0]['reference_id']]
+    row = cat.work_detail(identity)
+    assert row['publisher_work_group_kind'] == 'arian_native_index_source_group'
+    assert row['publisher_product_references'] == row['authors'] == row['members'] == []
+    assert row['source_frame_member_count'] == 0 and row['total_product_count'] is row['frame_membership_complete'] is None
+    assert row['native_index_card_complete'] is row['index_frame_pages_complete'] is True
+    assert row['index_credit_literals'] == groups[0]['index_credit_literals']
+    assert row['robots_evidence']['permission_inferred'] is False and row['usage_permissions']['commercial_reuse'] == 'unknown'
+    assert cat.search_catalogue('索引の人')['total'] == cat.search_catalogue('画の人')['total'] == 1
+    assert cat.catalogue_stats()['publisher_work_groups'] == 1 and cat.catalogue_stats()['series'] == 0
+    assert not any(secret in json.dumps(row, ensure_ascii=False) for secret in ('SECRET', 'MUST_NOT_OPEN', 'source_selector', str(path.parent)))
+
+
+def _hj_next_snapshot(env, change=None, *, provider='hj'):
+    from test_light_novel_hj_index_groups_v1 import fixture, change_raw, repin, old_id, PAGE
+    root = env['root'] / 'next'
+    root.mkdir()
+    following = fixture(root, profile='hjnovels') if provider == 'hjnovels' else fixture(root)
+    if provider == 'hjnovels':
+        PAGE = 'https://firecross.jp/hjnovels/series'
+    following['proof']['capture_revision'] = 2
+    if change == 'title':
+        change_raw(following, '完全な索引題 1', '変更された索引題')
+        following['rows'][0]['title'] = '変更された索引題'
+    elif change == 'url':
+        old, new = PAGE + '/7', PAGE + '/70'
+        change_raw(following, old, new)
+        reference = old_id(new)
+        following['rows'][0].update(source_url=new, reference_id=reference)
+        following['delta']['rows'][0].update(source_url=new, reference_id=reference)
+        following['delta']['uncovered_reference_ids'][0] = reference
+        following['proof']['selected_reference_ids'][0] = reference
+    repin(following)
+    return root / 'proof.json', following['pin']['sha256']
+
+
+@pytest.mark.parametrize('provider', ['hj', 'hjnovels'])
+def test_hj_index_source_group_empty_members_mean_unknown_product_membership(request, provider):
+    cat, _, path, sha, groups = request.getfixturevalue(provider + '_source_group_bundle')
+    result = getattr(cat, 'import_' + provider + '_index_source_groups')(path, sha)
+    assert result['source_groups'] == result['inserted'] == 2 and result['held'] == 0
+    identity = result['reference_entries'][groups[0]['reference_id']]
+    row = cat.work_detail(identity)
+    assert row['publisher_work_group_kind'] == 'hj_native_index_source_group'
+    assert row['publisher_product_references'] == row['members'] == row['authors'] == row['aliases'] == []
+    assert row['source_frame_member_count'] == 0 and row['total_product_count'] is None
+    assert row['frame_membership_complete'] is row['global_membership_complete'] is None
+    assert row['native_index_card_complete'] is row['index_frame_pages_complete'] is True
+    assert row['index_credit_literals'] == [{'role_literal': '著者', 'name': '索引の人物', 'role_scope': 'publisher_index_card'}]
+    assert row['publication_label'] is row['qid'] is None and row['isbn'] == row['native_features'] == []
+    assert not row['light_novel_confirmed'] and not row['story_series_identity_asserted']
+    assert row['robots_evidence']['permission_inferred'] is False and row['usage_permissions']['commercial_reuse'] == 'unknown'
+    assert cat.search_catalogue('索引の人物')['total'] == cat.search_catalogue(entry_kind='series')['total'] == 2
+    assert cat.catalogue_stats()['publisher_work_groups'] == 2 and cat.catalogue_stats()['series'] == 0
+    assert not any(secret in json.dumps(row, ensure_ascii=False) for secret in ('SECRET', 'MUST_NOT_OPEN', 'source_selector', str(path.parent)))
+
+
+@pytest.mark.parametrize('change', [None, 'title', 'url'])
+@pytest.mark.parametrize('provider', ['hj', 'arian', 'hjnovels'])
+def test_hj_index_source_group_uuid_continuity_requires_complete_title_and_own_url(request, change, provider):
+    cat, env, path, sha, _ = request.getfixturevalue(provider + '_source_group_bundle')
+    importer = getattr(cat, 'import_' + provider + '_index_source_groups')
+    first = importer(path, sha)
+    identity = next(iter(first['reference_entries'].values()))
+    cat.set_read_status(identity, 'reading')
+    count = len(first['reference_entries'])
+    assert importer(path, sha)['unchanged'] == count
+    following, digest = (_arian_next_snapshot(env, change) if provider == 'arian' else
+                         _hj_next_snapshot(env, change, provider=provider))
+    result = importer(following, digest)
+    assert result['inserted'] == 0 and result['updated'] == count - int(change is not None)
+    assert result['held'] == int(change is not None)
+    assert cat.work_detail(identity)['read_status'] == 'reading'
+    with cat._connect() as db:
+        assert {r[0] for r in db.execute('SELECT entry_id FROM entries')} == set(first['reference_entries'].values())
+
+
+@pytest.mark.parametrize('change', ['raw', 'rehash', 'typed'])
+@pytest.mark.parametrize('provider', ['hj', 'arian', 'hjnovels'])
+def test_hj_index_source_group_rejects_source_and_stored_contract_tampering(request, change, provider):
+    cat, env, path, sha, _ = request.getfixturevalue(provider + '_source_group_bundle')
+    importer = getattr(cat, 'import_' + provider + '_index_source_groups')
+    if change == 'raw':
+        (env['root'] / 'coverage' / ('index.html' if provider == 'arian' else 'page1.html')).write_bytes(b'changed selected own card')
+        with pytest.raises(ValueError):
+            importer(path, sha)
+        with cat._connect() as db:
+            assert db.execute('SELECT count(*) FROM entries').fetchone()[0] == 0
+        return
+    identity = next(iter(importer(path, sha)['reference_entries'].values()))
+    with cat._connect() as db:
+        if change == 'typed':
+            db.execute('UPDATE entries SET kind=? WHERE entry_id=?', ('series', identity))
+        else:
+            record = json.loads(db.execute('SELECT record_json FROM entries WHERE entry_id=?', (identity,)).fetchone()[0])
+            record['frame_membership_complete'] = True
+            encoded = json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+            db.execute('UPDATE entries SET record_json=?,record_sha256=? WHERE entry_id=?',
+                (encoded, hashlib.sha256(encoded.encode()).hexdigest(), identity))
+    with pytest.raises(ValueError):
+        cat.work_detail(identity)
+
+
+def test_hj_index_source_group_does_not_replay_or_rewrite_old_provider(hj_source_group_bundle, sbcr_source_group_bundle, monkeypatch):
+    _, _, path, sha, _ = hj_source_group_bundle
+    cat, env, spath, ssha, _ = sbcr_source_group_bundle
+    identity = next(iter(cat.import_sbcr_source_groups(spath, ssha)['reference_entries'].values()))
+    cat.set_read_status(identity, 'read')
+    with cat._connect() as db:
+        before = {r['entry_id']: tuple(r) for r in db.execute('SELECT * FROM entries')}
+        states = [tuple(r) for r in db.execute('SELECT * FROM read_status')]
+    (env['root'] / 'coverage' / 'parent.html').write_bytes(b'older provider must stay unread')
+    def forbidden(*args, **kwargs):
+        raise AssertionError('HJ index-only import cannot replay older providers')
+    for name in ['_sbcr_workgroups', '_futaba_workgroups', '_orange_workgroups', '_ecobalt_source_frame', '_rows']:
+        monkeypatch.setattr(cat, name, forbidden)
+    assert cat.import_hj_index_source_groups(path, sha)['inserted'] == 2
+    with cat._connect() as db:
+        after = {r['entry_id']: tuple(r) for r in db.execute('SELECT * FROM entries')}
+        assert {identity: after[identity] for identity in before} == before
+        assert [tuple(r) for r in db.execute('SELECT * FROM read_status')] == states
+
+
+@pytest.mark.parametrize('incoming', ['arian', 'hjnovels'])
+def test_arian_index_source_group_keeps_hj_snapshot_and_history_separate(request, hj_source_group_bundle, monkeypatch, incoming):
+    _, _, path, sha, _ = request.getfixturevalue(incoming + '_source_group_bundle')
+    cat, env, hpath, hsha, _ = hj_source_group_bundle
+    identity = next(iter(cat.import_hj_index_source_groups(hpath, hsha)['reference_entries'].values()))
+    if incoming == 'hjnovels':
+        _, _, apath, asha, _ = request.getfixturevalue('arian_source_group_bundle')
+        cat.import_arian_index_source_groups(apath, asha)
+    cat.set_read_status(identity, 'read')
+    with cat._connect() as db:
+        before = {r['entry_id']: tuple(r) for r in db.execute('SELECT * FROM entries')}
+        states = [tuple(r) for r in db.execute('SELECT * FROM read_status')]
+    (env['root'] / 'coverage' / 'page1.html').write_bytes(b'older native index must stay unread')
+    def forbidden(*args, **kwargs):
+        raise AssertionError('Arian native index import cannot replay any older profile')
+    names = ['_hj_index_workgroups', '_sbcr_workgroups', '_futaba_workgroups', '_orange_workgroups', '_ecobalt_source_frame', '_rows']
+    if incoming == 'hjnovels':
+        names.append('_arian_index_workgroups')
+    for name in names:
+        monkeypatch.setattr(cat, name, forbidden)
+    importer = getattr(cat, 'import_' + incoming + '_index_source_groups')
+    result = importer(path, sha)
+    assert result['inserted'] == result['source_groups'] and result['held'] == 0
+    assert importer(path, sha)['unchanged'] == result['source_groups']
+    with cat._connect() as db:
+        after = {r['entry_id']: tuple(r) for r in db.execute('SELECT * FROM entries')}
+        assert {identity: after[identity] for identity in before} == before
+        assert [tuple(r) for r in db.execute('SELECT * FROM read_status')] == states
 
 
 def _sbcr_next_snapshot(env, change=None):
@@ -789,13 +1037,17 @@ def test_futaba_source_group_preserves_actual_anchor_bindings_and_reading_states
                 for table in tables} == before
 
 
-@pytest.mark.parametrize('race_kind', ['source', 'anchor', 'orange', 'ecobalt', 'ecobalt_reference', 'sbcr'])
+@pytest.mark.parametrize('race_kind', ['source', 'anchor', 'orange', 'ecobalt', 'ecobalt_reference', 'sbcr', 'hj', 'arian', 'hjnovels'])
 def test_futaba_source_group_new_target_race_is_detected_before_first_write(request, monkeypatch, race_kind):
     from contextlib import contextmanager
     import sqlite3
     if race_kind == 'ecobalt_reference':
         cat, _, path, sha, _ = request.getfixturevalue('ecobalt_source_group_bundle')
         saved = cat.import_ecobalt_publisher_references(path, sha)
+        identity = next(iter(saved['reference_entries'].values()))
+    elif race_kind in {'hj', 'arian', 'hjnovels'}:
+        cat, _, path, sha, _ = request.getfixturevalue(race_kind + '_source_group_bundle')
+        saved = getattr(cat, 'import_' + race_kind + '_index_source_groups')(path, sha)
         identity = next(iter(saved['reference_entries'].values()))
     elif race_kind in {'orange', 'ecobalt', 'sbcr'}:
         cat, _, path, sha, _ = request.getfixturevalue(race_kind + '_source_group_bundle')
@@ -812,6 +1064,8 @@ def test_futaba_source_group_new_target_race_is_detected_before_first_write(requ
         identity = 'lns:ndl:' + first['id']
     if race_kind == 'ecobalt_reference':
         importer = cat.import_ecobalt_publisher_references
+    elif race_kind in {'hj', 'arian', 'hjnovels'}:
+        importer = getattr(cat, 'import_' + race_kind + '_index_source_groups')
     else:
         importer = getattr(cat, 'import_' + race_kind + '_source_groups') if race_kind in {'orange', 'ecobalt', 'sbcr'} else cat.import_futaba_source_groups
     with cat._connect() as db:

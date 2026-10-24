@@ -16,9 +16,11 @@ def test_startup_and_unsubmitted_filters_do_not_start_a_full_catalogue_search():
 const vm = require('node:vm'), assert = require('node:assert/strict');
 const elements = new Map(), requests = [];
 function element() {
-  return {value:'', checked:false, textContent:'', listeners:{},
+  return {value:'', checked:false, textContent:'', listeners:{}, children:[],
     addEventListener(type, fn){this.listeners[type]=fn;},
-    append(){}, replaceChildren(){}, setAttribute(){}};
+    append(...items){this.children.push(...items);},
+    replaceChildren(...items){this.children=items;}, setAttribute(){},
+    showModal(){this.open=true;}};
 }
 const document = {
   getElementById(id){if(!elements.has(id))elements.set(id,element());return elements.get(id);},
@@ -64,6 +66,37 @@ assert.equal(vm.runInNewContext('favoriteControl(ROW)',{...context,ROW:reference
 vm.runInNewContext("state.favorites.set('lng:pub:sbcr:'+'a'.repeat(32),{title:'SB掲載群'})",context);
 assert.equal(vm.runInNewContext('preferencePayload().liked_entry_ids[0]',context),'lng:pub:sbcr:'+'a'.repeat(32),
              'a selected SB group must retain its typed identity when submitting preferences');
+const hj={entry_id:'lng:pub:hj:'+'b'.repeat(32),entry_kind:'publisher_group',
+  title:'索引の掲載単位',publisher_work_group_kind:'hj_native_index_source_group',
+  series_identity_basis:'publisher_source_group',authors:[],members:[],
+  source_frame_member_count:0,frame_membership_complete:null,total_product_count:null,
+  source_url:'https://firecross.jp/hjbunko/series/71',
+  index_credit_literals:[{role_literal:'著者',name:'索引の表示名',role_scope:'publisher_index_card'},
+    {role_literal:null,name:'役割未記載の表示名',role_scope:'publisher_index_card'}]};
+assert.ok(vm.runInNewContext('describe(ROW)',{...context,ROW:hj}).includes('各巻の一覧・総冊数は未確認'));
+assert.ok(vm.runInNewContext('describe(ROW)',{...context,ROW:hj}).includes('著者：索引の表示名'));
+assert.ok(vm.runInNewContext('describe(ROW)',{...context,ROW:hj}).includes('役割未確認：役割未記載の表示名'));
+context.HJ=hj;
+vm.runInNewContext('state.favorites.clear();state.favorites.set(HJ.entry_id,{title:HJ.title})',context);
+assert.equal(vm.runInNewContext('preferencePayload().liked_entry_ids[0]',context),hj.entry_id);
+context.fetch=async path=>({ok:true,json:async()=>path.includes('/similar')?{items:[]}:hj});
+function visibleText(el){return [el.textContent||'',...(el.children||[]).map(visibleText)].join('\n');}
+(async()=>{
+  for(const row of [hj,{...hj,entry_id:'lng:pub:arian:'+'c'.repeat(32),
+      publisher_work_group_kind:'arian_native_index_source_group'},
+      {...hj,entry_id:'lng:pub:hjnovels:'+'d'.repeat(32)}]){
+    context.INDEX=row;
+    vm.runInNewContext('state.favorites.clear();state.favorites.set(INDEX.entry_id,{title:INDEX.title})',context);
+    assert.equal(vm.runInNewContext('preferencePayload().liked_entry_ids[0]',context),row.entry_id);
+    context.fetch=async path=>({ok:true,json:async()=>path.includes('/similar')?{items:[]}:row});
+    await vm.runInNewContext('showDetail(INDEX.entry_id)',context);
+    const detail=visibleText(elements.get('detail-body'));
+    assert.ok(detail.includes('各巻の一覧・総冊数は未確認です。'));
+    assert.ok(detail.includes('索引のクレジットは各巻の担当役割を示すものではありません。'));
+    assert.ok(!detail.includes('0冊'));
+    assert.ok(!detail.includes('出版社の掲載書誌'));
+  }
+})().catch(error=>{console.error(error);process.exitCode=1;});
 '''
     result = subprocess.run([node, '-'], input='const SOURCE=' + json.dumps(_JS) + ';\n' + harness,
                             text=True, encoding='utf-8', capture_output=True, timeout=10)
