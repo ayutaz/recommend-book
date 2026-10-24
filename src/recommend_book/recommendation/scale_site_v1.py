@@ -315,6 +315,22 @@ def _public_bibliography_correspondence(row):
     return {}
 
 
+def _public_publisher_work_group_scope(row):
+    if (row.get('entry_kind') != 'series'
+            or row.get('series_identity_basis') != 'publisher_work_group_and_ndl_bibliography'
+            or row.get('series_title_source') != 'publisher_explicit_work_group'
+            or row.get('publisher_work_group_kind') != 'futaba_mnovels_grouping'):
+        return {}
+    result = {'publisher_work_group_kind': 'futaba_mnovels_grouping'}
+    for key in ('source_frame_member_count', 'verified_bibliographic_member_count'):
+        if type(row.get(key)) is int and row[key] >= 0:
+            result[key] = row[key]
+    for key in ('frame_membership_complete', 'exact_grouping_filter_complete', 'global_membership_complete'):
+        if key in row and (row[key] is None or isinstance(row[key], bool)):
+            result[key] = row[key]
+    return result
+
+
 def public_work(row):
     """Explicit boundary: never serialize a database row or provenance packet wholesale."""
     result = {key: _text(row.get(key)) for key in ('qid', 'work_id', 'title', 'original_language')}
@@ -353,6 +369,7 @@ def public_work(row):
             result['series_title_source'] = marker
         if work_group:
             result.update(story_series_identity_asserted=False, original_work_identity_asserted=False)
+            result.update(_public_publisher_work_group_scope(row))
     if row.get('entry_kind') == 'edition' and row.get('edition_bibliography_confirmed') is True:
         result['confirmation_source_url'] = _link(row.get('confirmation_source_url'))
     result.update(_public_bibliography_correspondence(row))
@@ -383,6 +400,7 @@ def public_work(row):
                             story_series_identity_asserted=False, original_work_identity_asserted=False)
                 if member.get('series_title_source') == 'publisher_explicit_work_group':
                     item['series_title_source'] = 'publisher_explicit_work_group'
+                item.update(_public_publisher_work_group_scope(member))
             if member.get('entry_kind') == 'edition' and member.get('edition_bibliography_confirmed') is True:
                 item['confirmation_source_url'] = _link(member.get('confirmation_source_url'))
             item.update(_public_bibliography_correspondence(member))
@@ -533,7 +551,7 @@ async function exportHistory(download=true){const data=await api('/api/history/e
 async function deleteHistory(){const message=$('history-message');message.textContent='';try{const exported=await exportHistory(true);if(!window.confirm('JSONの保存操作を開始しました。ファイルが保存されたことを確認できた場合のみ「OK」を押してください。確認できない場合は「キャンセル」を選んでください。読書状態だけを削除します。')){message.textContent='削除を取り消しました。';return;}await api('/api/history/read-status/delete',{method:'POST',headers:{'Content-Type':'application/json','X-Catalogue-Request':'1'},body:JSON.stringify({confirmation:'DELETE_READ_STATUS',export_sha256:exported.sha256})});message.textContent='読書状態を削除しました。作品・出典・分類証跡は残っています。';await search();}catch(e){message.textContent=e.message;}}
 function entryKey(row){return row.entry_id||row.qid;}
 function entryPath(id){return /^Q[1-9][0-9]*$/.test(id)?'/api/works/'+id:'/api/entries/'+encodeURIComponent(id);}
-function entryLabel(row){return row.light_novel_confirmed===false?'書誌候補・ラノベ未確定':row.entry_kind==='series'?(row.series_identity_basis==='publisher_work_group_and_ndl_bibliography'?'ライトノベル・作品グループ':'ライトノベル・シリーズ'):row.entry_kind==='edition'?(row.edition_bibliography_confirmed?'ライトノベル・版':'版・書誌'):row.family==='light_novel'?'ライトノベル・各巻／単独作品':'小説';}
+function entryLabel(row){if(row.publisher_work_group_kind==='futaba_mnovels_grouping')return '出版社の作品グループ・ラノベ未確定';return row.light_novel_confirmed===false?'書誌候補・ラノベ未確定':row.entry_kind==='series'?(row.series_identity_basis==='publisher_work_group_and_ndl_bibliography'?'ライトノベル・作品グループ':'ライトノベル・シリーズ'):row.entry_kind==='edition'?(row.edition_bibliography_confirmed?'ライトノベル・版':'版・書誌'):row.family==='light_novel'?'ライトノベル・各巻／単独作品':'小説';}
 function describe(row){const language=row.entry_kind==='edition'?'版の言語：'+(languageName(row.language)||'不明')+' / 原言語：'+(languageName(row.original_language)||'不明'):languageName(row.original_language)||'原言語不明';return [(row.authors||[]).map(x=>x.name).join('・')||'著者情報なし',row.year?row.year+'年':'刊行年不明',language].join(' / ');}
 function languageName(code){if(/^Q[0-9]+$/.test(code))return '言語名未取得';try{return code?new Intl.DisplayNames(['ja'],{type:'language'}).of(code):'';}catch{return code;}}
 function tags(parent,values){for(const v of values||[])parent.append(node('span',typeof v==='string'?v:v.label,'tag'));}
@@ -556,7 +574,8 @@ async function showDetail(identifier){
   if(row.edition_bibliography_confirmed){body.append(node('p','出版社の書籍情報と国立国会図書館の書誌で照合した版です。','muted'));if(row.confirmation_source_url){const p=node('p','照合元：'),a=node('a','出版社の書籍ページ');a.href=row.confirmation_source_url;a.target='_blank';a.rel='noopener noreferrer';p.append(a);body.append(p);}}
   if(row.publisher_bibliography_matched){body.append(node('p','出版社の書名・著者・レーベル情報と対応を確認した書誌です。商品・刷単位の同一性は未確認です。','muted'));if(row.bibliography_source_url){const p=node('p','書誌の対応元：'),a=node('a','出版社の書籍情報');a.href=row.bibliography_source_url;a.target='_blank';a.rel='noopener noreferrer';p.append(a);body.append(p);}}
   if(row.publication_label)body.append(node('p','書誌に記載されたシリーズ・レーベル：'+row.publication_label,'muted'));
-  if(['publisher_series_and_ndl_bibliography','publisher_work_group_and_ndl_bibliography'].includes(row.series_identity_basis)&&row.series_assertion_source_url){const group=row.series_identity_basis==='publisher_work_group_and_ndl_bibliography';const p=node('p',group?'作品グループの対応根拠：':'シリーズの同定根拠：'),a=node('a',group?'出版社の作品ページ':'出版社のシリーズページ');a.href=row.series_assertion_source_url;a.target='_blank';a.rel='noopener noreferrer';p.append(a);body.append(p,node('p',group?'作品名・著者・収録一覧は出版社の明示情報、各巻の書誌は国立国会図書館の情報に基づきます。原作品・物語シリーズの同一性は未確認です。':row.series_title_source==='publisher_explicit_group'?'シリーズ名と著者は出版社の明示情報、各巻の書誌は国立国会図書館の情報に基づきます。':'書名・著者などの表示は国立国会図書館の書誌情報に基づきます。','muted'));}
+  if(['publisher_series_and_ndl_bibliography','publisher_work_group_and_ndl_bibliography'].includes(row.series_identity_basis)&&row.series_assertion_source_url){const group=row.series_identity_basis==='publisher_work_group_and_ndl_bibliography',mnovels=row.publisher_work_group_kind==='futaba_mnovels_grouping';const p=node('p',group?'作品グループの対応根拠：':'シリーズの同定根拠：'),a=node('a',mnovels?'出版社の掲載一覧':group?'出版社の作品ページ':'出版社のシリーズページ');a.href=row.series_assertion_source_url;a.target='_blank';a.rel='noopener noreferrer';p.append(a);body.append(p,node('p',mnovels?'保存したＭノベルス／Ｍノベルスｆ一覧内の出版社作品グループです。各巻の著者と書誌は個別資料に基づきます。原作品・物語シリーズの同一性は未確認です。':group?'作品名・著者・収録一覧は出版社の明示情報、各巻の書誌は国立国会図書館の情報に基づきます。原作品・物語シリーズの同一性は未確認です。':row.series_title_source==='publisher_explicit_group'?'シリーズ名と著者は出版社の明示情報、各巻の書誌は国立国会図書館の情報に基づきます。':'書名・著者などの表示は国立国会図書館の書誌情報に基づきます。','muted'));}
+  if(row.publisher_work_group_kind==='futaba_mnovels_grouping'){if(Number.isInteger(row.source_frame_member_count)&&Number.isInteger(row.verified_bibliographic_member_count))body.append(node('p','保存一覧内の掲載参照 '+row.source_frame_member_count+'件に対し、対応を確認した書誌 '+row.verified_bibliographic_member_count+'件を表示しています。','muted'));body.append(node('p','全媒体・全期間の収録範囲は未確認です。','muted'));}
   if(row.relation_resolution==='original_work_and_story_series_unresolved')body.append(node('p','原作・物語シリーズとの対応は未確認です。','muted'));
   if(row.relation_resolution==='edition_series_membership_verified')body.append(node('p','物語シリーズへの所属を出典で確認済みです。版と原作品は別の項目として扱います。','muted'));
   if(row.relation_resolution==='publisher_work_group_membership_verified')body.append(node('p','出版社の作品グループに掲載された書誌との対応を確認済みです。原作品・物語シリーズの同一性は未確認です。','muted'));

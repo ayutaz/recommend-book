@@ -429,6 +429,8 @@ class LightNovelCatalogue:
         return result
 
     def _project_ndl_series(self, record, cache):
+        if record.get('publisher_series_proof', {}).get('kind') == 'futaba_mnovels_workgroup':
+            return self._project_futaba_workgroup(record, cache)
         from .light_novel_ndl_series_v1 import publisher_assertions, match_bibliography
         if record.get('source') != 'ndl':
             raise ValueError('NDL series source differs')
@@ -476,6 +478,290 @@ class LightNovelCatalogue:
                     'relation_resolution': 'publisher_work_group_and_anchor_verified',
                     'story_series_identity_asserted': False, 'original_work_identity_asserted': False}
                    if earthstar else {})}
+
+    def _futaba_workgroups(self, path, sha256, cache):
+        from .light_novel_futaba_workgroups_v1 import verify_futaba_mnovels_workgroups
+        key = ('futaba_workgroups', str(_resolved_path(path, cache)), sha256)
+        if key not in cache:
+            groups = {}
+            for group in verify_futaba_mnovels_workgroups(path, sha256):
+                reference = group['reference_id']
+                if (not re.fullmatch(r'futaba-grouping-local:[0-9a-f]{64}', reference)
+                        or reference in groups or group['source_unit'] != 'publisher_work_group'
+                        or not group['title'] or group['title'] != group['grouping_title']
+                        or any(group.get(field) is not None for field in
+                               ('authors', 'publisher', 'label', 'form', 'isbn', 'official_lightnovel_tag'))
+                        or group['frame_member_count'] != len(group['members'])
+                        or group['frame_membership_complete'] is not True
+                        or group['global_membership_complete'] is not None
+                        or group['story_series_identity_asserted'] is not False
+                        or group['original_work_identity_asserted'] is not False):
+                    raise ValueError('Futaba source workgroup contract differs')
+                ids = [member['publisher_reference_id'] for member in group['members']]
+                if not ids or len(ids) != len(set(ids)):
+                    raise ValueError('Futaba source workgroup member identity differs')
+                groups[reference] = group
+            cache[key] = groups
+        return cache[key]
+
+    def _futaba_correspondence_state(self, cache):
+        key = ('futaba_workgroup_correspondence_state',)
+        if key not in cache:
+            with self._connect() as db:
+                bindings = [dict(row) for row in db.execute(
+                    'SELECT * FROM publisher_bibliographic_correspondences WHERE provider=?', ('futaba-mnovels',))]
+                stored = {}
+                identities = [row['edition_id'] for row in bindings]
+                for start in range(0, len(identities), 400):
+                    batch = identities[start:start + 400]
+                    stored.update((row['entry_id'], dict(row)) for row in db.execute(
+                        'SELECT * FROM entries WHERE entry_id IN (' + ','.join('?' for _ in batch) + ')', batch))
+            indexed, proofs = {}, {}
+            for binding in bindings:
+                if hashlib.sha256(binding['proof_json'].encode()).hexdigest() != binding['proof_sha256']:
+                    continue
+                try:
+                    proof = json.loads(binding['proof_json'])
+                    references = proof['reference_ids']
+                    if (not references or not isinstance(references, list)
+                            or references != sorted(set(references))):
+                        continue
+                except (ValueError, KeyError, TypeError):
+                    continue
+                proofs[binding['edition_id']] = (binding, proof)
+                for reference in references:
+                    indexed.setdefault(reference, []).append(binding['edition_id'])
+            cache[key] = {'stored': stored, 'proofs': proofs, 'index': indexed}
+        return cache[key]
+
+    def _futaba_verified_correspondence(self, identity, group, cache):
+        from .light_novel_bibliographic_match_v1 import SCOPE
+        snapshot = group['source_scope']['manifest_sha256']
+        key = ('futaba_workgroup_verified_correspondence', identity, snapshot)
+        if key in cache:
+            return cache[key]
+        state = self._futaba_correspondence_state(cache)
+        entry = state['stored'].get(identity)
+        saved = state['proofs'].get(identity)
+        if entry is None or saved is None:
+            return None
+        binding, proof = saved
+        if (proof.get('provider') != 'futaba-mnovels' or proof.get('scope') != SCOPE
+                or proof.get('manifest_sha256') != snapshot
+                or proof.get('edition_record_sha256') != entry['record_sha256']):
+            return None
+        if hashlib.sha256(entry['record_json'].encode()).hexdigest() != entry['record_sha256']:
+            raise ValueError('stored Futaba member metadata SHA mismatch')
+        record = json.loads(entry['record_json'])
+        row = self._project_edition(record, cache)
+        if row['entry_id'] != identity or row['entry_kind'] != entry['kind']:
+            raise ValueError('stored Futaba member typed identity differs')
+        source_key = ('futaba_workgroup_formal_references', str(_resolved_path(proof['manifest_path'], cache)), snapshot)
+        if source_key not in cache:
+            references = self._publisher_bibliography_references('futaba-mnovels', proof['manifest_path'], snapshot)
+            document = {ref['publisher_reference_id']: ref for ref in references}
+            if len(document) != len(references):
+                raise ValueError('duplicate formal Futaba reference')
+            cache[source_key] = document
+        document = cache[source_key]
+        if any(reference not in document for reference in proof['reference_ids']):
+            return None
+        parts = self._edition_primary_bibliographic_parts(record, cache)
+        matches = [self._publisher_bibliographic_match('futaba-mnovels', document[reference], parts, cache)
+                   for reference in proof['reference_ids']]
+        if any(match is None for match in matches) or matches != proof.get('matches'):
+            return None
+        result = {'entry': entry, 'record': record, 'row': row, 'binding': binding, 'references': document}
+        cache[key] = result
+        return result
+
+    def _futaba_group_members(self, group, cache):
+        key = ('futaba_workgroup_members', group['reference_id'], group['source_scope']['manifest_sha256'])
+        if key not in cache:
+            state = self._futaba_correspondence_state(cache)
+            result = {}
+            for member in group['members']:
+                reference = member['publisher_reference_id']
+                for identity in state['index'].get(reference, ()):
+                    verified = self._futaba_verified_correspondence(identity, group, cache)
+                    if verified is None:
+                        continue
+                    formal = verified['references'][reference]
+                    if any(member.get(field) != value for field, value in formal.items()):
+                        continue
+                    result.setdefault(identity, {**verified, 'publisher_reference_ids': []})['publisher_reference_ids'].append(reference)
+            for member in result.values():
+                member['publisher_reference_ids'] = sorted(set(member['publisher_reference_ids']))
+            cache[key] = result
+        return cache[key]
+
+    def _project_futaba_workgroup(self, record, cache):
+        proof = record['publisher_series_proof']
+        group = self._futaba_workgroups(proof['manifest_path'], proof['manifest_sha256'], cache).get(proof['reference_id'])
+        if group is None or record.get('title') != group['title']:
+            raise ValueError('Futaba workgroup title/source reference differs')
+        members = self._futaba_group_members(group, cache)
+        identities = record['member_edition_ids']
+        anchor_id = 'lne:ndl:' + record['id']
+        if (record.get('source') != 'ndl' or not identities or identities != sorted(set(identities))
+                or anchor_id not in identities or any(identity not in members for identity in identities)):
+            raise ValueError('Futaba workgroup has no authenticated NDL anchor/member')
+        anchor = members[anchor_id]
+        if (record['anchor_edition_record'] != anchor['record']
+                or proof['anchor_record_sha256'] != anchor['entry']['record_sha256']
+                or proof['anchor_correspondence_sha256'] != anchor['binding']['proof_sha256']):
+            raise ValueError('Futaba workgroup anchor proof differs')
+        base = anchor['row']
+        identity = _entry('lns:ndl:' + record['id'])
+        return {**base, 'entry_id': identity, 'work_id': identity, 'entry_kind': 'series',
+            'title': group['title'], 'aliases': [], 'authors': [], 'publishers': [], 'genres': [], 'subjects': [],
+            'original_language': None, 'language': None, 'year': None, 'volume': None, 'isbn': [], 'publication_label': None,
+            'light_novel_confirmed': False, 'label_candidate': False, 'classification_scope': 'series',
+            'admission_status': 'publisher_work_group_verified', 'relation_resolution': 'publisher_work_group_and_anchor_verified',
+            'series_identity_basis': 'publisher_work_group_and_ndl_bibliography', 'series_title_source': 'publisher_explicit_work_group',
+            'publisher_work_group_kind': 'futaba_mnovels_grouping', 'series_assertion_source_url': group['source_url'],
+            'source_url': group['source_url'], 'publisher_series_reference_id': group['reference_id'],
+            'title_origin': {'kind': 'publisher_explicit_work_group', 'source_url': group['source_url'], 'locator': 'own grouping field'},
+            'source_frame_member_count': group['frame_member_count'], 'verified_bibliographic_member_count': len(identities),
+            'frame_membership_complete': group['frame_membership_complete'],
+            'exact_grouping_filter_complete': group['exact_grouping_filter_complete'], 'global_membership_complete': None,
+            'story_series_identity_asserted': False, 'original_work_identity_asserted': False,
+            'source_attributions': [{'source': 'publisher', 'provider': 'futaba-mnovels', 'source_url': group['source_url'],
+                'scope': 'publisher_work_group_source_frames', 'credit': '作品グループ名・保存枠内の掲載参照: 双葉社の書籍一覧'},
+                *[{**source, 'scope': 'publisher_work_group_member_bibliographic_anchor'} for source in base['source_attributions']]],
+            'content_sources': [], 'relations': {prop: [] for prop in RELATIONS}, 'recommendable': False}
+
+    @staticmethod
+    def _futaba_workgroup_membership(record, record_sha256, identity, member):
+        proof = record['publisher_series_proof']
+        return {'kind': 'futaba_mnovels_workgroup_membership', 'scope': 'publisher_work_group_source_frame_only',
+            'edition_record_sha256': member['entry']['record_sha256'], 'series_record_sha256': record_sha256,
+            'correspondence_proof_sha256': member['binding']['proof_sha256'],
+            'edition_id': identity, 'series_entry_id': 'lns:ndl:' + record['id'],
+            'reference_id': proof['reference_id'], 'manifest_path': proof['manifest_path'],
+            'manifest_sha256': proof['manifest_sha256'], 'publisher_reference_ids': member['publisher_reference_ids'],
+            'story_series_identity_asserted': False, 'original_work_identity_asserted': False}
+
+    def import_futaba_mnovels_workgroups(self, manifest_path, expected_sha256, *, reference_ids=None):
+        """Admit source-scoped M groups through existing exact product correspondences.
+
+        Existing group records and single-parent relations are immutable here;
+        a changed proof or occupied anchor is held for separate review.
+        """
+        cache = {}
+        path = str(_resolved_path(manifest_path, cache))
+        groups = self._futaba_workgroups(path, expected_sha256, cache)
+        if isinstance(reference_ids, (str, bytes)):
+            raise ValueError('an explicit workgroup reference collection is required')
+        requested = list(groups) if reference_ids is None else list(reference_ids)
+        if len(requested) != len(set(requested)) or set(requested) - groups.keys():
+            raise ValueError('unknown or duplicate Futaba workgroup reference')
+        result = {'source_groups': len(groups), 'requested_groups': len(requested), 'inserted': 0, 'unchanged': 0,
+                  'linked': 0, 'unchanged_memberships': 0, 'held': 0, 'held_reasons': {}}
+        def hold(reason):
+            result['held'] += 1
+            result['held_reasons'][reason] = result['held_reasons'].get(reason, 0) + 1
+        with self._connect() as db:
+            parents = {row['edition_id']: dict(row) for row in db.execute('SELECT * FROM edition_series_memberships')}
+            occupied = {row['entry_id']: dict(row) for row in db.execute(
+                "SELECT * FROM entries WHERE kind='series' OR entry_id LIKE 'lns:ndl:%'")}
+        reference_groups = {}
+        for reference, group in groups.items():
+            for member in group['members']:
+                reference_groups.setdefault(member['publisher_reference_id'], set()).add(reference)
+        claims = {}
+        for identity, (_, proof) in self._futaba_correspondence_state(cache)['proofs'].items():
+            claims[identity] = set().union(*(reference_groups.get(reference, set()) for reference in proof['reference_ids']))
+        existing = {}
+        for identity, entry in occupied.items():
+            record = json.loads(entry['record_json'])
+            proof = record.get('publisher_series_proof', {})
+            if proof.get('kind') == 'futaba_mnovels_workgroup':
+                if hashlib.sha256(entry['record_json'].encode()).hexdigest() != entry['record_sha256']:
+                    raise ValueError('stored Futaba group SHA mismatch')
+                existing.setdefault(proof['reference_id'], []).append((identity, entry, record))
+        proposals = []
+        for reference in requested:
+            group = groups[reference]
+            members = self._futaba_group_members(group, cache)
+            previous = existing.get(reference, [])
+            if len(previous) > 1:
+                hold('ambiguous_existing_group_anchor')
+                continue
+            prior_id = previous[0][0] if previous else None
+            available = {identity: member for identity, member in members.items()
+                         if len(claims.get(identity, ())) == 1
+                         and (identity not in parents or parents[identity]['series_id'] == prior_id)}
+            if not available:
+                hold('no_unconflicted_verified_ndl_member')
+                continue
+            if previous:
+                group_id, old_entry, record = previous[0]
+                proof = record['publisher_series_proof']
+                if (proof['manifest_path'] != path or proof['manifest_sha256'] != expected_sha256
+                        or any(identity not in available for identity in record['member_edition_ids'])):
+                    hold('existing_group_proof_conflict')
+                    continue
+            else:
+                anchors = [identity for identity in available if 'lns:ndl:' + identity.removeprefix('lne:ndl:') not in occupied]
+                if not anchors:
+                    hold('existing_anchor_conflict')
+                    continue
+                anchor_id = min(anchors)
+                anchor = available[anchor_id]
+                record = {'schema_version': 'light-novel-ndl-series-v1', 'source': 'ndl', 'id': anchor['record']['id'],
+                    'title': group['title'], 'anchor_edition_record': anchor['record'], 'member_edition_ids': sorted(available),
+                    'publisher_series_proof': {'kind': 'futaba_mnovels_workgroup', 'manifest_path': path,
+                        'manifest_sha256': expected_sha256, 'reference_id': reference,
+                        'anchor_record_sha256': anchor['entry']['record_sha256'],
+                        'anchor_correspondence_sha256': anchor['binding']['proof_sha256']}}
+                group_id, old_entry = 'lns:ndl:' + record['id'], None
+            self._project_futaba_workgroup(record, cache)
+            encoded = _json(record)
+            digest = hashlib.sha256(encoded.encode()).hexdigest()
+            if old_entry is not None and old_entry['record_sha256'] != digest:
+                hold('existing_group_proof_conflict')
+                continue
+            selected = {identity: available[identity] for identity in record['member_edition_ids']}
+            links = {identity: _json(self._futaba_workgroup_membership(record, digest, identity, member))
+                     for identity, member in selected.items()}
+            if any(identity in parents and (parents[identity]['series_id'] != group_id
+                    or parents[identity]['proof_json'] != text
+                    or parents[identity]['proof_sha256'] != hashlib.sha256(text.encode()).hexdigest())
+                   for identity, text in links.items()):
+                hold('existing_member_proof_conflict')
+                continue
+            proposals.append((group_id, old_entry, encoded, digest, selected, links))
+            occupied[group_id] = {'entry_id': group_id}
+        with self._connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            for group_id, previous, encoded, digest, selected, links in proposals:
+                current = db.execute('SELECT kind,record_sha256 FROM entries WHERE entry_id=?', (group_id,)).fetchone()
+                if (previous is None and current is not None or previous is not None and
+                        (current is None or tuple(current) != (previous['kind'], previous['record_sha256']))):
+                    raise ValueError('Futaba group metadata changed during import')
+                for identity, member in selected.items():
+                    current = db.execute('SELECT kind,record_sha256 FROM entries WHERE entry_id=?', (identity,)).fetchone()
+                    binding = db.execute('SELECT proof_sha256 FROM publisher_bibliographic_correspondences '
+                        'WHERE edition_id=? AND provider=?', (identity, 'futaba-mnovels')).fetchone()
+                    parent = db.execute('SELECT * FROM edition_series_memberships WHERE edition_id=?', (identity,)).fetchone()
+                    if (current is None or tuple(current) != (member['entry']['kind'], member['entry']['record_sha256'])
+                            or binding is None or binding[0] != member['binding']['proof_sha256']
+                            or (dict(parent) if parent else None) != parents.get(identity)):
+                        raise ValueError('Futaba member evidence or parent changed during import')
+                if previous is None:
+                    db.execute('INSERT INTO entries VALUES(?,?,?,?)', (group_id, 'series', encoded, digest))
+                    result['inserted'] += 1
+                else:
+                    result['unchanged'] += 1
+                for identity, text in links.items():
+                    if identity in parents:
+                        result['unchanged_memberships'] += 1
+                    else:
+                        db.execute('INSERT INTO edition_series_memberships VALUES(?,?,?,?)',
+                            (identity, group_id, text, hashlib.sha256(text.encode()).hexdigest()))
+                        result['linked'] += 1
+        return result
 
     def _source_with_title_parts(self, edition, cache):
         """Parse only explicit ISBD separators in reproduced RDF title fields."""
@@ -653,8 +939,9 @@ class LightNovelCatalogue:
         return result
 
     def _ndl_membership_candidates(self, rows, stored, cache):
-        series_rows = [r for r in rows if r['entry_id'].startswith('lns:ndl:')]
         records = {key: json.loads(value['record_json']) for key, value in stored.items()}
+        series_rows = [r for r in rows if r['entry_id'].startswith('lns:ndl:')
+                       and records[r['entry_id']].get('publisher_series_proof', {}).get('kind') != 'futaba_mnovels_workgroup']
         index, explicit_index = {}, {}
         for series in series_rows:
             index.setdefault(normalize_search(series['title']), []).append(series)
@@ -1896,6 +2183,19 @@ class LightNovelCatalogue:
                         or stored[edition_id]['record_sha256'] != proof['edition_record_sha256']
                         or stored[series_id]['record_sha256'] != proof['series_record_sha256']):
                     continue
+                if proof.get('kind') == 'futaba_mnovels_workgroup_membership':
+                    record = json.loads(stored[series_id]['record_json'])
+                    source = record['publisher_series_proof']
+                    group = self._futaba_workgroups(source['manifest_path'], source['manifest_sha256'], cache).get(source['reference_id'])
+                    member = self._futaba_group_members(group, cache).get(edition_id) if group else None
+                    if (member is None or edition_id not in record['member_edition_ids']
+                            or proof != self._futaba_workgroup_membership(record, stored[series_id]['record_sha256'], edition_id, member)):
+                        continue
+                    indexed[edition_id].update(series_entry_id=series_id, volume_number=None,
+                        relation_resolution='publisher_work_group_membership_verified',
+                        admission_status='publisher_work_group_membership_verified',
+                        story_series_identity_asserted=False, original_work_identity_asserted=False)
+                    continue
                 if proof.get('kind') == 'publisher_ndl_series_membership':
                     key = ('publisher_ndl_series_memberships',)
                     if key not in plans:
@@ -2018,7 +2318,8 @@ class LightNovelCatalogue:
                       *[t['value'] for t in source.get('titles', [])],
                       *source.get('extra', {}).get('title_readings', [])]
             if (record.get('publisher_series_proof', {}).get('cobalt_series_path')
-                    or record.get('publisher_series_proof', {}).get('earthstar_series_path')) and record.get('title'):
+                    or record.get('publisher_series_proof', {}).get('earthstar_series_path')
+                    or record.get('publisher_series_proof', {}).get('kind') == 'futaba_mnovels_workgroup') and record.get('title'):
                 titles.append(record['title'])
             authors = [a.get('label', '') if isinstance(a, dict) else a for a in base.get('authors', [])]
             values[identity] = normalize_search(' '.join([*titles, *authors]))
@@ -2184,7 +2485,9 @@ class LightNovelCatalogue:
                            'light_novel_confirmed', 'admission_status', 'language', 'original_language',
                            'relation_resolution', 'volume', 'volume_number', 'publication_label', 'series_entry_id',
                            'series_membership_evidence', 'series_identity_basis', 'series_title_source',
-                           'story_series_identity_asserted', 'original_work_identity_asserted')
+                           'story_series_identity_asserted', 'original_work_identity_asserted',
+                           'publisher_work_group_kind', 'source_frame_member_count', 'verified_bibliographic_member_count',
+                           'frame_membership_complete', 'exact_grouping_filter_complete', 'global_membership_complete')
             row['members'] = [{k: r[k] for k in member_keys if k in r}
                               for r in rows if r['entry_id'] != entry_id and families[r['entry_id']] == families[entry_id]]
             row['members'].sort(key=lambda r: (r.get('volume_number') or 0, r['title'], r['entry_id']))

@@ -225,6 +225,62 @@ def test_publisher_work_group_scope_cannot_be_exported_as_a_story_series(basis, 
     assert 'PRIVATE-SENTINEL' not in json.dumps(result)
 
 
+def test_mnovels_group_public_scope_keeps_unknowns_and_separates_reference_counts():
+    row = {'entry_id': 'lns:ndl:R100000002-I1', 'entry_kind': 'series',
+        'series_identity_basis': 'publisher_work_group_and_ndl_bibliography',
+        'series_title_source': 'publisher_explicit_work_group',
+        'publisher_work_group_kind': 'futaba_mnovels_grouping', 'light_novel_confirmed': False,
+        'authors': [], 'source_frame_member_count': 21, 'verified_bibliographic_member_count': 3,
+        'frame_membership_complete': True, 'exact_grouping_filter_complete': None,
+        'global_membership_complete': None, 'grouping_source': {'raw_path': 'PRIVATE-SENTINEL'}}
+    result = public_work(row)
+    for key in ('publisher_work_group_kind', 'source_frame_member_count',
+                'verified_bibliographic_member_count', 'frame_membership_complete',
+                'exact_grouping_filter_complete', 'global_membership_complete'):
+        assert result[key] == row[key]
+    assert result['light_novel_confirmed'] is False
+    assert result['authors'] == []
+    assert result['story_series_identity_asserted'] is False
+    assert 'PRIVATE-SENTINEL' not in json.dumps(result)
+    parent = public_work({'entry_id': 'lne:ndl:R100000002-I2', 'entry_kind': 'edition',
+                          'members': [row]})['members'][0]
+    assert parent['publisher_work_group_kind'] == 'futaba_mnovels_grouping'
+    assert parent['source_frame_member_count'] == 21
+    assert parent['global_membership_complete'] is None
+    assert 'PRIVATE-SENTINEL' not in json.dumps(parent)
+
+
+@pytest.mark.parametrize('value', [True, -1, '2', 1.5, {'raw_path': 'PRIVATE-SENTINEL'}])
+def test_mnovels_group_public_scope_rejects_noncounts_and_nonbooleans(value):
+    result = public_work({'entry_id': 'lns:ndl:R100000002-I1', 'entry_kind': 'series',
+        'series_identity_basis': 'publisher_work_group_and_ndl_bibliography',
+        'series_title_source': 'publisher_explicit_work_group',
+        'publisher_work_group_kind': 'futaba_mnovels_grouping',
+        'source_frame_member_count': value, 'verified_bibliographic_member_count': value,
+        'frame_membership_complete': value, 'exact_grouping_filter_complete': value,
+        'global_membership_complete': value})
+    assert 'source_frame_member_count' not in result
+    assert 'verified_bibliographic_member_count' not in result
+    for key in ('frame_membership_complete', 'exact_grouping_filter_complete', 'global_membership_complete'):
+        assert (key in result) is isinstance(value, bool)
+    assert 'PRIVATE-SENTINEL' not in json.dumps(result)
+
+
+@pytest.mark.parametrize(('kind', 'basis', 'marker'), [
+    ('edition', 'publisher_work_group_and_ndl_bibliography', 'publisher_explicit_work_group'),
+    ('series', 'publisher_series_and_ndl_bibliography', 'publisher_explicit_work_group'),
+    ('series', 'publisher_work_group_and_ndl_bibliography', 'publisher_explicit_group'),
+])
+def test_mnovels_group_scope_is_not_exported_for_a_different_identity(kind, basis, marker):
+    result = public_work({'entry_id': 'lns:ndl:R100000002-I1', 'entry_kind': kind,
+        'series_identity_basis': basis, 'series_title_source': marker,
+        'publisher_work_group_kind': 'futaba_mnovels_grouping',
+        'source_frame_member_count': 21, 'frame_membership_complete': True})
+    assert 'publisher_work_group_kind' not in result
+    assert 'source_frame_member_count' not in result
+    assert 'frame_membership_complete' not in result
+
+
 def test_publisher_work_group_http_preserves_scope_members_and_separate_statistics(site, monkeypatch):
     base, catalogue = site
     identifier = 'lns:ndl:R100000002-I032593374'

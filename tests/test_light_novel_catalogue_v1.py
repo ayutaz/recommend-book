@@ -3470,3 +3470,219 @@ def test_shueisha_dx_fallback_integration_never_saves_missing_subtitle_or_change
         cat.confirm_publisher_editions('shueisha-dx', manifest, sha)
     with cat._connect() as db:
         assert db.execute('SELECT count(*) FROM edition_book_confirmations').fetchone()[0] == 0
+
+
+@pytest.fixture
+def futaba_workgroup_integration(futaba_mnovels_integration, monkeypatch, tmp_path):
+    from copy import deepcopy
+    from pathlib import Path
+    from recommend_book import light_novel_futaba_workgroups_v1 as verifier
+    cat, first, refs, m_path, m_sha, add_second = futaba_mnovels_integration
+
+    def group(title, members):
+        natural = {'snapshot': m_sha, 'frame': 'mnovels', 'label': 12, 'literal': title}
+        copied = []
+        for row in members:
+            copied.append({**deepcopy(row), 'grouping_source_literal': title, 'grouping_no_source_literal': 999,
+                'grouping_no_semantics': 'unknown_not_an_independent_volume_number',
+                'group_membership_evidence': {'source_url': row['source_evidence'][0]['source_url'],
+                    'raw_sha256': 'a' * 64, 'locator': '/books/book_informations/0/grouping',
+                    'grouping_no_locator': '/books/book_informations/0/grouping_no'}})
+        return {'kind': 'official_publisher_field_work_group_reference', 'source_unit': 'publisher_work_group',
+            'reference_id': 'futaba-grouping-local:' + hashlib.sha256(json.dumps(natural, sort_keys=True).encode()).hexdigest(),
+            'reference_id_kind': 'local_hash_of_publisher_source_field_key', 'reference_id_is_official': False,
+            'independent_official_group_id': None, 'title': title, 'grouping_title': title,
+            'source_url': members[0]['source_scope_membership']['rendered_index_url'],
+            'source_scope': {'kind': 'fixed_mnovels_and_mnovels_f_label_frames', 'label_ids': [12],
+                             'source_frame_id': 'mnovels', 'manifest_sha256': m_sha},
+            'authors': None, 'publisher': None, 'label': None, 'form': None, 'isbn': None,
+            'official_lightnovel_tag': None, 'story_series_asserted': False, 'story_series_identity_asserted': False,
+            'original_work_identity_asserted': False, 'independent_volume_numbers_inferred': False,
+            'paper_electronic_same_edition_asserted': False, 'members': copied,
+            'frame_member_count': len(copied), 'frame_membership_complete': True,
+            'exact_grouping_filter_complete': None, 'global_membership_complete': None,
+            'grouping_search_url': None, 'source_evidence': [r['group_membership_evidence'] for r in copied]}
+
+    groups = [group('架空Ａ作品群', [refs[0]])]
+    path = tmp_path / 'm-workgroups.json'
+    sha = write(path, {'synthetic_source_marker': 'workgroups.marker'})
+    (tmp_path / 'workgroups.marker').write_text('valid synthetic group source', encoding='utf-8')
+    calls = []
+    def verify(manifest, expected):
+        manifest = Path(manifest).resolve()
+        calls.append((str(manifest), expected))
+        if hashlib.sha256(manifest.read_bytes()).hexdigest() != expected:
+            raise ValueError('synthetic workgroup manifest SHA differs')
+        marker = json.loads(manifest.read_text(encoding='utf-8'))['synthetic_source_marker']
+        if (manifest.parent / marker).read_text(encoding='utf-8') != 'valid synthetic group source':
+            raise ValueError('synthetic relative workgroup raw changed')
+        return deepcopy(groups)
+    monkeypatch.setattr(verifier, 'verify_futaba_mnovels_workgroups', verify)
+    return cat, first, refs, m_path, m_sha, add_second, groups, path, sha, calls, group
+
+
+def test_futaba_workgroup_admits_only_ndl_correspondences_and_replays_unknown_parent_fields(futaba_workgroup_integration):
+    from copy import deepcopy
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    cat, first, refs, m_path, m_sha, add_second, groups, path, sha, calls, group = futaba_workgroup_integration
+    add_second()
+    unbound = deepcopy(refs[0])
+    unbound.update(publisher_reference_id='futaba-product:unbound', source_url='https://www.futabasha.co.jp/book/unbound?type=1')
+    groups[:] = [group('架空Ａ作品群', [*refs, unbound])]
+    assert cat.correlate_publisher_bibliographies('futaba-mnovels', m_path, m_sha)['new_correspondences'] == 2
+    result = cat.import_futaba_mnovels_workgroups(path, sha)
+    assert result['inserted'] == 1 and result['linked'] == 2
+    assert len(calls) == 1
+    repeated = cat.import_futaba_mnovels_workgroups(path, sha)
+    assert repeated['unchanged'] == 1 and repeated['unchanged_memberships'] == 2
+    search = cat.search_catalogue('架空Ａ作品群')
+    assert search['total'] == 1
+    row = cat.work_detail('lns:ndl:' + first['id'])
+    assert row['title'] == groups[0]['title'] and row['authors'] == row['publishers'] == row['aliases'] == []
+    assert row['year'] is row['original_language'] is row['language'] is row['volume'] is None
+    assert row['isbn'] == row['genres'] == [] and row['light_novel_confirmed'] is False
+    assert row['publisher_work_group_kind'] == 'futaba_mnovels_grouping'
+    assert row['source_frame_member_count'] == 3 and row['verified_bibliographic_member_count'] == 2
+    assert row['frame_membership_complete'] is True and row['global_membership_complete'] is None
+    assert len(row['members']) == 2 and all(r['volume_number'] is None for r in row['members'])
+    assert all(r['light_novel_confirmed'] is False for r in row['members'])
+    public = public_work(row)
+    assert public['publisher_work_group_kind'] == 'futaba_mnovels_grouping'
+    assert public['source_frame_member_count'] == 3 and len(public['members']) == 2
+    child = public_work(cat.work_detail('lne:ndl:' + first['id']))
+    parent = next(member for member in child['members'] if member['entry_kind'] == 'series')
+    assert parent['publisher_work_group_kind'] == 'futaba_mnovels_grouping'
+    assert parent['source_frame_member_count'] == 3 and parent['verified_bibliographic_member_count'] == 2
+    assert 'raw_path' not in json.dumps(public) and 'proof_json' not in json.dumps(public)
+    stats = cat.catalogue_stats()
+    assert stats['series'] == 0 and stats['publisher_work_groups'] == 1
+
+
+def test_futaba_workgroup_revalidates_every_match_in_an_existing_correspondence(futaba_workgroup_integration):
+    cat, _, refs, m_path, m_sha, add_second, _, path, sha, _, _ = futaba_workgroup_integration
+    add_second()
+    cat.correlate_publisher_bibliographies('futaba-mnovels', m_path, m_sha)
+    with cat._connect() as db:
+        binding = db.execute('SELECT * FROM publisher_bibliographic_correspondences ORDER BY edition_id').fetchone()
+        proof = json.loads(binding['proof_json'])
+        proof['reference_ids'].append(refs[1]['publisher_reference_id'])
+        proof['matches'].append(dict(proof['matches'][0], publisher_reference_id=refs[1]['publisher_reference_id']))
+        encoded = json.dumps(proof, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+        db.execute('UPDATE publisher_bibliographic_correspondences SET proof_json=?,proof_sha256=? WHERE edition_id=?',
+                   (encoded, hashlib.sha256(encoded.encode()).hexdigest(), binding['edition_id']))
+    result = cat.import_futaba_mnovels_workgroups(path, sha)
+    assert result['inserted'] == 0 and result['held'] == 1
+    with cat._connect() as db:
+        assert db.execute("SELECT count(*) FROM entries WHERE kind='series'").fetchone()[0] == 0
+
+
+def test_futaba_workgroup_exact_title_cannot_become_stored_authority_after_rehash(futaba_workgroup_integration):
+    cat, first, _, m_path, m_sha, _, _, path, sha, _, _ = futaba_workgroup_integration
+    cat.correlate_publisher_bibliographies('futaba-mnovels', m_path, m_sha)
+    cat.import_futaba_mnovels_workgroups(path, sha)
+    identity = 'lns:ndl:' + first['id']
+    with cat._connect() as db:
+        record = json.loads(db.execute('SELECT record_json FROM entries WHERE entry_id=?', (identity,)).fetchone()[0])
+        record['title'] = '原資料にない作品群'
+        encoded = json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+        db.execute('UPDATE entries SET record_json=?,record_sha256=? WHERE entry_id=?',
+                   (encoded, hashlib.sha256(encoded.encode()).hexdigest(), identity))
+    with pytest.raises(ValueError, match='title|group'):
+        cat.work_detail(identity)
+
+
+def test_futaba_workgroup_never_overwrites_an_existing_parent_or_anchor(futaba_workgroup_integration):
+    cat, first, _, m_path, m_sha, _, _, path, sha, _, _ = futaba_workgroup_integration
+    cat.correlate_publisher_bibliographies('futaba-mnovels', m_path, m_sha)
+    parent_id = 'lns:ndl:' + first['id']
+    protected = json.dumps({'protected_old_parent': True})
+    with cat._connect() as db:
+        db.execute('INSERT INTO entries VALUES(?,?,?,?)',
+                   (parent_id, 'series', protected, hashlib.sha256(protected.encode()).hexdigest()))
+        db.execute('INSERT INTO edition_series_memberships VALUES(?,?,?,?)',
+                   ('lne:ndl:' + first['id'], parent_id, '{}', hashlib.sha256(b'{}').hexdigest()))
+        before = [tuple(r) for r in db.execute('SELECT * FROM entries')]
+        old_links = [tuple(r) for r in db.execute('SELECT * FROM edition_series_memberships')]
+    result = cat.import_futaba_mnovels_workgroups(path, sha)
+    assert result['inserted'] == result['linked'] == 0 and result['held'] == 1
+    with cat._connect() as db:
+        assert [tuple(r) for r in db.execute('SELECT * FROM entries')] == before
+        assert [tuple(r) for r in db.execute('SELECT * FROM edition_series_memberships')] == old_links
+
+
+def test_futaba_workgroup_holds_ambiguous_cross_group_correspondence_without_partial_write(futaba_workgroup_integration):
+    cat, _, refs, m_path, m_sha, _, groups, path, sha, _, group = futaba_workgroup_integration
+    cat.correlate_publisher_bibliographies('futaba-mnovels', m_path, m_sha)
+    groups.append(group('別の明示作品群', [refs[0]]))
+    with cat._connect() as db:
+        before = [tuple(row) for row in db.execute('SELECT * FROM entries')]
+    result = cat.import_futaba_mnovels_workgroups(path, sha)
+    assert result['inserted'] == result['linked'] == 0 and result['held'] == 2
+    with cat._connect() as db:
+        assert [tuple(row) for row in db.execute('SELECT * FROM entries')] == before
+        assert db.execute('SELECT count(*) FROM edition_series_memberships').fetchone()[0] == 0
+
+
+def test_futaba_workgroup_authenticates_later_candidate_raw_before_any_group_write(futaba_workgroup_integration):
+    cat, _, refs, m_path, m_sha, add_second, groups, path, sha, _, group = futaba_workgroup_integration
+    second_raw = add_second()
+    cat.correlate_publisher_bibliographies('futaba-mnovels', m_path, m_sha)
+    groups.append(group('別の明示作品群', [refs[1]]))
+    second_raw.write_bytes(b'changed corresponding NDL raw')
+    with pytest.raises(ValueError, match='SHA|hash'):
+        cat.import_futaba_mnovels_workgroups(path, sha)
+    with cat._connect() as db:
+        assert db.execute("SELECT count(*) FROM entries WHERE kind='series'").fetchone()[0] == 0
+        assert db.execute('SELECT count(*) FROM edition_series_memberships').fetchone()[0] == 0
+
+
+def test_futaba_workgroup_membership_does_not_propagate_classification_history_or_features(futaba_workgroup_integration, monkeypatch):
+    cat, first, _, m_path, m_sha, _, _, path, sha, _, _ = futaba_workgroup_integration
+    identity = 'lne:ndl:' + first['id']
+    cat.correlate_publisher_bibliographies('futaba-mnovels', m_path, m_sha)
+    with cat._connect() as db:
+        db.execute('INSERT INTO read_status VALUES(?,?,?)', (identity, 'read', 'synthetic-time'))
+        db.execute('INSERT INTO features VALUES(?,?,?)', (identity, 'unavailable-feature-source', 'f' * 64))
+        history = [tuple(r) for r in db.execute('SELECT * FROM read_status')]
+        features = [tuple(r) for r in db.execute('SELECT * FROM features')]
+    cat.import_futaba_mnovels_workgroups(path, sha)
+    original = cat._attach_book_confirmations
+    def independently_confirmed(rows, stored, cache):
+        original(rows, stored, cache)
+        for row in rows:
+            if row['entry_id'] == identity:
+                row['light_novel_confirmed'] = True
+    monkeypatch.setattr(cat, '_attach_book_confirmations', independently_confirmed)
+    row = cat.work_detail('lns:ndl:' + first['id'])
+    assert row['light_novel_confirmed'] is False and row['read_status'] == 'unknown'
+    assert row['members'][0]['light_novel_confirmed'] is True and row['members'][0]['read_status'] == 'read'
+    assert row['llm_features'] == []
+    with cat._connect() as db:
+        assert [tuple(r) for r in db.execute('SELECT * FROM read_status')] == history
+        assert [tuple(r) for r in db.execute('SELECT * FROM features')] == features
+
+
+def test_futaba_workgroup_operation_cache_is_scoped_by_manifest_path_and_reads_only_candidates(futaba_workgroup_integration, tmp_path):
+    from copy import deepcopy
+    from pathlib import Path
+    cat, first, _, m_path, m_sha, add_second, _, path, sha, calls, _ = futaba_workgroup_integration
+    cat.correlate_publisher_bibliographies('futaba-mnovels', m_path, m_sha)
+    add_second().write_bytes(b'unrelated edition raw deliberately unavailable')
+    assert cat.import_futaba_mnovels_workgroups(path, sha)['inserted'] == 1
+    assert len(calls) == 1
+    with cat._connect() as db:
+        record = json.loads(db.execute('SELECT record_json FROM entries WHERE entry_id=?',
+                                      ('lns:ndl:' + first['id'],)).fetchone()[0])
+    cache = {}
+    cat._project(record, cache)
+    cat._project(record, cache)
+    assert len(calls) == 2  # One source verification in each operation, not per group/member.
+    second_root = tmp_path / 'same-manifest-another-root'
+    second_root.mkdir()
+    second = second_root / path.name
+    second.write_bytes(path.read_bytes())
+    (second_root / 'workgroups.marker').write_text('different relative source', encoding='utf-8')
+    changed = deepcopy(record)
+    changed['publisher_series_proof']['manifest_path'] = str(second)
+    with pytest.raises(ValueError, match='relative.*raw'):
+        cat._project(changed, cache)
