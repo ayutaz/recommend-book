@@ -5,12 +5,22 @@ from types import SimpleNamespace
 
 import pytest
 
-from recommend_book.light_novel_site_backend_v1 import UnifiedCatalogue
+from recommend_book.light_novel_site_backend_v1 import UnifiedCatalogue, _light_id
 from test_light_novel_catalogue_v1 import (
     futaba_source_group_bundle, futaba_source_raw, membership_bundle, edition_bundle, setup_catalogue,
     orange_source_group_bundle, ecobalt_source_group_bundle, sbcr_source_group_bundle, hj_source_group_bundle,
     arian_source_group_bundle, hjnovels_source_group_bundle, sbcrindex_source_group_bundle,
 )
+
+
+@pytest.mark.parametrize('identifier', [
+    'lnr:pub:ecobalt:' + 'a' * 32,
+    'lnr:pub:futaba:' + 'b' * 32,
+])
+def test_publisher_reference_identity_accepts_only_admitted_provider(identifier):
+    assert _light_id(identifier) is True
+    with pytest.raises(ValueError):
+        _light_id('lnr:pub:unknown:' + 'c' * 32)
 
 
 @pytest.mark.parametrize('source_keys', [('genres', 'languages'), (), ('genres',)])

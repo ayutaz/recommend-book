@@ -87,6 +87,156 @@ def ecobalt_source_group_bundle(tmp_path):
 
 
 @pytest.fixture
+def futaba_publisher_reference_bundle(tmp_path):
+    from test_light_novel_futaba_references_v1 import m_grouping_fixture
+    from recommend_book.light_novel_futaba_references_v1 import verify_futaba_mnovels_ungrouped_references
+    root = tmp_path / 'futaba-leaf-raw'
+    root.mkdir()
+    env = m_grouping_fixture(root)
+    rows = verify_futaba_mnovels_ungrouped_references(env['path'], env['sha'])
+    return LightNovelCatalogue(tmp_path / 'futaba-leaf.sqlite'), env, env['path'], env['sha'], rows
+
+
+def test_futaba_publisher_references_require_explicit_selection_and_preserve_metadata_unknowns(futaba_publisher_reference_bundle):
+    cat, _, path, sha, rows = futaba_publisher_reference_bundle
+    selected = [row['publisher_reference_id'] for row in rows[:21]]
+    result = cat.import_futaba_publisher_references(path, sha, reference_ids=selected)
+    assert result['source_references'] == 26 and result['requested_references'] == result['inserted'] == 21
+    assert set(result['reference_entries']) == set(selected) and result['held'] == 0
+    identity = result['reference_entries'][selected[0]]
+    assert identity.startswith('lnr:pub:futaba:')
+    row = cat.work_detail(identity)
+    assert row['publisher_reference_kind'] == 'futaba_mnovels_product_reference' and row['entry_kind'] == 'publisher_reference'
+    assert row['title'] == rows[0]['title'] and row['source_url'] == rows[0]['source_url']
+    assert row['isbn'] == [] and row['publication_label'] == 'Ｍノベルス'
+    assert row['authors'] == row['members'] == row['genres'] == row['native_features'] == []
+    assert not row['light_novel_confirmed'] and not row['edition_identity_asserted'] and not row['actual_work_identity_asserted']
+    product = row['publisher_product_reference']
+    assert product['form'] == '単行本' and product['label'] == 'Ｍノベルス' and product['media_references'] == []
+    assert product['credits'][0]['role'] == 'unknown' and product['credit_literals'][0]['role_literal'] is None
+    known = cat.work_detail(result['reference_entries'][selected[1]])
+    assert known['isbn'] == [rows[1]['isbn']]
+    assert cat.search_catalogue('架空著者')['total'] == sum(any(c['role'] == 'author' and c['name'] == '架空著者' for c in r['credits']) for r in rows[:21])
+    assert cat.search_catalogue('架空絵師')['total'] == 0
+    assert cat.catalogue_stats()['publisher_reference_count'] == 21 and cat.catalogue_stats()['editions'] == cat.catalogue_stats()['series'] == 0
+    assert row['usage_permissions']['commercial_reuse'] == 'unknown' and row['usage_permissions']['prose_ai_permission'] is False
+    assert row['source_attributions'][0]['provider'] == 'futaba-mnovels'
+    assert not any(secret in json.dumps(row, ensure_ascii=False) for secret in ('PRIVATE_', 'source_selector', 'raw_sha256', str(path.parent)))
+
+
+def test_futaba_publisher_references_reject_missing_or_invalid_scope(futaba_publisher_reference_bundle):
+    cat, _, path, sha, rows = futaba_publisher_reference_bundle
+    with pytest.raises(TypeError):
+        cat.import_futaba_publisher_references(path, sha)
+    for selection in [None, 'wrong', ['wrong'], [rows[0]['publisher_reference_id']]*2]:
+        with pytest.raises(ValueError):
+            cat.import_futaba_publisher_references(path, sha, reference_ids=selection)
+    assert cat.import_futaba_publisher_references(path, sha, reference_ids=[])['inserted'] == 0
+    with cat._connect() as db:
+        assert db.execute('SELECT count(*) FROM entries').fetchone()[0] == 0
+
+
+@pytest.mark.parametrize('change', [None, 'title', 'url'])
+def test_futaba_publisher_references_keep_uuid_or_hold_changed_title_and_route(futaba_publisher_reference_bundle, change):
+    from test_light_novel_futaba_references_v1 import m_grouping_fixture, m_grouping_edit, m_save
+    cat, env, path, sha, rows = futaba_publisher_reference_bundle
+    selection = [row['publisher_reference_id'] for row in rows[:2]]
+    first = cat.import_futaba_publisher_references(path, sha, reference_ids=selection)
+    identity = first['reference_entries'][selection[0]]
+    cat.set_read_status(identity, 'reading')
+    assert cat.import_futaba_publisher_references(path, sha, reference_ids=selection)['unchanged'] == 2
+    root = env['root'].parent / 'next'
+    root.mkdir()
+    following = m_grouping_fixture(root)
+    following['top']['capture_revision'] = 2
+    if change == 'title':
+        m_grouping_edit(following, lambda book: book.update(book_name='改訂された完全題'))
+    elif change == 'url':
+        m_grouping_edit(following, lambda book: book.update(web_rbooks_id=None))
+    m_save(following)
+    result = cat.import_futaba_publisher_references(following['path'], following['sha'], reference_ids=selection)
+    assert result['inserted'] == 0 and result['updated'] == 2 - int(change is not None)
+    assert result['held'] == int(change is not None)
+    assert cat.work_detail(identity)['read_status'] == 'reading'
+    with cat._connect() as db:
+        assert {r[0] for r in db.execute('SELECT entry_id FROM entries')} == set(first['reference_entries'].values())
+        record = json.loads(db.execute('SELECT record_json FROM entries WHERE entry_id=?', (identity,)).fetchone()[0])
+    assert len(record['source_reference_assertions']) == (2 if change is None else 1)
+    assert record['source_reference_assertions'][0]['title'] == rows[0]['title']
+
+
+@pytest.mark.parametrize('change', ['raw', 'rehash', 'typed'])
+def test_futaba_publisher_references_authenticate_source_and_typed_metadata(futaba_publisher_reference_bundle, change):
+    cat, env, path, sha, rows = futaba_publisher_reference_bundle
+    selection = [rows[0]['publisher_reference_id']]
+    if change == 'raw':
+        page = env['root'] / env['frames'][0][1]['pagination_pages'][0]['receipt']['raw_path']
+        page.write_bytes(b'changed actual source witness')
+        with pytest.raises(ValueError):
+            cat.import_futaba_publisher_references(path, sha, reference_ids=selection)
+        with cat._connect() as db:
+            assert db.execute('SELECT count(*) FROM entries').fetchone()[0] == 0
+        return
+    identity = cat.import_futaba_publisher_references(path, sha, reference_ids=selection)['reference_entries'][selection[0]]
+    with cat._connect() as db:
+        if change == 'typed':
+            db.execute('UPDATE entries SET kind=? WHERE entry_id=?', ('edition', identity))
+        else:
+            record = json.loads(db.execute('SELECT record_json FROM entries WHERE entry_id=?', (identity,)).fetchone()[0])
+            record['publisher_product_reference']['credits'][0]['role'] = 'author'
+            encoded = json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+            db.execute('UPDATE entries SET record_json=?,record_sha256=? WHERE entry_id=?',
+                (encoded, hashlib.sha256(encoded.encode()).hexdigest(), identity))
+    with pytest.raises(ValueError):
+        cat.work_detail(identity)
+
+
+def test_futaba_publisher_references_keep_ecobalt_and_groups_out_of_import_scope(
+        futaba_publisher_reference_bundle, ecobalt_source_group_bundle, futaba_source_group_bundle, monkeypatch):
+    _, _, path, sha, rows = futaba_publisher_reference_bundle
+    cat, env, epath, esha, _ = ecobalt_source_group_bundle
+    _, _, fpath, fsha, _ = futaba_source_group_bundle
+    existing = cat.import_ecobalt_publisher_references(epath, esha)['reference_entries']
+    cat.import_futaba_source_groups(fpath, fsha)
+    cat.set_read_status(next(iter(existing.values())), 'read')
+    with cat._connect() as db:
+        before = {r['entry_id']: tuple(r) for r in db.execute('SELECT * FROM entries')}
+        states = [tuple(r) for r in db.execute('SELECT * FROM read_status')]
+    (env['root'] / 'page.html').write_bytes(b'other provider raw must remain unread')
+    def forbidden(*args, **kwargs):
+        raise AssertionError('Futaba listed references cannot replay groups or other references')
+    for name in ['_rows', '_ecobalt_source_frame', '_futaba_workgroups']:
+        monkeypatch.setattr(cat, name, forbidden)
+    assert cat.import_futaba_publisher_references(path, sha, reference_ids=[rows[0]['publisher_reference_id']])['inserted'] == 1
+    with cat._connect() as db:
+        after = {r['entry_id']: tuple(r) for r in db.execute('SELECT * FROM entries')}
+        assert {identity: after[identity] for identity in before} == before
+        assert [tuple(r) for r in db.execute('SELECT * FROM read_status')] == states
+
+
+def test_futaba_publisher_references_authenticate_one_frame_and_exit_similarity_early(futaba_publisher_reference_bundle, monkeypatch):
+    import recommend_book.light_novel_futaba_references_v1 as source
+    cat, env, path, sha, rows = futaba_publisher_reference_bundle
+    original, calls = source.verify_futaba_mnovels_ungrouped_references, []
+    def counted(*args):
+        calls.append(args)
+        return original(*args)
+    monkeypatch.setattr(source, 'verify_futaba_mnovels_ungrouped_references', counted)
+    result = cat.import_futaba_publisher_references(path, sha, reference_ids=[r['publisher_reference_id'] for r in rows[:21]])
+    assert len(calls) == 1
+    identity = next(iter(result['reference_entries'].values()))
+    def forbidden(*args, **kwargs):
+        raise AssertionError('listed reference similarity cannot scan catalogues or features')
+    for name in ['_rows', '_feature_rows', 'recommend_preferences', '_futaba_workgroups', '_ecobalt_source_frame']:
+        monkeypatch.setattr(cat, name, forbidden)
+    assert cat.similar_works(identity)['mode'] == 'insufficient_evidence'
+    assert len(calls) == 2
+    (env['root'] / env['frames'][0][1]['pagination_pages'][0]['receipt']['raw_path']).write_bytes(b'changed own source')
+    with pytest.raises(ValueError):
+        cat.similar_works(identity)
+
+
+@pytest.fixture
 def sbcr_source_group_bundle(tmp_path):
     from recommend_book.light_novel_sbcr_groups_v1 import verify_sbcr_groups
     root = tmp_path / 'sbcr-raw'
@@ -1135,11 +1285,16 @@ def test_futaba_source_group_preserves_actual_anchor_bindings_and_reading_states
                 for table in tables} == before
 
 
-@pytest.mark.parametrize('race_kind', ['source', 'anchor', 'orange', 'ecobalt', 'ecobalt_reference', 'sbcr', 'hj', 'arian', 'hjnovels', 'sbcrindex'])
+@pytest.mark.parametrize('race_kind', ['source', 'anchor', 'orange', 'ecobalt', 'ecobalt_reference', 'futaba_reference', 'sbcr', 'hj', 'arian', 'hjnovels', 'sbcrindex'])
 def test_futaba_source_group_new_target_race_is_detected_before_first_write(request, monkeypatch, race_kind):
     from contextlib import contextmanager
     import sqlite3
-    if race_kind == 'sbcrindex':
+    if race_kind == 'futaba_reference':
+        cat, _, path, sha, rows = request.getfixturevalue('futaba_publisher_reference_bundle')
+        selection = [row['publisher_reference_id'] for row in rows[:2]]
+        saved = cat.import_futaba_publisher_references(path, sha, reference_ids=selection)
+        identity = next(iter(saved['reference_entries'].values()))
+    elif race_kind == 'sbcrindex':
         cat, _, path, sha, _ = request.getfixturevalue('sbcrindex_source_group_bundle')
         saved = cat.import_sbcr_index_source_groups(path, sha)
         identity = next(iter(saved['reference_entries'].values()))
@@ -1164,7 +1319,9 @@ def test_futaba_source_group_new_target_race_is_detected_before_first_write(requ
         cat.correlate_publisher_bibliographies('futaba-mnovels', m_path, m_sha)
         cat.import_futaba_mnovels_workgroups(path, sha)
         identity = 'lns:ndl:' + first['id']
-    if race_kind == 'sbcrindex':
+    if race_kind == 'futaba_reference':
+        importer = lambda path, sha: cat.import_futaba_publisher_references(path, sha, reference_ids=selection)
+    elif race_kind == 'sbcrindex':
         importer = cat.import_sbcr_index_source_groups
     elif race_kind == 'ecobalt_reference':
         importer = cat.import_ecobalt_publisher_references

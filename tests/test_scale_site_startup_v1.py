@@ -80,9 +80,14 @@ context.HJ=hj;
 vm.runInNewContext('state.favorites.clear();state.favorites.set(HJ.entry_id,{title:HJ.title})',context);
 assert.equal(vm.runInNewContext('preferencePayload().liked_entry_ids[0]',context),hj.entry_id);
 context.fetch=async path=>({ok:true,json:async()=>path.includes('/similar')?{items:[]}:hj});
-function visibleText(el){return [el.textContent||'',...(el.children||[]).map(visibleText)].join('\n');}
+  function visibleText(el){return [el.textContent||'',...(el.children||[]).map(visibleText)].join('\n');}
+  function visibleLinks(el){return [el.href||'',...(el.children||[]).map(visibleLinks)].join('\n');}
 (async()=>{
-  for(const row of [hj,{...hj,entry_id:'lng:pub:arian:'+'c'.repeat(32),
+  const futabaReference={entry_id:'lnr:pub:futaba:'+'f'.repeat(32),entry_kind:'publisher_reference',title:'双葉社の掲載書誌',
+    publisher_reference_kind:'futaba_mnovels_product_reference',light_novel_confirmed:null,read_status:'unknown',
+    isbn:['9780000000000'],publisher_product_reference:{title:'双葉社の商品表示',source_url:'https://www.futabasha.co.jp/book/f',
+      label:'Ｍノベルス',form:'電子',credit_literals:[{role_literal:'著者',name:'掲載名'},{role_literal:null,name:'役割未記載'}]}};
+  for(const row of [futabaReference,hj,{...hj,entry_id:'lng:pub:arian:'+'c'.repeat(32),
       publisher_work_group_kind:'arian_native_index_source_group'},
       {...hj,entry_id:'lng:pub:hjnovels:'+'d'.repeat(32)},
       {...hj,entry_id:'lng:pub:sbcrindex:'+'e'.repeat(32),title:'（シリーズ：表示題）',
@@ -90,19 +95,38 @@ function visibleText(el){return [el.textContent||'',...(el.children||[]).map(vis
         index_name_cautions:['wrapped_index_display_title','publication_type_unconfirmed','PRIVATE-SENTINEL']}]){
     context.INDEX=row;
     vm.runInNewContext('state.favorites.clear();state.favorites.set(INDEX.entry_id,{title:INDEX.title})',context);
-    assert.equal(vm.runInNewContext('preferencePayload().liked_entry_ids[0]',context),row.entry_id);
+    if(row.publisher_reference_kind==='futaba_mnovels_product_reference')
+      assert.equal(vm.runInNewContext('preferencePayload().liked_entry_ids.length',context),0);
+    else
+      assert.equal(vm.runInNewContext('preferencePayload().liked_entry_ids[0]',context),row.entry_id);
     context.fetch=async path=>({ok:true,json:async()=>path.includes('/similar')?{items:[]}:row});
     await vm.runInNewContext('showDetail(INDEX.entry_id)',context);
     const detail=visibleText(elements.get('detail-body'));
-    assert.ok(detail.includes('各巻の一覧・総冊数は未確認です。'));
-    assert.ok(detail.includes('索引のクレジットは各巻の担当役割を示すものではありません。'));
-    assert.ok(!detail.includes('0冊'));
-    assert.ok(!detail.includes('出版社の掲載書誌'));
+    if(row.publisher_reference_kind==='futaba_mnovels_product_reference'){
+      assert.ok(detail.includes('ISBN：9780000000000'));
+      assert.ok(detail.includes('Ｍノベルス / 電子'));
+      assert.ok(detail.includes('著者：掲載名') && detail.includes('役割未確認：役割未記載'));
+      assert.ok(visibleLinks(elements.get('detail-body')).includes('futabasha.co.jp/book/f'));
+      const unknown={...row,isbn:[],publisher_product_reference:{...row.publisher_product_reference,
+        credit_literals:[{role_literal:null,name:'役割不明'}]}};
+      context.fetch=async path=>({ok:true,json:async()=>path.includes('/similar')?{items:[]}:unknown});
+      await vm.runInNewContext('showDetail(INDEX.entry_id)',{...context,INDEX:unknown});
+      const unknownDetail=visibleText(elements.get('detail-body'));
+      assert.ok(unknownDetail.includes('ISBN'));
+      assert.ok(!unknownDetail.includes('9780000000000'));
+      assert.ok(unknownDetail.includes('役割未確認：役割不明'));
+    }
     if(row.publisher_work_group_kind==='sbcr_native_index_source_group'){
       assert.ok(detail.includes('（シリーズ：表示題）'));
       assert.ok(detail.includes('索引に表示された括弧付きの名称です。原作品の正式題は未確認です。'));
       assert.ok(detail.includes('名称に「マガジン」が含まれます。小説・雑誌等の区分は未確認です。'));
       assert.ok(!detail.includes('PRIVATE-SENTINEL'));
+    }
+    if(row.publisher_work_group_kind){
+      assert.ok(detail.includes('各巻の一覧・総冊数は未確認です。'));
+      assert.ok(detail.includes('索引のクレジットは各巻の担当役割を示すものではありません。'));
+      assert.ok(!detail.includes('0冊'));
+      assert.ok(!detail.includes('出版社の掲載書誌'));
     }
   }
 })().catch(error=>{console.error(error);process.exitCode=1;});

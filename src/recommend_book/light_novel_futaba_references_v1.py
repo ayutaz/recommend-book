@@ -239,7 +239,24 @@ def verify_futaba_mnovels_references(manifest_path: str | Path, sha256: str) -> 
     each M label has its own observed navigation, query, totals and raw pages.
     No individual genre, publisher, volume or story-series claim is inferred.
     """
+    return _verify_mnovels_references(manifest_path, sha256, ungrouped_only=False)
+
+
+def verify_futaba_mnovels_ungrouped_references(manifest_path: str | Path, sha256: str) -> list[dict]:
+    """Return the 26 explicitly ungrouped product references in the fixed M frame.
+
+    The same authenticated pass validates all 616 product rows. Only an explicit
+    null or blank textual grouping field qualifies; a missing field is not
+    evidence of unknown grouping. This does not infer singleton groups, ISBNs,
+    media identity, story-series identity or individual light-novel status.
+    Consumer selection of currently unconnected references is separate.
+    """
+    return _verify_mnovels_references(manifest_path, sha256, ungrouped_only=True)
+
+
+def _verify_mnovels_references(manifest_path, sha256, *, ungrouped_only):
     path = Path(manifest_path).resolve()
+    ungrouped = []
     try:
         proof = _json(path, sha256)
         if proof.get('schema_version') != 'futaba-mnovels-references-proof-v1':
@@ -321,8 +338,25 @@ def verify_futaba_mnovels_references(manifest_path: str | Path, sha256: str) -> 
                         raise ValueError('Futaba M duplicate opaque product ID')
                     seen.add(row['publisher_reference_id'])
                     rows.append(row)
+                    if ungrouped_only:
+                        evidence = {'source_url': url, 'raw_sha256': receipt['sha256'],
+                                    'locator': f'/books/book_informations/{ordinal}/grouping'}
+                        if ('grouping' not in book
+                                or book['grouping'] is not None and not isinstance(book['grouping'], str)):
+                            raise ValueError('Futaba M explicit grouping field absent or malformed: '
+                                             f'{url} sha256={receipt["sha256"]} '
+                                             f'ref={row["publisher_reference_id"]} locator={evidence["locator"]}')
+                        grouping = book['grouping']
+                        if grouping is None or not grouping.strip():
+                            ungrouped.append({**row, 'grouping_source_literal': grouping,
+                                'grouping_status': 'unknown_no_nonempty_publisher_grouping',
+                                'grouping_field_evidence': evidence})
         if set(receipts) != requested or len(rows) != 616:
             raise ValueError('Futaba M complete receipt range or unique total differs')
+        if ungrouped_only:
+            if len(ungrouped) != 26:
+                raise ValueError('Futaba M fixed explicit unknown-grouping count differs')
+            return ungrouped
         return rows
     except (KeyError, TypeError, AttributeError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError('Futaba M source evidence schema cannot be reproduced') from exc

@@ -9,7 +9,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 
 _QID = r'Q[1-9][0-9]*'
-_ENTRY_ID = r'(?:ln[sw]:wd:Q[1-9][0-9]*|ln[se]:ndl:[A-Za-z0-9_-][A-Za-z0-9._-]{0,119}|lng:pub:(?:futaba|orange|ecobalt|sbcr|hj|arian|hjnovels|sbcrindex):[0-9a-f]{32}|lnr:pub:ecobalt:[0-9a-f]{32})'
+_ENTRY_ID = r'(?:ln[sw]:wd:Q[1-9][0-9]*|ln[se]:ndl:[A-Za-z0-9_-][A-Za-z0-9._-]{0,119}|lng:pub:(?:futaba|orange|ecobalt|sbcr|hj|arian|hjnovels|sbcrindex):[0-9a-f]{32}|lnr:pub:(?:ecobalt|futaba):[0-9a-f]{32})'
 _FAMILIES = ('all', 'world', 'light_novel')
 _ENTRY_KINDS = ('series', 'work', 'edition', 'publisher_group', 'publisher_reference')
 _ADMISSION_STATES = ('bibliographic_candidate_only', 'light_novel_confirmed', 'edition_series_membership_verified',
@@ -380,6 +380,7 @@ def _public_publisher_product_references(values, *, source_kind):
         return result
     orange = source_kind == 'orange_native_taxonomy_source_group'
     ecobalt = source_kind == 'ecobalt_author_index_source_group'
+    futaba_reference = source_kind == 'futaba_mnovels_product_reference'
     sbcr = source_kind == 'sbcr_ebook_source_group'
     roles = ('author', 'illustrator', 'original_author', 'original_concept', 'supervisor', 'editor')
     if orange:
@@ -424,6 +425,15 @@ def _public_publisher_product_references(values, *, source_kind):
                         and credit.get('role_scope') == 'author_index_display_only'):
                     item['credit_literals'].append({'name': credit['name'], 'entry_role_literal': None,
                         'role_context_literal': credit['role_context_literal'], 'role_scope': credit['role_scope']})
+        if futaba_reference:
+            item['credit_literals'] = []
+            literals = row.get('credit_literals')
+            for credit in literals if isinstance(literals, list) else []:
+                role = credit.get('role_literal') if isinstance(credit, dict) and 'role_literal' in credit else (
+                    credit.get('role') if isinstance(credit, dict) else None)
+                if (isinstance(credit, dict) and isinstance(credit.get('name'), str)
+                        and (role is None or isinstance(role, str))):
+                    item['credit_literals'].append({'role_literal': role, 'name': credit['name']})
         media = row.get('media_references')
         for entry in media if isinstance(media, list) else []:
             if not isinstance(entry, dict):
@@ -455,14 +465,41 @@ def _public_publisher_reference(row):
         'read_status': row.get('read_status') if row.get('read_status') in ('read', 'unread', 'reading') else 'unknown',
         'source_url': _link(row.get('source_url'))}
     identifier = row.get('entry_id')
-    if isinstance(identifier, str) and re.fullmatch(r'lnr:pub:ecobalt:[0-9a-f]{32}', identifier):
+    identifier_match = (re.fullmatch(r'lnr:pub:(ecobalt|futaba):[0-9a-f]{32}', identifier)
+                        if isinstance(identifier, str) else None)
+    if identifier_match:
         result['entry_id'] = identifier
         result['work_id'] = identifier
+    provider = identifier_match.group(1) if identifier_match else None
+    reference_kind = row.get('publisher_reference_kind')
+    expected_kind = {'ecobalt': 'ecobalt_author_index_product_reference',
+                     'futaba': 'futaba_mnovels_product_reference'}.get(provider)
     if (row.get('reference_identity_basis') != 'publisher_product_reference'
-            or row.get('publisher_reference_kind') != 'ecobalt_author_index_product_reference'):
+            or reference_kind != expected_kind):
         return result
     result.update(reference_identity_basis='publisher_product_reference',
-                  publisher_reference_kind='ecobalt_author_index_product_reference')
+                  publisher_reference_kind=reference_kind)
+    if provider == 'futaba':
+        # Futaba's saved product listing does not establish LN status or authorship.
+        result['light_novel_confirmed'] = None
+        result['publisher_provider'] = 'futaba-mnovels'
+        if isinstance(row.get('isbn'), list):
+            result['isbn'] = [item for item in row['isbn']
+                              if isinstance(item, str) and re.fullmatch(r'[0-9Xx-]{10,20}', item)]
+        if isinstance(row.get('publication_label'), str):
+            result['publication_label'] = row['publication_label'][:500]
+        permissions = row.get('usage_permissions')
+        expected_permissions = {'bibliographic_reference_only': True, 'commercial_reuse': 'unknown',
+                                'prose_ai_permission': False, 'images_permission': False,
+                                'raw_redistribution_permission': False}
+        if isinstance(permissions, dict) and all(permissions.get(key) == value
+                                                  for key, value in expected_permissions.items()):
+            result['usage_permissions'] = expected_permissions
+        products = _public_publisher_product_references([row.get('publisher_product_reference')],
+            source_kind='futaba_mnovels_product_reference')
+        if products:
+            result['publisher_product_reference'] = products[0]
+        return result
     context = row.get('role_context')
     if (isinstance(row.get('author_display'), str) and isinstance(context, dict)
             and context.get('literal') == '著者50音別書籍リスト'
@@ -729,7 +766,8 @@ async function showDetail(identifier){
   body.replaceChildren(node('h2',row.title),node('p',entryLabel(row),'muted'),node('p',describe(row)),favoriteControl(row));
   if(row.aliases?.length)body.append(node('p','別題：'+row.aliases.join(' / ')));
   body.append(statusControl(row));
-  if(row.entry_kind==='publisher_reference')body.append(node('p','出版社の一覧に掲載された書誌参照です。原作品・物語シリーズやNDLの版との対応、ISBN・媒体・個別の担当役割は未確認です。読書状態はこの掲載参照だけに保存し、他の作品や版へ自動反映しません。','muted'));
+  if(row.entry_kind==='publisher_reference')body.append(node('p',row.publisher_reference_kind==='futaba_mnovels_product_reference'?'出版社の一覧に掲載された書誌参照です。原作品・物語シリーズやNDLの版との対応は未確認です。保存されたISBN・媒体・掲載クレジットだけを表示します。読書状態はこの掲載参照だけに保存し、他の作品や版へ自動反映しません。':'出版社の一覧に掲載された書誌参照です。原作品・物語シリーズやNDLの版との対応、ISBN・媒体・個別の担当役割は未確認です。読書状態はこの掲載参照だけに保存し、他の作品や版へ自動反映しません。','muted'));
+  if(row.publisher_reference_kind==='futaba_mnovels_product_reference'){const product=row.publisher_product_reference||{},details=section(body,'出版社の掲載書誌');if(row.isbn?.length)details.append(node('p','ISBN：'+row.isbn.join(' / '),'muted'));else details.append(node('p','ISBN：未確認','muted'));const title=node(product.source_url?'a':'span',product.title||'書名不明');if(product.source_url){title.href=product.source_url;title.target='_blank';title.rel='noopener noreferrer';}details.append(title);const facts=[product.label,product.form].filter(Boolean);if(facts.length)details.append(node('p',facts.join(' / '),'muted'));const credits=(product.credit_literals||[]).map(c=>((c.role_literal||'役割未確認')+'：'+c.name));if(credits.length)details.append(node('p',credits.join(' / '),'muted'));}
   if(row.admission_status==='bibliographic_candidate_only')body.append(node('p','レーベルなどの書誌情報から集めた候補です。ライトノベルであることは未確定です。','muted'));
   if(row.edition_bibliography_confirmed){body.append(node('p','出版社の書籍情報と国立国会図書館の書誌で照合した版です。','muted'));if(row.confirmation_source_url){const p=node('p','照合元：'),a=node('a','出版社の書籍ページ');a.href=row.confirmation_source_url;a.target='_blank';a.rel='noopener noreferrer';p.append(a);body.append(p);}}
   if(row.publisher_bibliography_matched){body.append(node('p','出版社の書名・著者・レーベル情報と対応を確認した書誌です。商品・刷単位の同一性は未確認です。','muted'));if(row.bibliography_source_url){const p=node('p','書誌の対応元：'),a=node('a','出版社の書籍情報');a.href=row.bibliography_source_url;a.target='_blank';a.rel='noopener noreferrer';p.append(a);body.append(p);}}
@@ -740,7 +778,7 @@ async function showDetail(identifier){
   if(row.relation_resolution==='edition_series_membership_verified')body.append(node('p','物語シリーズへの所属を出典で確認済みです。版と原作品は別の項目として扱います。','muted'));
   if(row.relation_resolution==='publisher_work_group_membership_verified')body.append(node('p','出版社の作品グループに掲載された書誌との対応を確認済みです。原作品・物語シリーズの同一性は未確認です。','muted'));
   if(row.entry_kind==='series')body.append(node('p',row.series_identity_basis==='publisher_work_group_and_ndl_bibliography'?'出版社がまとめた作品グループです。内容特徴や読書状態は各巻へ自動反映しません。':'シリーズ全体の情報です。内容特徴や読書状態は各巻へ自動反映しません。','muted'));
-  if(['futaba_mnovels_grouping','futaba_mnovels_source_group','orange_native_taxonomy_source_group','ecobalt_author_index_source_group','sbcr_ebook_source_group'].includes(row.publisher_work_group_kind)){if(row.entry_kind==='publisher_group')body.append(node('p','出版社がこの保存一覧内でまとめた掲載グループです。グループ共通の著者、原作品・物語シリーズの同一性は未確認です。読書状態は掲載書誌へ自動反映しません。','muted'));if(row.publisher_work_group_kind==='ecobalt_author_index_source_group'&&row.heading_author_display)body.append(node('p','掲載リストの著者表示：'+row.heading_author_display+'（各書誌の担当役割は未確認）','muted'));const products=section(body,'出版社の掲載書誌');products.append(node('p','出版社の掲載参照です。NDLの版や、紙・電子の同一版との対応を意味しません。全媒体・全期間の収録範囲は未確認です。','muted'));for(const product of row.publisher_product_references||[]){const div=node('div',undefined,'similar-row'),title=node(product.source_url?'a':'span',product.title||'書名不明');if(product.source_url){title.href=product.source_url;title.target='_blank';title.rel='noopener noreferrer';}div.append(title);const roles={author:'著者',illustrator:'イラスト',original_author:'原作',original_concept:'原案',supervisor:'監修',editor:'編集',cover_illustrator:'装画',commentary_author:'解説',screenplay_author:'脚本'};const credits=product.credit_literals?.length?product.credit_literals.map(c=>(c.role_scope==='author_index_display_only'?'掲載リストの著者表示':c.role_literal||'役割未確認')+'：'+c.name):(product.credits||[]).map(c=>(roles[c.role]||'役割未確認')+'：'+c.name);if(credits.length)div.append(node('p',credits.join(' / '),'muted'));const facts=[product.label,product.form].filter(Boolean);if(facts.length)div.append(node('p',facts.join(' / '),'muted'));const seen=new Set([product.source_url]);for(const media of product.media_references||[]){if(!media.source_url||seen.has(media.source_url))continue;seen.add(media.source_url);const link=node('a','別の掲載ページ');link.href=media.source_url;link.target='_blank';link.rel='noopener noreferrer';const line=node('p');line.append(link);div.append(line);}products.append(div);}}
+  if(['futaba_mnovels_grouping','futaba_mnovels_source_group','orange_native_taxonomy_source_group','ecobalt_author_index_source_group','sbcr_ebook_source_group'].includes(row.publisher_work_group_kind)){if(row.entry_kind==='publisher_group')body.append(node('p','出版社がこの保存一覧内でまとめた掲載グループです。グループ共通の著者、原作品・物語シリーズの同一性は未確認です。読書状態は掲載書誌へ自動反映しません。','muted'));if(row.publisher_work_group_kind==='ecobalt_author_index_source_group'&&row.heading_author_display)body.append(node('p','掲載リストの著者表示：'+row.heading_author_display+'（各書誌の担当役割は未確認）','muted'));const products=section(body,'出版社の掲載書誌');products.append(node('p','出版社の掲載参照です。NDLの版や、紙・電子の同一版との対応を意味しません。全媒体・全期間の収録範囲は未確認です。','muted'));for(const product of row.publisher_product_references||[]){const div=node('div',undefined,'similar-row'),title=node(product.source_url?'a':'span',product.title||'書名不明');if(product.source_url){title.href=product.source_url;title.target='_blank';title.rel='noopener noreferrer';}div.append(title);const roles={author:'著者',illustrator:'イラスト',original_author:'原作',original_concept:'原案',supervisor:'監修',editor:'編集',cover_illustrator:'装画',commentary_author:'解説',screenplay_author:'脚本'};const credits=product.credit_literals?.length?product.credit_literals.map(c=>(c.role_scope==='author_index_display_only'?'掲載リストの著者表示':(c.role_literal??c.role)||'役割未確認')+'：'+c.name):(product.credits||[]).map(c=>(roles[c.role]||'役割未確認')+'：'+c.name);if(credits.length)div.append(node('p',credits.join(' / '),'muted'));const facts=[product.label,product.form].filter(Boolean);if(facts.length)div.append(node('p',facts.join(' / '),'muted'));const seen=new Set([product.source_url]);for(const media of product.media_references||[]){if(!media.source_url||seen.has(media.source_url))continue;seen.add(media.source_url);const link=node('a','別の掲載ページ');link.href=media.source_url;link.target='_blank';link.rel='noopener noreferrer';const line=node('p');line.append(link);div.append(line);}products.append(div);}}
   if(['hj_native_index_source_group','arian_native_index_source_group','sbcr_native_index_source_group'].includes(row.publisher_work_group_kind))body.append(node('p','出版社の索引で確認した掲載単位です。各巻の一覧・総冊数は未確認です。索引のクレジットは各巻の担当役割を示すものではありません。読書状態は各巻へ自動反映しません。','muted'));
   for(const message of indexNameCautions(row))body.append(node('p',message,'muted'));
   if(row.source_url){const p=node('p'),a=node('a',['hj_native_index_source_group','arian_native_index_source_group','sbcr_native_index_source_group'].includes(row.publisher_work_group_kind)?'出版社の掲載ページ':row.entry_kind==='publisher_group'?'出版社の掲載一覧':'出典の書誌・作品ページ');a.href=row.source_url;a.target='_blank';a.rel='noopener noreferrer';p.append(a);body.append(p);}

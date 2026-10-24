@@ -585,6 +585,50 @@ def test_ecobalt_standalone_reference_similar_authenticates_once_and_skips_globa
     assert details == [identifier]
 
 
+def test_futaba_standalone_reference_keeps_listing_scope_and_unknown_status(site, monkeypatch):
+    base, catalogue = site
+    identifier = 'lnr:pub:futaba:' + 'f' * 32
+    row = {'entry_id': identifier, 'entry_kind': 'publisher_reference', 'family': 'light_novel',
+        'title': '双葉社の掲載書誌', 'reference_identity_basis': 'publisher_product_reference',
+        'publisher_reference_kind': 'futaba_mnovels_product_reference',
+        'publisher_provider': 'futaba-mnovels', 'source_url': 'https://www.futabasha.co.jp/book/f',
+        'authors': [{'name': '推定しない'}], 'isbn': ['9780000000000'], 'light_novel_confirmed': False,
+        'read_status': 'unknown', 'recommendable': True,
+        'publisher_product_reference': {'publisher_reference_id': 'futaba-product:book-f',
+            'title': '双葉社の掲載書誌', 'source_url': 'https://www.futabasha.co.jp/book/f',
+            'label': 'Ｍノベルス', 'form': '電子',
+            'credits': [{'role': 'author', 'name': '推定しない'}],
+            'credit_literals': [{'role_literal': '著者', 'name': '表示名'}, {'role_literal': None, 'name': '役割未記載'}],
+            'media_references': [{'source_url': 'https://www.futabasha.co.jp/book/f?type=2'}]},
+        'publication_label': 'Ｍノベルス',
+        'usage_permissions': {'bibliographic_reference_only': True, 'commercial_reuse': 'unknown',
+            'prose_ai_permission': False, 'images_permission': False, 'raw_redistribution_permission': False},
+        'source_attributions': [{'source': 'publisher', 'provider': 'futaba-mnovels'}],
+        'members': [{'entry_id': 'lne:ndl:PRIVATE', 'title': '推定しない'}]}
+    details = []
+    def detail(key):
+        details.append(key)
+        return row if key == identifier else None
+    monkeypatch.setattr(catalogue, 'work_detail', detail)
+    result = fetch(base, '/api/entries/' + quote(identifier, safe=''))
+    assert result['entry_id'] == identifier and result['work_id'] == identifier
+    assert result['publisher_reference_kind'] == 'futaba_mnovels_product_reference'
+    assert result['publisher_provider'] == 'futaba-mnovels'
+    assert result['light_novel_confirmed'] is None and result['recommendable'] is False
+    assert result['authors'] == [] and result['isbn'] == ['9780000000000'] and result['members'] == []
+    assert result['publication_label'] == 'Ｍノベルス'
+    assert result['usage_permissions']['bibliographic_reference_only'] is True
+    product = result['publisher_product_reference']
+    assert product['publisher_reference_id'] == 'futaba-product:book-f'
+    assert product['credit_literals'] == [{'role_literal': '著者', 'name': '表示名'},
+                                         {'role_literal': None, 'name': '役割未記載'}]
+    assert product['credits'] == [{'role': 'author', 'name': '推定しない'}]
+    assert 'source_attributions' not in result and 'PRIVATE' not in json.dumps(result)
+    assert fetch(base, '/api/entries/' + quote(identifier, safe='') + '/similar') == {
+        'mode': 'insufficient_evidence', 'personalized': False, 'items': []}
+    assert details == [identifier, identifier]
+
+
 def test_source_group_product_reference_boundary_rejects_nested_values_and_unsafe_links():
     result = public_work({'entry_id': 'lng:pub:futaba:' + 'a' * 32, 'entry_kind': 'publisher_group',
         'series_identity_basis': 'publisher_source_group',
@@ -621,6 +665,17 @@ def test_source_group_typed_id_rejects_malformed_or_unknown_provider(site, ident
     with pytest.raises(HTTPError) as error:
         fetch(base, '/api/recommendations', {'liked_entry_ids': [identifier]})
     assert error.value.code == 400
+
+
+@pytest.mark.parametrize('identifier', [
+    'lnr:pub:unknown:' + 'a' * 32, 'lnr:pub:futaba:' + 'A' * 32,
+    'lnr:pub:futaba:' + 'a' * 31, 'lnr:pub:futaba:' + 'a' * 32 + '/other',
+])
+def test_publisher_reference_typed_id_rejects_malformed_or_unknown_provider(site, identifier):
+    base, _ = site
+    with pytest.raises(HTTPError) as error:
+        fetch(base, '/api/entries/' + quote(identifier, safe=''))
+    assert error.value.code == 404
 
 
 def test_publisher_work_group_http_preserves_scope_members_and_separate_statistics(site, monkeypatch):

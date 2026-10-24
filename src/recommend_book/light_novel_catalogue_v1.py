@@ -25,6 +25,19 @@ CONFLICT_TYPES = {'Q5398426', 'Q639669', 'Q21198342', 'Q8274', 'Q202866',
                   'Q4167410', 'Q4167836', 'Q11424', 'Q24856', 'Q11346433', 'Q136747113'}
 RELATIONS = ('P179', 'P527', 'P629', 'P155', 'P156', 'P144')
 ECOBALT_REFERENCE_SCHEMA = 'light-novel-ecobalt-publisher-reference-v1'
+FUTABA_REFERENCE_SCHEMA = 'light-novel-futaba-publisher-reference-v1'
+PUBLISHER_REFERENCE_PROVIDERS = {
+    'ecobalt': {'schema': ECOBALT_REFERENCE_SCHEMA, 'record_provider': 'ecobalt',
+        'loader': '_ecobalt_publisher_references', 'fields': '_ecobalt_reference_fields',
+        'reference_pattern': r'ecobalt-product-local:[0-9a-f]{64}',
+        'public_kind': 'ecobalt_author_index_product_reference',
+        'credit': '掲載書誌・著者索引表示: 集英社eコバルト文庫の書籍一覧'},
+    'futaba': {'schema': FUTABA_REFERENCE_SCHEMA, 'record_provider': 'futaba-mnovels',
+        'loader': '_futaba_publisher_references', 'fields': '_futaba_reference_fields',
+        'reference_pattern': r'futaba-product:[A-Za-z0-9_-]+',
+        'public_kind': 'futaba_mnovels_product_reference',
+        'credit': '掲載書誌: 双葉社のＭノベルス・Ｍノベルスｆ商品一覧（書誌参照のみ）'},
+}
 SOURCE_GROUP_PROVIDERS = {
     'futaba': {
         'schema': 'light-novel-futaba-source-group-v1', 'record_provider': 'futaba-mnovels',
@@ -126,7 +139,7 @@ def _qid(value):
 
 
 def _entry(value):
-    if not isinstance(value, str) or not re.fullmatch(r'(?:ln[sw]:wd:Q[1-9][0-9]*|ln[se]:ndl:[A-Za-z0-9._-]+|lng:pub:(?:futaba|orange|ecobalt|sbcr|hj|arian|hjnovels|sbcrindex):[0-9a-f]{32}|lnr:pub:ecobalt:[0-9a-f]{32})', value):
+    if not isinstance(value, str) or not re.fullmatch(r'(?:ln[sw]:wd:Q[1-9][0-9]*|ln[se]:ndl:[A-Za-z0-9._-]+|lng:pub:(?:futaba|orange|ecobalt|sbcr|hj|arian|hjnovels|sbcrindex):[0-9a-f]{32}|lnr:pub:(?:ecobalt|futaba):[0-9a-f]{32})', value):
         raise ValueError('a typed light-novel entry ID is required')
     return value
 
@@ -258,6 +271,8 @@ class LightNovelCatalogue:
     def _project(self, record, cache):
         if record.get('schema_version') == ECOBALT_REFERENCE_SCHEMA:
             return self._project_ecobalt_publisher_reference(record, cache)
+        if record.get('schema_version') == FUTABA_REFERENCE_SCHEMA:
+            return self._project_publisher_reference('futaba', record, cache)
         for provider, profile in SOURCE_GROUP_PROVIDERS.items():
             if record.get('schema_version') == profile['schema']:
                 return self._project_publisher_source_group(provider, record, cache)
@@ -812,58 +827,115 @@ class LightNovelCatalogue:
                 'reference_id': reference['reference_id'], 'local_reference_key': reference['local_reference_key']}
 
     @staticmethod
+    def _publisher_reference_assertion(provider, path, sha256, reference):
+        assertion = LightNovelCatalogue._ecobalt_reference_assertion(path, sha256, reference)
+        if provider == 'futaba':
+            assertion['title'] = reference['title']
+        return assertion
+
+    @staticmethod
     def _ecobalt_reference_fields(reference):
         return {'title': reference['title'], 'author_display': reference['author_display'],
                 'role_context': {key: reference['role_context'][key] for key in ('literal', 'scope')},
                 'publisher_product_reference': LightNovelCatalogue._publisher_product_references(
                     'ecobalt', {'members': [reference]})[0]}
 
+    def _futaba_publisher_references(self, path, sha256, cache):
+        from .light_novel_futaba_references_v1 import verify_futaba_mnovels_ungrouped_references
+        key = ('futaba_ungrouped_references', str(_resolved_path(path, cache)), sha256)
+        if key not in cache:
+            references = {}
+            for reference in verify_futaba_mnovels_ungrouped_references(path, sha256):
+                identity = reference['publisher_reference_id']
+                if (not re.fullmatch(PUBLISHER_REFERENCE_PROVIDERS['futaba']['reference_pattern'], identity)
+                        or identity in references or reference['source_unit'] != 'publisher_product_reference'
+                        or reference['grouping_status'] != 'unknown_no_nonempty_publisher_grouping'
+                        or reference['story_series_asserted'] is not False):
+                    raise ValueError('Futaba ungrouped product reference contract differs')
+                references[identity] = {**reference, 'reference_id': identity, 'local_reference_key': {
+                    'provider': 'futaba-mnovels', 'source_scope': 'mnovels_ungrouped_product_reference',
+                    'publisher_reference_id': identity, 'official_product_url': reference['source_url']}}
+            cache[key] = references
+        return cache[key]
+
+    @staticmethod
+    def _futaba_reference_fields(reference):
+        product = {'publisher_reference_id': reference['publisher_reference_id'], 'title': reference['title'],
+            'source_url': reference['source_url'], 'label': reference['label'], 'form': reference['form'],
+            'credits': [{key: credit[key] for key in ('role', 'name')} for credit in reference['credits']],
+            'credit_literals': [{'role_literal': credit['role'], 'name': credit['name']}
+                for credit in reference['credit_literals']], 'media_references': []}
+        return {'title': reference['title'], 'publisher_product_reference': product,
+                'isbn': [reference['isbn']] if reference['isbn'] is not None else [],
+                'publication_label': reference['label'], 'grouping_status': reference['grouping_status']}
+
     def _project_ecobalt_publisher_reference(self, record, cache):
-        identity = _entry('lnr:pub:ecobalt:' + record['id'])
-        if (record.get('schema_version') != ECOBALT_REFERENCE_SCHEMA or record.get('source') != 'publisher'
-                or record.get('provider') != 'ecobalt' or record.get('kind') != 'publisher_reference'):
-            raise ValueError('eCobalt product reference typed scope differs')
+        return self._project_publisher_reference('ecobalt', record, cache)
+
+    def _project_publisher_reference(self, provider, record, cache):
+        profile = PUBLISHER_REFERENCE_PROVIDERS[provider]
+        provider_name = 'eCobalt' if provider == 'ecobalt' else 'Futaba'
+        identity = _entry('lnr:pub:' + provider + ':' + record['id'])
+        if (record.get('schema_version') != profile['schema'] or record.get('source') != 'publisher'
+                or record.get('provider') != profile['record_provider'] or record.get('kind') != 'publisher_reference'):
+            raise ValueError(provider_name + ' product reference typed scope differs')
         assertions = record['source_reference_assertions']
         if not isinstance(assertions, list) or not assertions:
-            raise ValueError('eCobalt product reference has no versioned assertion')
+            raise ValueError(provider_name + ' product reference has no versioned assertion')
         seen, previous_key = set(), None
         for assertion in assertions:
             pin = (assertion['manifest_path'], assertion['manifest_sha256'], assertion['reference_id'])
             key = assertion['local_reference_key']
             if (pin in seen or not re.fullmatch(r'[0-9a-f]{64}', assertion['manifest_sha256'])
-                    or not re.fullmatch(r'ecobalt-product-local:[0-9a-f]{64}', assertion['reference_id'])
+                    or not re.fullmatch(profile['reference_pattern'], assertion['reference_id'])
+                    or provider == 'futaba' and assertion['title'] != record['title']
                     or previous_key is not None and key != previous_key):
-                raise ValueError('eCobalt product reference assertion continuity differs')
+                raise ValueError(provider_name + ' product reference assertion continuity differs')
             seen.add(pin)
             previous_key = key
         active = assertions[-1]
-        reference = self._ecobalt_publisher_references(active['manifest_path'], active['manifest_sha256'], cache).get(active['reference_id'])
-        if (reference is None or active != self._ecobalt_reference_assertion(active['manifest_path'], active['manifest_sha256'], reference)
-                or any(record.get(key) != value for key, value in self._ecobalt_reference_fields(reference).items())):
-            raise ValueError('eCobalt product reference fields do not replay')
-        return {**self._ecobalt_reference_fields(reference),
+        reference = getattr(self, profile['loader'])(active['manifest_path'], active['manifest_sha256'], cache).get(active['reference_id'])
+        if (reference is None or active != self._publisher_reference_assertion(provider, active['manifest_path'], active['manifest_sha256'], reference)
+                or any(record.get(key) != value for key, value in getattr(self, profile['fields'])(reference).items())):
+            raise ValueError(provider_name + ' product reference fields do not replay')
+        row = {**getattr(self, profile['fields'])(reference),
             'entry_id': identity, 'work_id': identity, 'entry_kind': 'publisher_reference', 'qid': None,
             'family': 'light_novel', 'aliases': [], 'authors': [], 'publishers': [], 'genres': [], 'subjects': [],
             'original_language': None, 'language': None, 'year': None, 'volume': None, 'isbn': [],
             'publication_label': None, 'read_status': 'unknown', 'light_novel_confirmed': False, 'label_candidate': False,
             'classification_scope': 'publisher_reference', 'reference_identity_basis': 'publisher_product_reference',
-            'reference_title_source': 'publisher_product_title', 'publisher_reference_kind': 'ecobalt_author_index_product_reference',
+            'reference_title_source': 'publisher_product_title', 'publisher_reference_kind': profile['public_kind'],
             'admission_status': 'publisher_product_reference_verified', 'relation_resolution': 'publisher_product_reference_verified',
             'source_url': reference['source_url'], 'publisher_reference_id': reference['publisher_reference_id'],
             'actual_work_identity_asserted': False, 'edition_identity_asserted': False,
             'story_series_identity_asserted': False, 'original_work_identity_asserted': False,
             'paper_electronic_same_edition_asserted': False, 'global_membership_complete': None,
-            'source_attributions': [{'source': 'publisher', 'provider': 'ecobalt', 'source_url': reference['source_url'],
-                'scope': 'publisher_product_reference', 'credit': '掲載書誌・著者索引表示: 集英社eコバルト文庫の書籍一覧'}],
+            'source_attributions': [{'source': 'publisher', 'provider': profile['record_provider'], 'source_url': reference['source_url'],
+                'scope': 'publisher_product_reference', 'credit': profile['credit']}],
             'content_sources': [], 'relations': {prop: [] for prop in RELATIONS}, 'recommendable': False,
             'llm_features': [], 'native_features': [], 'strict72_features': [],
             'content_features_adopted': False, 'recommendation_mode': 'insufficient_evidence'}
+        if provider == 'futaba':
+            row.update(isbn=record['isbn'], publication_label=record['publication_label'],
+                usage_permissions={'bibliographic_reference_only': True, 'commercial_reuse': 'unknown',
+                    'prose_ai_permission': False, 'images_permission': False, 'raw_redistribution_permission': False})
+        return row
 
     def import_ecobalt_publisher_references(self, manifest_path, expected_sha256, *, reference_ids=None):
+        return self._import_publisher_references('ecobalt', manifest_path, expected_sha256, reference_ids=reference_ids)
+
+    def import_futaba_publisher_references(self, manifest_path, expected_sha256, *, reference_ids):
+        if reference_ids is None:
+            raise ValueError('an explicit Futaba product reference selection is required')
+        return self._import_publisher_references('futaba', manifest_path, expected_sha256, reference_ids=reference_ids)
+
+    def _import_publisher_references(self, provider, manifest_path, expected_sha256, *, reference_ids):
         """Store ungrouped listings with local identity, without asserting a work or edition."""
         cache = {}
+        profile = PUBLISHER_REFERENCE_PROVIDERS[provider]
+        provider_name = 'eCobalt' if provider == 'ecobalt' else 'Futaba'
         path = str(_resolved_path(manifest_path, cache))
-        references = self._ecobalt_publisher_references(path, expected_sha256, cache)
+        references = getattr(self, profile['loader'])(path, expected_sha256, cache)
         if isinstance(reference_ids, (str, bytes)):
             raise ValueError('an explicit product reference collection is required')
         requested = list(references) if reference_ids is None else list(reference_ids)
@@ -872,26 +944,33 @@ class LightNovelCatalogue:
         result = {'source_references': len(references), 'requested_references': len(requested),
             'inserted': 0, 'updated': 0, 'unchanged': 0, 'held': 0, 'held_reasons': {}, 'reference_entries': {}}
         target_where = ("entry_id LIKE ? OR json_extract(record_json,'$.schema_version')=? OR "
-                        "(kind='publisher_reference' AND json_extract(record_json,'$.provider')='ecobalt')")
-        target_parameters = ('lnr:pub:ecobalt:%', ECOBALT_REFERENCE_SCHEMA)
+                        "(kind='publisher_reference' AND json_extract(record_json,'$.provider')=?)")
+        target_parameters = ('lnr:pub:' + provider + ':%', profile['schema'], profile['record_provider'])
         with self._connect() as db:
             stored = {r['entry_id']: dict(r) for r in db.execute('SELECT * FROM entries WHERE ' + target_where, target_parameters)}
-        keys, records = {}, {}
+        keys, records, stable_references = {}, {}, set()
         for identity, entry in stored.items():
             if hashlib.sha256(entry['record_json'].encode()).hexdigest() != entry['record_sha256']:
-                raise ValueError('stored eCobalt product reference SHA mismatch')
+                raise ValueError('stored ' + provider_name + ' product reference SHA mismatch')
             record = json.loads(entry['record_json'])
-            row = self._project_ecobalt_publisher_reference(record, cache)
+            row = self._project_publisher_reference(provider, record, cache)
             if row['entry_id'] != identity or row['entry_kind'] != entry['kind']:
-                raise ValueError('stored eCobalt product reference typed identity differs')
+                raise ValueError('stored ' + provider_name + ' product reference typed identity differs')
             records[identity] = record
+            stable_references.add(record['source_reference_assertions'][-1]['reference_id'])
             key = _json(record['source_reference_assertions'][-1]['local_reference_key'])
             keys.setdefault(key, []).append(identity)
         proposals = []
         for reference_id in requested:
             reference = references[reference_id]
-            assertion = self._ecobalt_reference_assertion(path, expected_sha256, reference)
+            assertion = self._publisher_reference_assertion(provider, path, expected_sha256, reference)
             previous_ids = keys.get(_json(assertion['local_reference_key']), [])
+            if provider == 'futaba' and (not previous_ids and reference_id in stable_references
+                    or previous_ids and any(records[identity]['title'] != reference['title'] for identity in previous_ids)):
+                result['held'] += 1
+                reason = 'source_reference_scope_or_title_changed'
+                result['held_reasons'][reason] = result['held_reasons'].get(reason, 0) + 1
+                continue
             if len(previous_ids) > 1:
                 result['held'] += 1
                 reason = 'ambiguous_existing_product_reference'
@@ -905,14 +984,14 @@ class LightNovelCatalogue:
                     result['unchanged'] += 1
                     result['reference_entries'][reference_id] = identity
                     continue
-                record = {**record, **self._ecobalt_reference_fields(reference),
+                record = {**record, **getattr(self, profile['fields'])(reference),
                     'source_reference_assertions': [*record['source_reference_assertions'], assertion]}
             else:
-                record = {'schema_version': ECOBALT_REFERENCE_SCHEMA, 'source': 'publisher', 'provider': 'ecobalt',
+                record = {'schema_version': profile['schema'], 'source': 'publisher', 'provider': profile['record_provider'],
                     'kind': 'publisher_reference', 'id': uuid.uuid4().hex,
-                    'source_reference_assertions': [assertion], **self._ecobalt_reference_fields(reference)}
-                identity = 'lnr:pub:ecobalt:' + record['id']
-            self._project_ecobalt_publisher_reference(record, cache)
+                    'source_reference_assertions': [assertion], **getattr(self, profile['fields'])(reference)}
+                identity = 'lnr:pub:' + provider + ':' + record['id']
+            self._project_publisher_reference(provider, record, cache)
             encoded = _json(record)
             proposals.append((identity, reference_id, previous, encoded, hashlib.sha256(encoded.encode()).hexdigest()))
         with self._connect() as db:
@@ -2917,6 +2996,8 @@ class LightNovelCatalogue:
                     child_titles.extend(credit['name'] for credit in record['index_credit_literals'])
             elif record.get('schema_version') == ECOBALT_REFERENCE_SCHEMA:
                 child_titles = [record['author_display']]
+            elif record.get('schema_version') == FUTABA_REFERENCE_SCHEMA:
+                child_titles = [credit['name'] for credit in record['publisher_product_reference']['credits'] if credit['role'] == 'author']
             else:
                 child_titles = []
             values[identity] = normalize_search(' '.join([*titles, *child_titles, *authors]))
@@ -3041,7 +3122,10 @@ class LightNovelCatalogue:
             if row.get('publisher_work_group_kind') in {p['public_kind'] for p in SOURCE_GROUP_PROVIDERS.values() if p.get('index_only')}:
                 child_terms.extend(credit['name'] for credit in row['index_credit_literals'])
             if row['entry_kind'] == 'publisher_reference':
-                child_terms.append(row['author_display'])
+                if 'author_display' in row:
+                    child_terms.append(row['author_display'])
+                else:
+                    child_terms.extend(credit['name'] for credit in row['publisher_product_reference']['credits'] if credit['role'] == 'author')
             if key and key not in normalize_search(' '.join([row['title'], *row['aliases'], *[a['name'] or a['qid'] for a in row['authors']], *child_terms])):
                 continue
             if genre and genre not in {g['qid'] for g in row['genres']}:
@@ -3191,12 +3275,13 @@ class LightNovelCatalogue:
 
     def similar_works(self, entry_id, limit=12, exclude_read=True):
         entry_id = _entry(entry_id)
-        if entry_id.startswith(('lnr:pub:ecobalt:', *( 'lng:pub:' + provider + ':' for provider in SOURCE_GROUP_PROVIDERS))):
+        if entry_id.startswith((*( 'lnr:pub:' + provider + ':' for provider in PUBLISHER_REFERENCE_PROVIDERS),
+                                *( 'lng:pub:' + provider + ':' for provider in SOURCE_GROUP_PROVIDERS))):
             provider = entry_id.split(':')[2]
-            profile = SOURCE_GROUP_PROVIDERS[provider]
             is_reference = entry_id.startswith('lnr:')
+            profile = PUBLISHER_REFERENCE_PROVIDERS[provider] if is_reference else SOURCE_GROUP_PROVIDERS[provider]
             expected_kind = 'publisher_reference' if is_reference else 'publisher_group'
-            expected_schema = ECOBALT_REFERENCE_SCHEMA if is_reference else profile['schema']
+            expected_schema = profile['schema']
             if isinstance(limit, bool) or not 1 <= limit <= 100:
                 raise ValueError('limit must be 1..100')
             with self._connect() as db:
@@ -3208,7 +3293,7 @@ class LightNovelCatalogue:
             record = json.loads(entry['record_json'])
             if entry['kind'] != expected_kind or record.get('schema_version') != expected_schema:
                 raise ValueError('stored typed identity differs')
-            row = self._project_ecobalt_publisher_reference(record, {}) if is_reference else self._project_publisher_source_group(provider, record, {})
+            row = self._project_publisher_reference(provider, record, {}) if is_reference else self._project_publisher_source_group(provider, record, {})
             if row['entry_id'] != entry_id or row['entry_kind'] != entry['kind']:
                 raise ValueError('stored typed identity differs')
             if not row['genres'] and not row['llm_features']:

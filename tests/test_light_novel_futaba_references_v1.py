@@ -290,3 +290,108 @@ def test_m_source_mutations_fail_closed(tmp_path, kind):
         receipt.update(sha256=digest(raw), byte_length=len(raw))
     m_save(env)
     with pytest.raises(ValueError): m_verify(env)
+
+
+def m_grouping_fixture(tmp_path):
+    """Synthetic fixed M frame: 13 explicit unknown groupings per label."""
+    env = m_fixture(tmp_path)
+    for frame_id, frame in env['frames']:
+        for page in frame['pagination_pages']:
+            receipt = page['receipt']
+            path = env['root'] / receipt['raw_path']
+            data = json.loads(path.read_bytes())
+            for ordinal, book in enumerate(data['books']['book_informations']):
+                book['grouping'] = None if page['page'] == 1 and ordinal < 13 else 'Explicit group'
+            if page['page'] == 1:
+                data['books']['book_informations'][1]['grouping'] = '  '
+                data['books']['book_informations'][0]['isbn_code'] = None
+                data['books']['book_informations'][0]['book_authors'][0]['author_type_name'] = None
+            raw = json.dumps(data, ensure_ascii=False).encode()
+            path.write_bytes(raw)
+            receipt.update(sha256=digest(raw), byte_length=len(raw))
+    m_save(env)
+    return env
+
+
+def m_grouping_edit(env, edit, *, ordinal=0):
+    receipt = env['frames'][0][1]['pagination_pages'][0]['receipt']
+    path = env['root'] / receipt['raw_path']
+    data = json.loads(path.read_bytes())
+    edit(data['books']['book_informations'][ordinal])
+    raw = json.dumps(data, ensure_ascii=False).encode()
+    path.write_bytes(raw)
+    receipt.update(sha256=digest(raw), byte_length=len(raw))
+    m_save(env)
+
+
+def ungrouped_verify(env):
+    from recommend_book.light_novel_futaba_references_v1 import verify_futaba_mnovels_ungrouped_references
+    return verify_futaba_mnovels_ungrouped_references(env['path'], env['sha'])
+
+
+def test_m_ungrouped_references_keep_only_explicit_unknown_groupings_and_original_unknowns(tmp_path, monkeypatch):
+    from recommend_book import light_novel_futaba_references_v1 as module
+    env = m_grouping_fixture(tmp_path)
+    original = m_verify(env)
+    calls = []
+    real_source = module._source
+    def counted_source(root, receipt, url, **kwargs):
+        calls.append(url)
+        return real_source(root, receipt, url, **kwargs)
+    monkeypatch.setattr(module, '_source', counted_source)
+    rows = ungrouped_verify(env)
+    assert len(rows) == 26
+    assert len(calls) == len(set(calls)) == 28  # 26 M pages and two reused route assets.
+    assert {r['publisher_reference_id'] for r in rows} == {
+        f'futaba-product:{frame}-1-{i}' for frame in ['mnovels', 'mnovels-f'] for i in range(13)}
+    by_id = {r['publisher_reference_id']: r for r in original}
+    for row in rows:
+        assert {key: row[key] for key in by_id[row['publisher_reference_id']]} == by_id[row['publisher_reference_id']]
+        assert row['grouping_status'] == 'unknown_no_nonempty_publisher_grouping'
+        assert row['grouping_source_literal'] in (None, '  ')
+        assert row['grouping_field_evidence']['locator'].endswith('/grouping')
+        assert row['grouping_field_evidence']['source_url'] == row['source_evidence'][0]['source_url']
+        assert row['grouping_field_evidence']['raw_sha256'] == row['source_evidence'][0]['raw_sha256']
+        assert 'members' not in row and 'volume' not in row
+    assert rows[0]['isbn'] is None and rows[0]['publisher'] is None
+    assert rows[0]['credits'][0]['role'] == 'unknown'
+    assert rows[0]['official_lightnovel_tag'] is None and rows[0]['story_series_asserted'] is False
+    assert all('grouping_source_literal' not in row for row in original)
+    assert not any(secret in json.dumps(rows) for secret in ['PRIVATE_PROSE', 'PRIVATE_DESCRIPTION', 'private.jpg', 'FORGED_ROSTER'])
+
+
+@pytest.mark.parametrize('value', [123, False, [], {}])
+def test_m_ungrouped_rejects_nontext_grouping_even_on_excluded_rows(tmp_path, value):
+    env = m_grouping_fixture(tmp_path)
+    m_grouping_edit(env, lambda book: book.update(grouping=value), ordinal=20)
+    with pytest.raises(ValueError, match='grouping'):
+        ungrouped_verify(env)
+
+
+def test_m_ungrouped_missing_grouping_is_not_assumed_unknown(tmp_path):
+    env = m_grouping_fixture(tmp_path)
+    m_grouping_edit(env, lambda book: book.pop('grouping'))
+    with pytest.raises(ValueError, match='grouping'):
+        ungrouped_verify(env)
+
+
+def test_m_ungrouped_fixed_unknown_count_and_nonempty_exclusion_are_enforced(tmp_path):
+    env = m_grouping_fixture(tmp_path)
+    m_grouping_edit(env, lambda book: book.update(grouping='Now explicitly grouped'))
+    with pytest.raises(ValueError, match='grouping'):
+        ungrouped_verify(env)
+
+
+@pytest.mark.parametrize('mutation', ['hash', 'receipt_status', 'terminal'])
+def test_m_ungrouped_keeps_existing_formal_hash_receipt_and_frame_gates(tmp_path, mutation):
+    env = m_grouping_fixture(tmp_path)
+    if mutation == 'hash':
+        env['sha'] = '0' * 64
+    elif mutation == 'receipt_status':
+        env['frames'][0][1]['pagination_pages'][0]['receipt']['status'] = 302
+        m_save(env)
+    else:
+        env['frames'][0][1]['pagination_pages'][-1]['terminal'] = False
+        m_save(env)
+    with pytest.raises(ValueError):
+        ungrouped_verify(env)
