@@ -1,10 +1,42 @@
 from contextlib import contextmanager
 import json
 import sqlite3
+from types import SimpleNamespace
 
 import pytest
 
 from recommend_book.light_novel_site_backend_v1 import UnifiedCatalogue
+
+
+@pytest.mark.parametrize('source_keys', [('genres', 'languages'), (), ('genres',)])
+def test_preference_facets_reuses_validated_world_filters_without_duplicate_aggregation(source_keys):
+    calls = {'preference': 0, 'world_filters': 0, 'light_filters': 0}
+    native = [{'label_id': 'theme.growth', 'axis': 'theme', 'label': 'Growth'}]
+    filters = {'genres': [{'qid': 'Q1', 'label': 'Fantasy', 'count': 2}],
+               'languages': [{'value': 'ja', 'count': 2}]}
+    preference = {'native_features': native, **{key: filters[key] for key in source_keys}}
+    def world_preference():
+        calls['preference'] += 1
+        return preference
+    def world_filters():
+        calls['world_filters'] += 1
+        if len(source_keys) == 2:
+            raise AssertionError('validated world filters must not be aggregated again')
+        return filters
+    def light_filters():
+        calls['light_filters'] += 1
+        return {'genres': [{'qid': 'Q1', 'label': 'Fantasy', 'count': 3},
+                           {'qid': 'Q2', 'label': 'Mystery', 'count': 1}],
+                'languages': [{'value': 'ja', 'count': 3}, {'value': 'en', 'count': 1}]}
+    world = SimpleNamespace(db_path=None, preference_facets=world_preference, catalogue_facets=world_filters)
+    light = SimpleNamespace(catalogue_facets=light_filters)
+    result = UnifiedCatalogue(world, light).preference_facets()
+    assert result == {'native_features': native,
+        'genres': [{'qid': 'Q1', 'label': 'Fantasy', 'count': 5}, {'qid': 'Q2', 'label': 'Mystery', 'count': 1}],
+        'languages': [{'value': 'ja', 'count': 5}, {'value': 'en', 'count': 1}]}
+    assert result['native_features'] is native
+    assert calls == {'preference': 1, 'world_filters': 0 if len(source_keys) == 2 else 1, 'light_filters': 1}
+    assert filters['genres'][0]['count'] == 2 and filters['languages'][0]['count'] == 2
 
 
 class Store:

@@ -167,8 +167,11 @@ class UnifiedCatalogue:
         return _facets(self.world.catalogue_facets(), self.light_novels.catalogue_facets())
 
     def preference_facets(self):
-        # The existing taxonomy is already the shared, public choice set.
-        return {**self.world.preference_facets(), **self.catalogue_facets()}
+        # Production preference facets already include authenticated world
+        # filters. Reuse them within this operation rather than collecting twice.
+        preference = self.world.preference_facets()
+        world_filters = preference if 'genres' in preference and 'languages' in preference else self.world.catalogue_facets()
+        return {**preference, **_facets(world_filters, self.light_novels.catalogue_facets())}
 
     def recommend_preferences(self, *, liked_qids=None, liked_entry_ids=None, family='all', limit=30, **kwargs):
         if family not in ('all', 'world', 'light_novel') or type(limit) is not int or not 1 <= limit <= 100:

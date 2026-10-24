@@ -14,6 +14,7 @@ ISBN = '9784758047678'
 @pytest.mark.parametrize(('provider', 'module', 'function'), [
     ('kodansha', 'recommend_book.light_novel_kodansha_references_v1', 'verify_kodansha_references'),
     ('hifumi', 'recommend_book.light_novel_hifumi_references_v1', 'verify_hifumi_references'),
+    ('overlap', 'recommend_book.light_novel_overlap_references_v1', 'verify_overlap_references'),
 ])
 def test_additional_reference_providers_receive_the_original_pinned_manifest(tmp_path, monkeypatch, provider, module, function):
     import importlib
