@@ -42,7 +42,7 @@ uv run --locked python scripts/serve_scale_catalogue_v1.py --database data/auton
 
 ## ここから進めること
 
-最新の計画は[v23：日本のライトノベルの収録漏れを補う](docs/autonomous-next-phase-plan-v23.md)、現在地は[ライトノベル対応の進捗](docs/light-novels-progress-v1.md)にまとめています。[2万分類の到達状況](docs/scale-classification-v4.md)は前段階の記録です。新たな不具合や変更がなければ同じ分類・監査・画面確認を繰り返しません。
+最新の計画は[v24：日本のライトノベルを広く収録する](docs/autonomous-next-phase-plan-v24.md)、現在地は[ライトノベル対応の進捗](docs/light-novels-progress-v1.md)にまとめています。[2万分類の到達状況](docs/scale-classification-v4.md)は前段階の記録です。新たな不具合や変更がなければ同じ分類・監査・画面確認を繰り返しません。
 
 1. 出版社のシリーズ一覧とNDL作成の書誌を照合し、未収録のシリーズを補います。
 2. 固定20シリーズの照合と、内容特徴あり500シリーズ以上への拡張を進めます。
@@ -54,7 +54,7 @@ uv run --locked python scripts/serve_scale_catalogue_v1.py --database data/auton
 
 データ購入・外部委託・有料APIへの切替は行わず、無料公開資料と既存のCodex CLIを使います。データのAI入力・表示・再配布・商用利用条件は資料と用途ごとに管理します。
 
-- [次の実行計画：日本のライトノベルを必須対象にする追加計画](docs/autonomous-next-phase-plan-v23.md)
+- [次の実行計画：日本のライトノベルを広く収録する](docs/autonomous-next-phase-plan-v24.md)
 - [詳細分類2万作品への実行状況と残作業](docs/scale-classification-v4.md)
 - [品質評価仕様](docs/quality-evaluation-protocol-v1.md)
 - [初期設計](docs/world-novel-dataset-plan.md)
