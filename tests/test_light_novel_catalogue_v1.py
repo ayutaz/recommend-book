@@ -341,6 +341,162 @@ def test_edition_series_membership_requires_all_fields_and_never_creates_origina
     assert cat.work_detail('lns:wd:Q1')['read_status'] == 'unknown'
 
 
+def _scoped_membership_duplicate_series(cat, series, tmp_path):
+    from copy import deepcopy
+    from pathlib import Path
+    duplicate = deepcopy(series)
+    duplicate['id'] = 'Q4'
+    payload = json.loads(Path(series['provenance']['raw_path']).read_text(encoding='utf-8'))
+    payload['entities']['Q4'] = deepcopy(payload['entities']['Q1'])
+    payload['entities']['Q4']['id'] = 'Q4'
+    raw = tmp_path / 'scoped-duplicate-series.json'
+    duplicate['provenance'].update(raw_path=str(raw), raw_sha256=write(raw, payload),
+                                   url='https://www.wikidata.org/wiki/Q4')
+    assert cat.ingest([duplicate])['inserted'] == 1
+    return duplicate
+
+
+def _scoped_membership_duplicate_edition(cat, edition, tmp_path, *, title_suffix=''):
+    from copy import deepcopy
+    from pathlib import Path
+    import xml.etree.ElementTree as ET
+    from recommend_book.ingestion.core import RawArtifact
+    from recommend_book.ingestion.ndl import NDLAdapter
+    duplicate = deepcopy(edition)
+    raw = tmp_path / 'scoped-unrelated-edition.xml'
+    raw.write_text(Path(edition['provenance']['raw_path']).read_text(encoding='utf-8')
+                   .replace('R100000002-I1', 'R100000002-I2')
+                   .replace(edition['title'], edition['title'] + title_suffix), encoding='utf-8')
+    digest = hashlib.sha256(raw.read_bytes()).hexdigest()
+    source = NDLAdapter(None)._normalize(ET.fromstring(raw.read_text(encoding='utf-8')),
+        RawArtifact(digest, str(raw), raw.stat().st_size, '2026-10-24T00:00:00Z',
+                    'https://ndlsearch.ndl.go.jp/api/sru'),
+        'iss-ndl-opac', locator='records[1]/recordData').model_dump(mode='json')
+    duplicate.update(id=source['source_id'], source_record=source, source_url=source['source_url'],
+                     title=source['titles'][0]['value'])
+    duplicate['provenance'].update(raw_path=str(raw), raw_sha256=digest, url=source['source_url'])
+    assert cat.import_editions([duplicate])['inserted'] == 1
+    return duplicate
+
+
+def test_scoped_wikidata_membership_links_and_repeats_without_replacing(membership_bundle, monkeypatch):
+    cat, _, _, manifest, msha = membership_bundle
+    def forbidden_full_rows(*args, **kwargs):
+        raise AssertionError('scoped membership must not call the full catalogue reader')
+    monkeypatch.setattr(cat, '_rows', forbidden_full_rows)
+    result = cat.resolve_wikidata_edition_memberships(manifest, msha,
+        edition_ids=['lne:ndl:R100000002-I1'])
+    assert result == {'scope': 'wikidata_series_only', 'requested_editions': 1,
+        'candidate_series': 1, 'linked': 1, 'unchanged': 0, 'protected_existing': 0,
+        'unresolved_editions': 0}
+    with cat._connect() as db:
+        before = tuple(db.execute('SELECT * FROM edition_series_memberships').fetchone())
+    assert cat.resolve_wikidata_edition_memberships(manifest, msha,
+        edition_ids=['lne:ndl:R100000002-I1'])['unchanged'] == 1
+    with cat._connect() as db:
+        assert tuple(db.execute('SELECT * FROM edition_series_memberships').fetchone()) == before
+
+
+@pytest.mark.parametrize('scope', [[], ['lne:ndl:missing'], ['lns:wd:Q1'],
+                                 ['Q1'], ['lne:ndl:R100000002-I1'] * 2])
+def test_scoped_wikidata_membership_empty_or_invalid_scope_is_write_free(membership_bundle, scope):
+    cat, _, _, manifest, msha = membership_bundle
+    if not scope:
+        assert cat.resolve_wikidata_edition_memberships('missing-manifest', 'invalid',
+            edition_ids=scope)['requested_editions'] == 0
+    else:
+        with pytest.raises(ValueError):
+            cat.resolve_wikidata_edition_memberships(manifest, msha, edition_ids=scope)
+    with cat._connect() as db:
+        assert db.execute('SELECT count(*) FROM edition_series_memberships').fetchone()[0] == 0
+
+
+def test_scoped_wikidata_membership_reads_only_requested_and_title_candidate_raws(
+        membership_bundle, setup_catalogue, tmp_path):
+    from pathlib import Path
+    cat, _, edition, manifest, msha = membership_bundle
+    _, records = setup_catalogue
+    # Its conditions pin predates the edition fixture; preserve the current one.
+    records[1]['provenance']['conditions_sha256'] = edition['provenance']['conditions_sha256']
+    assert cat.ingest([records[1]])['inserted'] == 1
+    unrelated = _scoped_membership_duplicate_edition(cat, edition, tmp_path)
+    Path(records[1]['provenance']['raw_path']).write_text('changed', encoding='utf-8')
+    Path(unrelated['provenance']['raw_path']).write_text('changed', encoding='utf-8')
+    result = cat.resolve_wikidata_edition_memberships(manifest, msha,
+        edition_ids=['lne:ndl:R100000002-I1'])
+    assert result['linked'] == 1 and result['candidate_series'] == 1
+    with cat._connect() as db:
+        assert [r['edition_id'] for r in db.execute('SELECT * FROM edition_series_memberships')] == ['lne:ndl:R100000002-I1']
+
+
+@pytest.mark.parametrize('change', ['valid_ambiguous', 'raw', 'sql_kind', 'record_sha'])
+def test_scoped_wikidata_membership_cannot_hide_second_candidate_or_write_partial(
+        membership_bundle, tmp_path, change):
+    from pathlib import Path
+    cat, series, _, manifest, msha = membership_bundle
+    duplicate = _scoped_membership_duplicate_series(cat, series, tmp_path)
+    if change == 'raw':
+        Path(duplicate['provenance']['raw_path']).write_text('{}', encoding='utf-8')
+    elif change == 'sql_kind':
+        with cat._connect() as db:
+            db.execute("UPDATE entries SET kind='work' WHERE entry_id='lns:wd:Q4'")
+    elif change == 'record_sha':
+        with cat._connect() as db:
+            db.execute("UPDATE entries SET record_sha256=? WHERE entry_id='lns:wd:Q4'", ('0' * 64,))
+    if change == 'valid_ambiguous':
+        result = cat.resolve_wikidata_edition_memberships(manifest, msha,
+            edition_ids=['lne:ndl:R100000002-I1'])
+        assert result['candidate_series'] == 2 and result['unresolved_editions'] == 1
+    else:
+        with pytest.raises(ValueError):
+            cat.resolve_wikidata_edition_memberships(manifest, msha,
+                edition_ids=['lne:ndl:R100000002-I1'])
+    with cat._connect() as db:
+        assert db.execute('SELECT count(*) FROM edition_series_memberships').fetchone()[0] == 0
+
+
+def test_scoped_wikidata_membership_preserves_different_existing_proof(membership_bundle, tmp_path):
+    cat, _, _, manifest, msha = membership_bundle
+    assert cat.resolve_edition_series_memberships(manifest, msha)['linked'] == 1
+    with cat._connect() as db:
+        before = tuple(db.execute('SELECT * FROM edition_series_memberships').fetchone())
+    new_manifest = tmp_path / 'independent-author-authorities.json'
+    new_manifest.write_bytes(manifest.read_bytes())
+    result = cat.resolve_wikidata_edition_memberships(new_manifest, msha,
+        edition_ids=['lne:ndl:R100000002-I1'])
+    assert result['protected_existing'] == 1 and result['linked'] == result['unchanged'] == 0
+    with cat._connect() as db:
+        assert tuple(db.execute('SELECT * FROM edition_series_memberships').fetchone()) == before
+
+
+def test_scoped_wikidata_membership_keeps_complete_title_and_authority_gates(membership_bundle, tmp_path):
+    cat, _, edition, manifest, msha = membership_bundle
+    empty = tmp_path / 'unproven-authorities.json'
+    digest = write(empty, {'version': 'light-novel-author-authorities-v1', 'authors': []})
+    result = cat.resolve_wikidata_edition_memberships(empty, digest,
+        edition_ids=['lne:ndl:R100000002-I1'])
+    assert result['linked'] == 0 and result['unresolved_editions'] == 1
+    # The exact title preselection uses the same complete normalization as the
+    # six-gate matcher; a suffixed title cannot become its parent story title.
+    _scoped_membership_duplicate_edition(cat, edition, tmp_path, title_suffix=' 外伝')
+    result = cat.resolve_wikidata_edition_memberships(manifest, msha,
+        edition_ids=['lne:ndl:R100000002-I2'])
+    assert result['candidate_series'] == 0 and result['unresolved_editions'] == 1
+    assert result['linked'] == 0
+
+
+def test_scoped_wikidata_membership_authenticates_all_requested_before_any_insert(membership_bundle, tmp_path):
+    from pathlib import Path
+    cat, _, edition, manifest, msha = membership_bundle
+    duplicate = _scoped_membership_duplicate_edition(cat, edition, tmp_path)
+    Path(duplicate['provenance']['raw_path']).write_text('{}', encoding='utf-8')
+    with pytest.raises(ValueError):
+        cat.resolve_wikidata_edition_memberships(manifest, msha,
+            edition_ids=['lne:ndl:R100000002-I1', 'lne:ndl:R100000002-I2'])
+    with cat._connect() as db:
+        assert db.execute('SELECT count(*) FROM edition_series_memberships').fetchone()[0] == 0
+
+
 def test_membership_missing_authority_does_not_link_and_pin_mutation_expires(membership_bundle):
     from pathlib import Path
     cat, _, _, manifest, msha = membership_bundle
@@ -3080,3 +3236,237 @@ def test_overlap_details_integration_leaves_legacy_overlap_source_dispatch_uncha
     original_rows = [{'publisher_reference_id': 'legacy-overlap-only', 'credits': [{'role': 'unknown', 'name': '人物'}]}]
     monkeypatch.setattr(legacy, 'verify_overlap_references', lambda path, expected: original_rows)
     assert cat._publisher_bibliography_references('overlap', manifest, sha) is original_rows
+
+
+@pytest.fixture
+def futaba_mnovels_integration(publisher_edition_v2, monkeypatch, tmp_path):
+    from copy import deepcopy
+    from pathlib import Path
+    from urllib.parse import quote
+    import xml.etree.ElementTree as ET
+    from recommend_book.ingestion.core import RawArtifact
+    from recommend_book.ingestion.ndl import NDLAdapter
+    from recommend_book import light_novel_futaba_references_v1 as source_verifier
+
+    label = 'Ｍノベルス'
+    cat, first, _ = publisher_edition_v2(publisher='双葉社', imprint=label, authority=False)
+    assert cat.import_editions([first])['inserted'] == 1
+    api = source_verifier._FIRST.replace(quote('モンスター文庫'), quote(label))
+    index = 'https://www.futabasha.co.jp/search?label_name=' + quote(label)
+
+    def reference(number=1, *, title='主書名３ 副書名', isbn='9784798613161'):
+        pointer = '/books/book_informations/0'
+        return {'publisher_reference_id': 'futaba-product:opaque-' + str(number),
+            'source_unit': 'publisher_product_reference', 'source_url': 'https://www.futabasha.co.jp/book/opaque-' + str(number) + '?type=1',
+            'title': title, 'isbn': isbn, 'isbn_source_literal': isbn, 'publisher': None, 'form': '単行本',
+            'credits': [{'role': 'author', 'name': '著者'}], 'label': label, 'label_literals': [label],
+            'official_lightnovel_tag': None, 'story_series_asserted': False,
+            'metadata_conflict': False, 'bibliographic_variants': [],
+            'credit_literals': [{'role': '著', 'name': '著者', 'role_field': 'author_type_name',
+                                 'locator': pointer + '/book_authors/0'}],
+            'source_scope_membership': {'source_unit': 'publisher_label_filtered_product_listing',
+                'membership_basis': 'returned_by_publisher_explicit_label_filter', 'filter_parameter': 'label_name',
+                'filter_literal': label, 'rendered_index_url': index, 'request_url': api, 'raw_sha256': 'a' * 64,
+                'source_label_id_literal': 12, 'source_label_id_locator': pointer + '/label_id',
+                'card_label_literal': label, 'card_label_locator': pointer + '/label_name',
+                'official_ui_route_proof': 'synthetic-mnovels-ui-route-proof.json',
+                'does_not_assert_story_series_or_original_identity': True},
+            'source_evidence': [{'source_url': api, 'raw_sha256': 'a' * 64,
+                'locator': pointer + ': book_name/isbn_code/book_authors/label_name/label_id/publication_form_value'}]}
+
+    references = [reference()]
+    manifest = tmp_path / 'futaba-mnovels-synthetic.json'
+    sha = write(manifest, {'synthetic': 'M novels verified source projection'})
+    def verify(path, expected):
+        assert Path(path).resolve() == manifest.resolve() and expected == sha
+        if hashlib.sha256(manifest.read_bytes()).hexdigest() != expected:
+            raise ValueError('synthetic M novels source manifest changed')
+        return references
+    monkeypatch.setattr(source_verifier, 'verify_futaba_mnovels_references', verify, raising=False)
+
+    def add_second():
+        other = deepcopy(first)
+        xml = Path(first['provenance']['raw_path']).read_text(encoding='utf-8')
+        xml = xml.replace(first['id'], 'R100000002-I2').replace('9784798613161', '9784758047678').replace('副書名', '別副書名')
+        raw = tmp_path / 'mnovels-second.xml'
+        raw.write_text(xml, encoding='utf-8')
+        digest = hashlib.sha256(raw.read_bytes()).hexdigest()
+        normalized = NDLAdapter(None)._normalize(ET.fromstring(xml), RawArtifact(digest, str(raw), raw.stat().st_size,
+            first['source_record']['retrieved_at'], 'https://ndlsearch.ndl.go.jp/api/sru'), 'iss-ndl-opac',
+            locator='records[1]/recordData').model_dump(mode='json')
+        other.update(id=normalized['source_id'], source_url=normalized['source_url'], source_record=normalized,
+                     title=normalized['titles'][0]['value'], isbn=['9784758047678'])
+        other['provenance'].update(url=normalized['source_url'], raw_path=str(raw), raw_sha256=digest)
+        assert cat.import_editions([other])['inserted'] == 1
+        references.append(reference(2, title='主書名３ 別副書名', isbn='9784758047678'))
+        return raw
+    return cat, first, references, manifest, sha, add_second
+
+
+def test_futaba_mnovels_integration_is_idempotent_bibliography_without_ln_or_edition_confirmation(futaba_mnovels_integration):
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    cat, first, refs, manifest, sha, _ = futaba_mnovels_integration
+    result = cat.correlate_publisher_bibliographies('futaba-mnovels', manifest, sha)
+    assert result['new_correspondences'] == result['candidate_editions_verified'] == 1, result
+    with cat._connect() as db:
+        saved = dict(db.execute('SELECT * FROM publisher_bibliographic_correspondences').fetchone())
+        assert db.execute('SELECT count(*) FROM edition_book_confirmations').fetchone()[0] == 0
+    assert saved['provider'] == 'futaba-mnovels'
+    assert hashlib.sha256(saved['proof_json'].encode()).hexdigest() == saved['proof_sha256']
+    proof, = json.loads(saved['proof_json'])['matches']
+    assert proof['scope'] == 'publisher_reference_to_ndl_bibliographic_record'
+    assert proof['provider'] == 'futaba-mnovels'
+    assert proof['official_lightnovel_tag'] is None and proof['light_novel_status'] == 'unknown'
+    assert proof['official_publisher'] is None and proof['official_publisher_asserted'] is False
+    assert proof['authors'][0]['authority_status'] == 'unknown'
+    assert proof['same_edition_identity_asserted'] is False and proof['product_sku_identity_asserted'] is False
+    assert 'label_classification_context' not in proof
+    assert cat.correlate_publisher_bibliographies('futaba-mnovels', manifest, sha)['unchanged_correspondences'] == 1
+    row = cat.work_detail('lne:ndl:' + first['id'])
+    assert row['publisher_bibliography_matched'] is True and row['light_novel_confirmed'] is False
+    assert not row.get('edition_bibliography_confirmed') and row['original_language'] is None
+    assert row['bibliography_source_url'] == refs[0]['source_url']
+    public = public_work(row)
+    assert public['publisher_bibliography_matched'] is True and public['light_novel_confirmed'] is False
+    assert not public.get('edition_bibliography_confirmed')
+    assert 'raw_path' not in json.dumps(public) and 'primary_locators' not in json.dumps(public)
+
+
+def test_futaba_mnovels_integration_source_reclassification_cannot_replay_saved_proof(futaba_mnovels_integration):
+    cat, first, refs, manifest, sha, _ = futaba_mnovels_integration
+    assert cat.correlate_publisher_bibliographies('futaba-mnovels', manifest, sha)['new_correspondences'] == 1
+    refs[0]['official_lightnovel_tag'] = True
+    assert cat.correlate_publisher_bibliographies('futaba-mnovels', manifest, sha)['matched_publisher_references'] == 0
+    row = cat.work_detail('lne:ndl:' + first['id'])
+    assert not row.get('publisher_bibliography_matched') and row['light_novel_confirmed'] is False
+
+
+@pytest.mark.parametrize('change', ['own_raw', 'rehashed_projection', 'typed_identity'])
+def test_futaba_mnovels_integration_authenticates_raw_and_typed_projection_before_saving(futaba_mnovels_integration, change):
+    from pathlib import Path
+    cat, first, _, manifest, sha, _ = futaba_mnovels_integration
+    if change == 'own_raw':
+        Path(first['provenance']['raw_path']).write_bytes(b'changed own M novels raw')
+    elif change == 'typed_identity':
+        with cat._connect() as db:
+            db.execute('UPDATE entries SET kind=?', ('work',))
+    else:
+        first['source_record']['publisher'] = first['publisher'] = '原資料にない別出版社'
+        encoded = json.dumps(first, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+        with cat._connect() as db:
+            db.execute('UPDATE entries SET record_json=?,record_sha256=?',
+                       (encoded, hashlib.sha256(encoded.encode()).hexdigest()))
+    with pytest.raises(ValueError):
+        cat.correlate_publisher_bibliographies('futaba-mnovels', manifest, sha)
+    with cat._connect() as db:
+        assert db.execute('SELECT count(*) FROM publisher_bibliographic_correspondences').fetchone()[0] == 0
+
+
+def test_futaba_mnovels_integration_second_raw_failure_rolls_back_first_correspondence(futaba_mnovels_integration):
+    cat, _, _, manifest, sha, add_second = futaba_mnovels_integration
+    add_second().write_bytes(b'second original raw unavailable')
+    with pytest.raises(ValueError, match='SHA'):
+        cat.correlate_publisher_bibliographies('futaba-mnovels', manifest, sha)
+    with cat._connect() as db:
+        assert db.execute('SELECT count(*) FROM publisher_bibliographic_correspondences').fetchone()[0] == 0
+
+
+def test_futaba_mnovels_integration_preserves_monster_book_confirmation(hifumi_futaba_confirmation):
+    cat, record, _, manifest, _ = hifumi_futaba_confirmation('futaba', authority=False)
+    assert cat.confirm_publisher_editions('futaba', manifest, 'f' * 64)['confirmed'] == 1
+    row = cat.work_detail('lne:ndl:' + record['id'])
+    assert row['edition_bibliography_confirmed'] is True and row['light_novel_confirmed'] is True
+    assert row['edition_confirmation_evidence']['rule_version'] == 'futaba-monster-ndl-contained-isbn-bibliography-v1'
+    assert row['edition_confirmation_evidence']['scope'] == 'edition_only'
+
+
+@pytest.fixture
+def shueisha_dx_fallback_integration(publisher_edition_v2, monkeypatch, tmp_path):
+    from pathlib import Path
+    import xml.etree.ElementTree as ET
+    from recommend_book.ingestion.core import RawArtifact
+    from recommend_book.ingestion.ndl import NDLAdapter
+    from recommend_book import light_novel_shueisha_books_v1 as verifier
+
+    def build(*, legacy=False):
+        options = {'title': '主書名', 'volume': None, 'official_title': '主書名'} if legacy else {}
+        cat, record, _ = publisher_edition_v2(publisher='集英社',
+            imprint='スーパーダッシュ文庫' if legacy else '集英社スーパーダッシュ文庫', **options)
+        if not legacy:
+            raw = Path(record['provenance']['raw_path'])
+            xml = raw.read_text(encoding='utf-8').replace('<f:name>著者</f:name>', '<f:name>著, 者, 1990-</f:name>')
+            raw.write_text(xml, encoding='utf-8')
+            digest = hashlib.sha256(raw.read_bytes()).hexdigest()
+            source = NDLAdapter(None)._normalize(ET.fromstring(xml), RawArtifact(digest, str(raw), raw.stat().st_size,
+                record['source_record']['retrieved_at'], 'https://ndlsearch.ndl.go.jp/api/sru'), 'iss-ndl-opac',
+                locator='records[1]/recordData').model_dump(mode='json')
+            record.update(source_record=source, authors=[c['name'] for c in source['contributors'] if c['role'] == 'author'])
+            record['provenance']['raw_sha256'] = digest
+        assert cat.import_editions([record])['inserted'] == 1
+        identifier = '978-4-7986-1316-1'
+        book = {'kind': 'book', 'publisher_book_id': identifier, 'isbn_as_publisher_url': identifier,
+            'isbn': '9784798613161', 'source_url': 'https://dash.shueisha.co.jp/bookDetail/index/' + identifier,
+            'title': '主書名' if legacy else '主書名３ 副書名', 'publisher': '集英社', 'label': 'スーパーダッシュ文庫',
+            'credits': [{'role': '著者', 'name': '著者'}], 'published_on': None,
+            'story_series_identity': 'unassessed_no_title_stripping', 'source_evidence': {
+                'source_url': 'https://dash.shueisha.co.jp/library/index/', 'source_sha256': 'a' * 64,
+                'selector': 'section.result_box:nth-of-type(1) h4 / span.boldText',
+                'raw_path': 'private-source-path-must-not-be-public', 'retrieved_at': '2026-10-25T00:00:00Z'}}
+        manifest = tmp_path / 'dx-formal-books-synthetic.json'
+        sha = write(manifest, {'synthetic': 'strict formal DX book projection'})
+        def verify(path, expected):
+            assert Path(path).resolve() == manifest.resolve() and expected == sha
+            return [book]
+        monkeypatch.setattr(verifier, 'verify_shueisha_books', verify)
+        return cat, record, book, manifest, sha
+    return build
+
+
+def test_shueisha_dx_fallback_integration_dated_own_writer_and_prefixed_imprint_are_contained_only(shueisha_dx_fallback_integration):
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    cat, record, book, manifest, sha = shueisha_dx_fallback_integration()
+    result = cat.confirm_publisher_editions('shueisha-dx', manifest, sha)
+    assert result['confirmed'] == result['ndl_candidate_editions_verified'] == 1
+    with cat._connect() as db:
+        saved = dict(db.execute('SELECT * FROM edition_book_confirmations').fetchone())
+    assert hashlib.sha256(saved['proof_json'].encode()).hexdigest() == saved['proof_sha256']
+    proof = json.loads(saved['proof_json'])['match']
+    assert proof['scope'] == 'edition_only' and proof['confirmed_scope'] == 'contained_bibliographic_edition_only'
+    assert proof['official_printed_ISBN_asserted'] is False
+    assert proof['isbn_lookup_basis'] == 'publisher_url_identifier_to_own_primary_isbn'
+    assert proof['publisher_book_id'] == book['publisher_book_id']
+    assert proof['original_work_identity_asserted'] is False and proof['story_series_identity_asserted'] is False
+    assert proof['title_match']['volume'] == '3' and proof['title_match']['subtitle'] == '副書名'
+    assert 'private-source-path' not in json.dumps(proof)
+    assert cat.confirm_publisher_editions('shueisha-dx', manifest, sha)['unchanged'] == 1
+    row = cat.work_detail('lne:ndl:' + record['id'])
+    assert row['edition_bibliography_confirmed'] is True and row['light_novel_confirmed'] is True
+    assert row['edition_confirmation_evidence'] == proof
+    public = public_work(row)
+    assert public['edition_bibliography_confirmed'] is True and public['confirmation_source_url'] == book['source_url']
+    assert 'edition_confirmation_evidence' not in public and 'raw_path' not in json.dumps(public)
+
+
+def test_shueisha_dx_fallback_integration_legacy_v1_proof_has_complete_precedence(shueisha_dx_fallback_integration, monkeypatch):
+    from recommend_book import light_novel_shueisha_match_v1 as matcher
+    cat, record, book, manifest, sha = shueisha_dx_fallback_integration(legacy=True)
+    baseline = cat._publisher_edition_match_v1('shueisha-dx', book, record, {})
+    assert baseline['rule_version'] == 'publisher-ndl-edition-confirmation-v1'
+    monkeypatch.setattr(matcher, 'match_shueisha_bibliographic_edition',
+                        lambda *args: pytest.fail('new fallback must never replace an existing v1 proof'), raising=False)
+    assert cat._publisher_edition_match('shueisha-dx', book, record, {}) == baseline
+    assert cat.confirm_publisher_editions('shueisha-dx', manifest, sha)['confirmed'] == 1
+    assert cat.work_detail('lne:ndl:' + record['id'])['edition_confirmation_evidence'] == baseline
+
+
+def test_shueisha_dx_fallback_integration_never_saves_missing_subtitle_or_changed_raw(shueisha_dx_fallback_integration):
+    from pathlib import Path
+    cat, record, book, manifest, sha = shueisha_dx_fallback_integration()
+    book['title'] = '主書名３'
+    assert cat.confirm_publisher_editions('shueisha-dx', manifest, sha)['confirmed'] == 0
+    book['title'] = '主書名３ 副書名'
+    Path(record['provenance']['raw_path']).write_bytes(b'original NDL raw changed')
+    with pytest.raises(ValueError, match='SHA'):
+        cat.confirm_publisher_editions('shueisha-dx', manifest, sha)
+    with cat._connect() as db:
+        assert db.execute('SELECT count(*) FROM edition_book_confirmations').fetchone()[0] == 0

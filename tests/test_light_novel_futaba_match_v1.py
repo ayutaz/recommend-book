@@ -1,9 +1,13 @@
 from copy import deepcopy
+from hashlib import sha256
+import json
 from urllib.parse import quote
 
 import pytest
 
-from recommend_book.light_novel_futaba_match_v1 import match_futaba_reference
+from recommend_book.light_novel_futaba_match_v1 import (
+    match_futaba_reference, match_futaba_mnovels_reference, reference_hold_reason,
+)
 
 
 ISBN = '9781234567897'
@@ -167,3 +171,81 @@ def test_exact_complete_titles_and_pure_no_io_contract(monkeypatch):
     ref = reference()
     ref['title'] += ' 特装版'
     assert match_futaba_reference(ref, parts()) is None
+
+
+def mnovels_case(label='Ｍノベルス', *, page=1, ordinal=0):
+    ref,own=reference(),parts()
+    pointer=f'/books/book_informations/{ordinal}'
+    encoded=quote(label)
+    api=API.replace(quote(LABEL),encoded).replace('&page=1&',f'&page={page}&')
+    ref.update(label=label,label_literals=[label],form='単行本')
+    ref['source_evidence'][0].update(source_url=api,locator=pointer+': book_name/isbn_code/book_authors/label_name/label_id/publication_form_value')
+    for index,literal in enumerate(ref['credit_literals']):
+        literal['locator']=pointer+f'/book_authors/{index}'
+    ref['source_scope_membership'].update(filter_literal=label,
+        rendered_index_url=SEARCH.replace(quote(LABEL),encoded),request_url=api,
+        source_label_id_literal=12 if label=='Ｍノベルス' else 21,source_label_id_locator=pointer+'/label_id',
+        card_label_literal=label,card_label_locator=pointer+'/label_name',
+        official_ui_route_proof='futaba-mnovels-observed-label-route')
+    own['source']['series']=label+' ; 3'
+    return ref,own
+
+
+@pytest.mark.parametrize('label,page,ordinal',[
+    ('Ｍノベルス',1,0),('Ｍノベルス',14,9),('Ｍノベルスｆ',1,0),('Ｍノベルスｆ',12,5),
+])
+def test_mnovels_full_label_query_terminal_card_and_explicit_roles_preserve_unknown_classification(label,page,ordinal):
+    ref,own=mnovels_case(label,page=page,ordinal=ordinal)
+    before=deepcopy((ref,own))
+    assert reference_hold_reason(ref) is None
+    proof=match_futaba_mnovels_reference(ref,own)
+    assert proof['provider']=='futaba-mnovels'
+    assert proof['scope']=='publisher_reference_to_ndl_bibliographic_record'
+    assert proof['light_novel_status']=='unknown' and proof['official_lightnovel_tag'] is None
+    assert proof['official_label']==label and proof['official_form']=='単行本'
+    assert proof['official_publisher'] is None and proof['official_publisher_asserted'] is False
+    assert proof['official_credit_literals']==ref['credit_literals']
+    assert proof['source_scope_membership']==ref['source_scope_membership']
+    assert 'label_classification_context' not in proof and 'confirmed_scope' not in proof
+    assert proof['same_edition_identity_asserted'] is False and proof['story_series_identity_asserted'] is False
+    assert (ref,own)==before
+
+
+@pytest.mark.parametrize('change',['page_over','terminal_card','label_id','query','unknown_isbn',
+    'role_literal','role_unknown','source_tag','source_publisher','source_form','mixed_imprint'])
+def test_mnovels_source_scope_and_imprint_cannot_be_inferred_or_promoted(change):
+    ref,own=mnovels_case()
+    if change=='page_over':ref,own=mnovels_case(page=15)
+    elif change=='terminal_card':ref,own=mnovels_case('Ｍノベルスｆ',page=12,ordinal=6)
+    elif change=='label_id':ref['source_scope_membership']['source_label_id_literal']=21
+    elif change=='query':ref['source_evidence'][0]['source_url']=ref['source_evidence'][0]['source_url'].replace('media=0','media=2')
+    elif change=='unknown_isbn':ref['isbn']=None;ref['isbn_source_literal']=None
+    elif change=='role_literal':ref['credit_literals'][0]['role']='イラスト'
+    elif change=='role_unknown':ref['credits'][0]['role']='unknown';ref['credit_literals'][0]['role']='作'
+    elif change=='source_tag':ref['official_lightnovel_tag']=True
+    elif change=='source_publisher':ref['publisher']='双葉社'
+    elif change=='source_form':ref['form']='コミック'
+    else:own['source']['series']='Ｍノベルス = 別レーベル ; 3'
+    assert match_futaba_mnovels_reference(ref,own) is None
+
+
+def test_mnovels_reuses_all_own_isbn_title_volume_writer_publisher_language_and_ndc_gates():
+    for change in ('isbn','title','volume','writer','publisher','language','ndc'):
+        ref,own=mnovels_case()
+        if change=='isbn':own['source']['identifiers'][0]['value']='9781234567880'
+        elif change=='title':ref['title']='完全な題３'
+        elif change=='volume':own['volume']['value']='2'
+        elif change=='writer':own['source']['contributors'][0]['name']='別著者';own['literal_authors']=[]
+        elif change=='publisher':own['source']['publisher']=own['publisher_agents'][0]['name']='別社'
+        elif change=='language':own['source']['language']='eng'
+        else:own['source']['extra']['ndc_codes']=['726.1']
+        assert match_futaba_mnovels_reference(ref,own) is None,change
+
+
+@pytest.mark.parametrize('authority,digest',[
+    (True,'edfe767aa343a287ab84514c88f4387228db3860a1a87681380826d4c557f7af'),
+    (False,'5032e4940d6caa1be0d320954694b21dd5841785be595774773de9842cccbad3'),
+])
+def test_monster_complete_proof_is_unchanged_by_mnovels_profile(authority,digest):
+    proof=match_futaba_reference(reference(),parts(authority=authority))
+    assert sha256(json.dumps(proof,ensure_ascii=False,sort_keys=True).encode()).hexdigest()==digest

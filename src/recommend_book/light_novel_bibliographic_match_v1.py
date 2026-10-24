@@ -30,6 +30,9 @@ _NDL = re.compile(r'R100000002-[A-Za-z0-9._-]+')
 
 def reference_hold_reason(provider, reference):
     """Report only a reference gate; it does not authenticate source artifacts."""
+    if provider == 'futaba-mnovels':
+        from .light_novel_futaba_match_v1 import reference_hold_reason as futaba_mnovels_hold
+        return futaba_mnovels_hold(reference)
     if provider == 'overlap-details':
         from .light_novel_overlap_details_match_v1 import reference_hold_reason as overlap_details_hold
         return overlap_details_hold(reference)
@@ -199,6 +202,9 @@ def _match(provider, reference, parts):
 
 def match_bibliographic_reference(provider, reference, primary_parts, *, same_isbn_parts=None):
     """Return a bounded bibliographic proof, or hold incomplete/conflicting facts."""
+    if provider == 'futaba-mnovels':
+        from .light_novel_futaba_match_v1 import match_futaba_mnovels_reference
+        return match_futaba_mnovels_reference(reference, primary_parts)
     if provider == 'overlap-details':
         from .light_novel_overlap_details_match_v1 import match_overlap_details
         return match_overlap_details(reference, primary_parts, same_isbn_parts=same_isbn_parts)

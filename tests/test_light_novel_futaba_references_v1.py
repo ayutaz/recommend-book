@@ -1,10 +1,12 @@
 import hashlib
 import json
 from urllib.parse import parse_qs, urlsplit
+from urllib.parse import quote
 
 import pytest
 
 from recommend_book.light_novel_futaba_references_v1 import verify_futaba_references
+from recommend_book.light_novel_futaba_references_v1 import verify_futaba_mnovels_references
 
 
 LABEL = 'モンスター文庫'
@@ -203,3 +205,88 @@ def test_manifest_receipt_and_raw_hash_tampering_fail_closed(tmp_path):
     save(env)
     (tmp_path / 'page1.json').write_bytes(b'{}')
     with pytest.raises(ValueError, match='hash'): verify(env)
+
+
+def m_fixture(tmp_path):
+    (tmp_path / 'monster').mkdir()
+    old = fixture(tmp_path / 'monster')
+    root = tmp_path / 'm'
+    root.mkdir()
+    env = {'root': root, 'path': tmp_path / 'm-proof.json', 'receipts': [], 'frames': []}
+    template = json.loads((old['root'] / 'page1.json').read_bytes())['books']['book_informations'][0]
+    probes = []
+    for frame_id, label, label_id, total, final in [('mnovels', 'Ｍノベルス', 12, 335, 14), ('mnovels-f', 'Ｍノベルスｆ', 21, 281, 12)]:
+        search = 'https://www.futabasha.co.jp/search?label_name=' + quote(label)
+        first = FIRST.replace(quote(LABEL), quote(label))
+        pages = []
+        for number in range(1, final + 1):
+            books = []
+            for ordinal in range(min(25, total - (number - 1) * 25)):
+                book = json.loads(json.dumps(template))
+                book.update(jdcn_code=f'{frame_id}-{number}-{ordinal}', label_name=label, label_id=label_id, publication_form_value='単行本')
+                books.append(book)
+            result = {'total_counts': total, 'total_pages': final, 'per_page': 25, 'current_page': number}
+            url = first.replace('&page=1&', f'&page={number}&')
+            receipt = source(env, f'{frame_id}-{number}.json', url, json.dumps({'books': {'results': result, 'book_informations': books}}, ensure_ascii=False).encode(), 'application/json')
+            pages.append({'page': number, 'source_url': url, 'receipt': receipt, 'results': result, 'count': len(books), 'terminal': number == final, 'results_locator': '/books/results', 'items_locator': '/books/book_informations'})
+        frame = {'schema_version': 'futaba-mnovels-product-frame-v1', 'frame_id': f'futaba-{frame_id}-products-v1', 'label': label, 'status': 'complete_observed_finite_index', 'index_pages_complete': True, 'publisher_reported_total': total, 'fixed_first_page': 1, 'fixed_final_page': final, 'per_page': 25, 'search_url': search, 'first_api_url': first, 'pagination_pages': pages}
+        env['frames'].append((frame_id, frame))
+        probes.append({'id': frame_id, 'label': label, 'encoded': quote(label), 'first_api_url': first, 'search_url': search, 'results': pages[0]['results'], 'first_receipt': pages[0]['receipt'], 'first_count': 25, 'label_id_literals': [label_id], 'label_name_literals': [label], 'form_literals': ['単行本'], 'explicit_isbn_field': 'isbn_code', 'author_role_rule': 'web_author_type_overwrite else author_type_name'})
+    env['probe'] = {'schema_version': 'futaba-mnovels-probe-contract-v1', 'frames': probes, 'official_ui_observation': {'labels_url': 'https://www.futabasha.co.jp/labels', 'method': 'rendered label heading and link; pageAssets exact books request URL observed for each'}}
+    env['top'] = {'schema_version': 'futaba-mnovels-references-proof-v1', 'reused_monster_manifest': {'path': 'monster/manifest.json', 'sha256': old['sha']}}
+    m_save(env)
+    return env
+
+
+def m_save(env):
+    probe = pin(env['root'] / 'probe.json', env['probe'])
+    refs = []
+    for frame_id, frame in env['frames']:
+        frame['probe_contract'] = probe
+        refs.append({'frame_id': frame_id, 'manifest': pin(env['root'] / (frame_id + '.json'), frame)})
+    log = env['root'] / 'receipts.jsonl'
+    log.write_text(''.join(json.dumps(r) + '\n' for r in env['receipts']), encoding='utf-8')
+    terminal = {'schema_version': 'futaba-mnovels-two-frame-terminal-v1', 'status': 'terminal_two_fixed_label_frames', 'source_reference_count': 616, 'frames': refs, 'holds': [], 'receipt_log': {'path': log.name, 'sha256': digest(log.read_bytes())}}
+    env['top']['terminal'] = pin(env['root'] / 'terminal.json', terminal) | {'path': 'm/terminal.json'}
+    env['top']['observed_probe_contract'] = probe | {'path': 'm/probe.json'}
+    env['sha'] = pin(env['path'], env['top'])['sha256']
+
+
+def m_verify(env):
+    return verify_futaba_mnovels_references(env['path'], env['sha'])
+
+
+def test_m_two_frames_replay_roles_unknowns_and_exact_brand_context(tmp_path):
+    env = m_fixture(tmp_path)
+    rows = m_verify(env)
+    assert len(rows) == len({r['publisher_reference_id'] for r in rows}) == 616
+    assert [(rows[i]['label'], rows[i]['source_scope_membership']['source_label_id_literal']) for i in [0, 335]] == [('Ｍノベルス', 12), ('Ｍノベルスｆ', 21)]
+    assert rows[0]['credits'] == [{'role': 'author', 'name': '架空著者'}, {'role': 'illustrator', 'name': '架空絵師'}]
+    assert all(r['publisher'] is None and r['official_lightnovel_tag'] is None and r['form'] == '単行本' and r['story_series_asserted'] is False for r in rows)
+    assert 'PRIVATE_PROSE' not in json.dumps(rows)
+
+
+@pytest.mark.parametrize('kind', ['query', 'label', 'form', 'terminal', 'duplicate', 'path', 'raw_hash', 'role', 'probe_role'])
+def test_m_source_mutations_fail_closed(tmp_path, kind):
+    env = m_fixture(tmp_path)
+    frame = env['frames'][0][1]
+    page = frame['pagination_pages'][0]
+    receipt = page['receipt']
+    if kind == 'query': frame['first_api_url'] += '&media=2'
+    elif kind == 'terminal': frame['pagination_pages'][-1]['terminal'] = False
+    elif kind == 'path': receipt['raw_path'] = '../outside.json'
+    elif kind == 'raw_hash': (env['root'] / receipt['raw_path']).write_bytes(b'{}')
+    elif kind == 'probe_role': env['probe']['frames'][0]['author_role_rule'] = 'display order'
+    else:
+        path = env['root'] / receipt['raw_path']
+        data = json.loads(path.read_bytes())
+        books = data['books']['book_informations']
+        if kind == 'label': books[0]['label_id'] = 14
+        elif kind == 'form': books[0]['publication_form_value'] = '文庫'
+        elif kind == 'role': books[0]['book_authors'][0]['web_author_type_overwrite'] = 123
+        else: books[1]['jdcn_code'] = books[0]['jdcn_code']
+        raw = json.dumps(data, ensure_ascii=False).encode()
+        path.write_bytes(raw)
+        receipt.update(sha256=digest(raw), byte_length=len(raw))
+    m_save(env)
+    with pytest.raises(ValueError): m_verify(env)

@@ -9,9 +9,10 @@ from __future__ import annotations
 from copy import deepcopy
 import re
 import unicodedata
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 
-from .light_novel_bibliographic_match_v1 import _authors, _publisher
+from .light_novel_bibliographic_match_v1 import SCOPE, _authors, _publisher
+from .light_novel_catalogue_reference_match_v1 import _SERIAL
 from .light_novel_earthstar_match_v1 import _fallback_titles
 from .light_novel_explicit_series_match_v1 import _person_key
 from .light_novel_futaba_references_v1 import _FIRST, _LABEL, _ROLES, _SEARCH, _isbn
@@ -30,15 +31,23 @@ _CLASSIFICATION_CONTEXT = {
     'evidence_scope': 'official_label_level_lightnovel_publishing_context_not_individual_product_genre',
     'evidence_status': 'primary_web_page_checked_by_root_raw_not_loaded_here',
 }
+_MONSTER_CONFIG = (_LABEL, _FIRST, _SEARCH, '文庫', 14, 16, 3)
+_MNOVELS_CONFIG = {
+    label: (label, _FIRST.replace(quote(_LABEL), quote(label)),
+        _SEARCH.replace(quote(_LABEL), quote(label)), '単行本', identity, pages, final_count)
+    for label, identity, pages, final_count in (
+        ('Ｍノベルス', 12, 14, 10), ('Ｍノベルスｆ', 21, 12, 6))
+}
 
 
-def _official(reference):
+def _official(reference, label_config=None):
+    label, first, search, form, label_id, last, final_count = label_config or _MONSTER_CONFIG
     product = _PRODUCT.fullmatch(reference['source_url'])
     if (not product or reference['publisher_reference_id'] != 'futaba-product:' + product[1]
             or reference['source_unit'] != 'publisher_product_reference'
             or not isinstance(reference['title'], str) or not reference['title'].strip()
-            or reference['label'] != _LABEL or reference['label_literals'] != [_LABEL]
-            or reference['form'] != '文庫' or reference['publisher'] is not None
+            or reference['label'] != label or reference['label_literals'] != [label]
+            or reference['form'] != form or reference['publisher'] is not None
             or reference['official_lightnovel_tag'] is not None
             or reference.get('story_series_asserted') is not False
             or reference.get('metadata_conflict') is not False or reference.get('bibliographic_variants') != []):
@@ -54,18 +63,18 @@ def _official(reference):
     query = parse_qs(urlsplit(witness['source_url']).query, keep_blank_values=True)
     page = query.get('page')
     if (not card or not _SHA.fullmatch(witness['raw_sha256']) or not page or len(page) != 1
-            or not re.fullmatch(r'(?:[1-9]|1[0-6])', page[0])
-            or witness['source_url'] != _FIRST.replace('&page=1&', '&page=' + page[0] + '&')):
+            or not re.fullmatch(r'[1-9][0-9]*', page[0]) or not 1 <= int(page[0]) <= last
+            or witness['source_url'] != first.replace('&page=1&', '&page=' + page[0] + '&')):
         return None
     pointer = card[1]
-    if page[0] == '16' and int(pointer.rsplit('/', 1)[1]) >= 3:
+    if page[0] == str(last) and int(pointer.rsplit('/', 1)[1]) >= final_count:
         return None
     membership = reference['source_scope_membership']
     expected = {'source_unit': 'publisher_label_filtered_product_listing',
         'membership_basis': 'returned_by_publisher_explicit_label_filter', 'filter_parameter': 'label_name',
-        'filter_literal': _LABEL, 'rendered_index_url': _SEARCH, 'request_url': witness['source_url'],
-        'raw_sha256': witness['raw_sha256'], 'source_label_id_literal': 14,
-        'source_label_id_locator': pointer + '/label_id', 'card_label_literal': _LABEL,
+        'filter_literal': label, 'rendered_index_url': search, 'request_url': witness['source_url'],
+        'raw_sha256': witness['raw_sha256'], 'source_label_id_literal': label_id,
+        'source_label_id_locator': pointer + '/label_id', 'card_label_literal': label,
         'card_label_locator': pointer + '/label_name', 'does_not_assert_story_series_or_original_identity': True}
     if (any(membership.get(k) != v for k, v in expected.items())
             or type(membership.get('source_label_id_literal')) is not int
@@ -87,8 +96,8 @@ def _official(reference):
     return isbn, writers, pointer
 
 
-def _match(reference, parts):
-    official = _official(reference)
+def _match(reference, parts, label_config=None):
+    official = _official(reference, label_config)
     if official is None:
         return None
     isbn, writers, official_pointer = official
@@ -113,7 +122,11 @@ def _match(reference, parts):
     imprint = source.get('series')
     primary_imprint = unicodedata.normalize('NFKC', imprint or '').split(';', 1)[0].strip()
     imprint_forms = [value.strip() for value in primary_imprint.split(' = ')]
-    if not imprint or _key(_LABEL) not in {_key(value) for value in imprint_forms}:
+    label = (label_config or _MONSTER_CONFIG)[0]
+    if not imprint or _key(label) not in {_key(value) for value in imprint_forms}:
+        return None
+    if label_config is not None and (any(_key(value) != _key(label) for value in imprint_forms)
+            or any(not _SERIAL.fullmatch(value.strip()) for value in unicodedata.normalize('NFKC', imprint).split(';')[1:])):
         return None
     title = _titles(parts, reference['title'], own) or _fallback_titles(parts, reference['title'], own)
     if title is None:
@@ -124,7 +137,7 @@ def _match(reference, parts):
     locators = set(title['locators']) | {publisher['publisher_agent']['locator']}
     locators.update(value for row in publisher['distribution_agents'] for value in (row['locator'], row['description_locator']))
     locators.update(author['locator'] for author in authors if 'locator' in author)
-    return {
+    proof = {
         'rule_version': 'futaba-monster-ndl-contained-isbn-bibliography-v1', 'provider': 'futaba',
         'scope': 'edition_only', 'confirmed_scope': 'contained_bibliographic_edition_only',
         'same_isbn_bibliographic_correspondence_asserted': True, 'isbn13': isbn,
@@ -155,11 +168,42 @@ def _match(reference, parts):
         'original_work_identity_asserted': False, 'story_series_identity_asserted': False,
         'global_author_alias_asserted': False, 'global_author_identity_asserted': False,
     }
+    if label_config is not None:
+        del proof['label_classification_context']
+        del proof['confirmed_scope']
+        proof.update(rule_version='futaba-mnovels-ndl-contained-isbn-bibliography-v1', provider='futaba-mnovels',
+            scope=SCOPE, light_novel_status='unknown',
+            light_novel_status_basis='source_classification_context_unassessed', edition_identity_asserted=False)
+    return proof
 
 
 def match_futaba_reference(reference, primary_parts):
     """Return only a same-ISBN contained bibliographic correspondence proof."""
     try:
         return _match(reference, primary_parts)
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return None
+
+
+def reference_hold_reason(reference):
+    """M-label reference-only gates; source classification remains unassessed."""
+    try:
+        config = _MNOVELS_CONFIG.get(reference['label'])
+        if config is None:
+            return 'official_reference_scope_unproved'
+        if not any(credit['role'] == 'author' for credit in reference['credits']):
+            return 'official_writer_role_unknown'
+        if not _isbn(reference['isbn_source_literal']):
+            return 'official_isbn_unknown'
+        return None if _official(reference, config) is not None else 'official_reference_scope_unproved'
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return 'official_reference_scope_unproved'
+
+
+def match_futaba_mnovels_reference(reference, primary_parts):
+    """Match one authenticated own bibliography, without a unique-edition claim."""
+    try:
+        config = _MNOVELS_CONFIG.get(reference['label'])
+        return _match(reference, primary_parts, config) if config is not None else None
     except (KeyError, TypeError, ValueError, AttributeError):
         return None

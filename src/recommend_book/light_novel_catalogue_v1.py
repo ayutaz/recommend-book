@@ -965,6 +965,12 @@ class LightNovelCatalogue:
         match = self._publisher_edition_match_v1(provider, publisher, edition, cache)
         if match is not None:
             return match
+        if provider == 'shueisha-dx':
+            from .light_novel_shueisha_match_v1 import _LABELS, match_shueisha_bibliographic_edition
+            if publisher.get('label') not in _LABELS:
+                return None
+            parts = self._edition_primary_bibliographic_parts(edition, cache)
+            return match_shueisha_bibliographic_edition(publisher, parts) if parts is not None else None
         match = self._publisher_edition_match_v2(provider, publisher, edition, cache)
         if match is not None:
             return match
@@ -1501,6 +1507,9 @@ class LightNovelCatalogue:
 
     @staticmethod
     def _publisher_bibliography_references(provider, manifest_path, expected_sha256):
+        if provider == 'futaba-mnovels':
+            from .light_novel_futaba_references_v1 import verify_futaba_mnovels_references
+            return verify_futaba_mnovels_references(manifest_path, expected_sha256)
         if provider == 'overlap-details':
             from .light_novel_overlap_details_v1 import verify_overlap_product_details
             return [{**row, 'publisher_reference_id': row['publisher_product_reference_id']}
@@ -1765,6 +1774,108 @@ class LightNovelCatalogue:
                 else:
                     db.execute('INSERT OR REPLACE INTO edition_series_memberships VALUES(?,?,?,?)', (edition_id, series_id, encoded, digest))
                     result['linked'] += 1
+        return result
+
+    def _membership_base_rows(self, stored, cache):
+        """Authenticate only selected base records, without publisher attachments."""
+        rows = []
+        for identity, entry in stored.items():
+            if hashlib.sha256(entry['record_json'].encode()).hexdigest() != entry['record_sha256']:
+                raise ValueError('stored metadata SHA mismatch')
+            row = self._project(json.loads(entry['record_json']), cache)
+            expected_kind = 'edition' if identity.startswith('lne:ndl:') else 'series'
+            if (row['entry_id'] != identity or row['entry_kind'] != entry['kind']
+                    or row['entry_kind'] != expected_kind):
+                raise ValueError('stored typed identity differs')
+            rows.append(row)
+        if len(rows) != len(stored) or {row['entry_id'] for row in rows} != set(stored):
+            raise ValueError('selected membership base records are incomplete')
+        return rows
+
+    def resolve_wikidata_edition_memberships(self, manifest_path, expected_sha256, *, edition_ids):
+        """Create scoped NDL-edition links to v1 Wikidata series only.
+
+        Complete titles/aliases select raw witnesses; the existing six-gate
+        matcher and independent author authority verifier decide uniqueness.
+        NDL publisher series/work groups use their separate resolver contract.
+        Existing bindings are never replaced or removed by this operation.
+        """
+        if isinstance(edition_ids, (str, bytes)) or edition_ids is None:
+            raise ValueError('an explicit edition ID collection is required')
+        requested = list(edition_ids)
+        for identity in requested:
+            if not _entry(identity).startswith('lne:ndl:'):
+                raise ValueError('only typed NDL edition IDs may be requested')
+        if len(requested) != len(set(requested)):
+            raise ValueError('duplicate requested edition ID')
+        result = {'scope': 'wikidata_series_only', 'requested_editions': len(requested),
+                  'candidate_series': 0, 'linked': 0, 'unchanged': 0,
+                  'protected_existing': 0, 'unresolved_editions': 0}
+        if not requested:
+            return result
+        placeholders = ','.join('?' for _ in requested)
+        with self._connect() as db:
+            editions = {r['entry_id']: dict(r) for r in db.execute(
+                'SELECT * FROM entries WHERE entry_id IN (' + placeholders + ')', requested)}
+            if set(editions) != set(requested) or any(r['kind'] != 'edition' for r in editions.values()):
+                raise ValueError('requested edition is missing or has a different kind')
+            # record.kind is intentional: changing only SQL kind cannot hide a
+            # second title candidate and turn ambiguous evidence into a link.
+            series = db.execute("SELECT * FROM entries WHERE "
+                "json_extract(record_json,'$.schema_version')='light-novel-metadata-v1' "
+                "AND (kind='series' OR json_extract(record_json,'$.kind')='series')").fetchall()
+        titles = set()
+        for entry in editions.values():
+            if hashlib.sha256(entry['record_json'].encode()).hexdigest() != entry['record_sha256']:
+                raise ValueError('stored metadata SHA mismatch')
+            record = json.loads(entry['record_json'])
+            if record.get('schema_version') not in {'light-novel-edition-v1', 'light-novel-edition-bulk-v1'}:
+                raise ValueError('requested record is not an NDL edition')
+            titles.update(normalize_search(title['value']) for title in record['source_record']['titles'])
+        selected = dict(editions)
+        for entry in series:
+            if hashlib.sha256(entry['record_json'].encode()).hexdigest() != entry['record_sha256']:
+                raise ValueError('stored metadata SHA mismatch')
+            record = json.loads(entry['record_json'])
+            if titles & {normalize_search(t) for t in [record['title'], *record['aliases']]}:
+                identity = _entry(entry['entry_id'])
+                if not identity.startswith('lns:wd:'):
+                    raise ValueError('candidate is not a typed Wikidata series')
+                selected[identity] = dict(entry)
+        result['candidate_series'] = len(selected) - len(editions)
+        cache = {}
+        rows = self._membership_base_rows(selected, cache)
+        authorities = self._author_authorities(manifest_path, expected_sha256, cache)
+        candidates = self._membership_candidates(rows, selected, authorities)
+        result['unresolved_editions'] = len(requested) - len(candidates)
+        with self._connect() as db:
+            # All selected witnesses must succeed before the first INSERT.
+            for identity, entry in selected.items():
+                current = db.execute('SELECT kind,record_sha256 FROM entries WHERE entry_id=?', (identity,)).fetchone()
+                if current is None or (current['kind'], current['record_sha256']) != (entry['kind'], entry['record_sha256']):
+                    raise ValueError('selected membership metadata changed during resolution')
+            for edition_id in requested:
+                membership = candidates.get(edition_id)
+                previous = db.execute('SELECT * FROM edition_series_memberships WHERE edition_id=?', (edition_id,)).fetchone()
+                if membership is None:
+                    result['protected_existing'] += int(previous is not None)
+                    continue
+                series_id = membership['series_entry_id']
+                proof = {'manifest_path': str(Path(manifest_path).resolve()), 'manifest_sha256': expected_sha256,
+                         'edition_record_sha256': selected[edition_id]['record_sha256'],
+                         'series_record_sha256': selected[series_id]['record_sha256'], 'membership': membership}
+                encoded = _json(proof)
+                digest = hashlib.sha256(encoded.encode()).hexdigest()
+                if previous:
+                    if (previous['series_id'] == series_id and previous['proof_json'] == encoded
+                            and previous['proof_sha256'] == digest):
+                        result['unchanged'] += 1
+                    else:
+                        result['protected_existing'] += 1
+                    continue
+                db.execute('INSERT INTO edition_series_memberships VALUES(?,?,?,?)',
+                           (edition_id, series_id, encoded, digest))
+                result['linked'] += 1
         return result
 
     def _attach_memberships(self, rows, stored, cache):

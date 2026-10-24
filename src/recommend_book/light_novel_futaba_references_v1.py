@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import re
+from urllib.parse import quote
 
 from .light_novel_publisher_references_v1 import MAX_METADATA_BYTES, MAX_SOURCE_BYTES, _read, _relative
 
@@ -107,11 +108,11 @@ def _isbn(value):
     return None
 
 
-def _row(book, receipt, ordinal, route_proof_path):
+def _row(book, receipt, ordinal, route_proof_path, *, label_literal=_LABEL, label_id=14, search_url=_SEARCH):
     identifier, title = book['jdcn_code'], book['book_name']
     if (not isinstance(identifier, str) or not re.fullmatch(r'[A-Za-z0-9_-]+', identifier)
             or not isinstance(title, str) or not title.strip()
-            or type(book['label_id']) is not int or book['label_id'] != 14 or book['label_name'] not in (_LABEL, None)):
+            or type(book['label_id']) is not int or book['label_id'] != label_id or book['label_name'] not in (label_literal, None)):
         raise ValueError('Futaba opaque ID, complete title or explicit label scope differs')
     form = book.get('publication_form_value')
     if form is not None and not isinstance(form, str) or form == '雑誌':
@@ -147,8 +148,8 @@ def _row(book, receipt, ordinal, route_proof_path):
         'source_scope_membership': {
             'source_unit': 'publisher_label_filtered_product_listing',
             'membership_basis': 'returned_by_publisher_explicit_label_filter',
-            'filter_parameter': 'label_name', 'filter_literal': _LABEL,
-            'rendered_index_url': _SEARCH, 'request_url': receipt['source_url'],
+            'filter_parameter': 'label_name', 'filter_literal': label_literal,
+            'rendered_index_url': search_url, 'request_url': receipt['source_url'],
             'raw_sha256': receipt['sha256'], 'source_label_id_literal': book['label_id'],
             'source_label_id_locator': pointer + '/label_id',
             'card_label_literal': label, 'card_label_locator': pointer + '/label_name',
@@ -220,3 +221,108 @@ def verify_futaba_references(manifest_path: str | Path, sha256: str) -> list[dic
         return rows
     except (KeyError, TypeError, AttributeError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError('Futaba source evidence schema cannot be reproduced') from exc
+
+
+def _receipts(root, ref):
+    raw = _read(_relative(root, ref['path']), ref['sha256'], MAX_METADATA_BYTES)
+    items = [json.loads(line) for line in raw.splitlines() if line.strip()]
+    result = {item['source_url']: item for item in items}
+    if len(result) != len(items):
+        raise ValueError('Futaba duplicate receipt URL')
+    return result
+
+
+def verify_futaba_mnovels_references(manifest_path: str | Path, sha256: str) -> list[dict]:
+    """Replay the two fixed M Novels label-filtered frames, without a roster.
+
+    The reused Monster evidence establishes the observed API/URL/role rules;
+    each M label has its own observed navigation, query, totals and raw pages.
+    No individual genre, publisher, volume or story-series claim is inferred.
+    """
+    path = Path(manifest_path).resolve()
+    try:
+        proof = _json(path, sha256)
+        if proof.get('schema_version') != 'futaba-mnovels-references-proof-v1':
+            raise ValueError('Futaba M reference proof schema differs')
+        ref = proof['reused_monster_manifest']
+        old_path = _relative(path.parent, ref['path'])
+        old = _json(old_path, ref['sha256'])
+        ref = old['observed_route_proof']
+        _route(old_path.parent, _json(_relative(old_path.parent, ref['path']), ref['sha256']),
+               _receipts(old_path.parent, old['source_receipts']))
+        ref = proof['terminal']
+        terminal_path = _relative(path.parent, ref['path'])
+        root = terminal_path.parent
+        terminal = _json(terminal_path, ref['sha256'])
+        if (terminal.get('schema_version') != 'futaba-mnovels-two-frame-terminal-v1'
+                or terminal.get('status') != 'terminal_two_fixed_label_frames'
+                or terminal.get('source_reference_count') != 616 or terminal.get('holds') != []
+                or len(terminal['frames']) != 2):
+            raise ValueError('Futaba M fixed terminal frame differs')
+        receipts = _receipts(root, terminal['receipt_log'])
+        ref = proof['observed_probe_contract']
+        probe_path = _relative(path.parent, ref['path'])
+        probe = _json(probe_path, ref['sha256'])
+        observation = probe['official_ui_observation']
+        if (probe.get('schema_version') != 'futaba-mnovels-probe-contract-v1'
+                or observation.get('labels_url') != 'https://www.futabasha.co.jp/labels'
+                or observation.get('method') != 'rendered label heading and link; pageAssets exact books request URL observed for each'
+                or len(probe['frames']) != 2):
+            raise ValueError('Futaba M observed label route differs')
+        rows, seen, requested = [], set(), set()
+        configurations = [('mnovels', 'Ｍノベルス', 12, 335, 14), ('mnovels-f', 'Ｍノベルスｆ', 21, 281, 12)]
+        for frame_ref, observed, (frame_id, label, label_id, total, final) in zip(terminal['frames'], probe['frames'], configurations, strict=True):
+            if frame_ref['frame_id'] != frame_id:
+                raise ValueError('Futaba M fixed frame identity differs')
+            ref = frame_ref['manifest']
+            frame_path = _relative(root, ref['path'])
+            frame = _json(frame_path, ref['sha256'])
+            search = 'https://www.futabasha.co.jp/search?label_name=' + quote(label)
+            first = _FIRST.replace(quote(_LABEL), quote(label))
+            expected = {'schema_version': 'futaba-mnovels-product-frame-v1', 'frame_id': f'futaba-{frame_id}-products-v1',
+                        'status': 'complete_observed_finite_index', 'label': label, 'publisher_reported_total': total,
+                        'fixed_first_page': 1, 'fixed_final_page': final, 'per_page': 25, 'search_url': search, 'first_api_url': first}
+            if any(frame.get(k) != v for k, v in expected.items()) or frame.get('index_pages_complete') is not True:
+                raise ValueError('Futaba M exact label query or finite boundary differs')
+            bound = frame['probe_contract']
+            if (_relative(frame_path.parent, bound['path']) != probe_path or bound['sha256'] != proof['observed_probe_contract']['sha256']):
+                raise ValueError('Futaba M observed route binding differs')
+            expected_observed = {'id': frame_id, 'label': label, 'encoded': quote(label), 'first_api_url': first,
+                                 'search_url': search, 'label_id_literals': [label_id], 'label_name_literals': [label],
+                                 'form_literals': ['単行本'], 'first_count': 25, 'explicit_isbn_field': 'isbn_code',
+                                 'author_role_rule': 'web_author_type_overwrite else author_type_name'}
+            if any(observed.get(k) != v for k, v in expected_observed.items()):
+                raise ValueError('Futaba M observed label, form or role rule differs')
+            pages = frame['pagination_pages']
+            if not isinstance(pages, list) or len(pages) != final:
+                raise ValueError('Futaba M complete page range differs')
+            for number, page in enumerate(pages, 1):
+                url = first.replace('&page=1&', f'&page={number}&')
+                requested.add(url)
+                receipt = receipts[url]
+                if (page.get('page') != number or page.get('source_url') != url or page['receipt'] != receipt
+                        or page.get('terminal') is not (number == final)
+                        or page.get('results_locator') != '/books/results' or page.get('items_locator') != '/books/book_informations'):
+                    raise ValueError('Futaba M own page/next boundary or receipt differs')
+                source = _source(root, receipt, url)['books']
+                result = {'total_counts': total, 'total_pages': final, 'per_page': 25, 'current_page': number}
+                if source['results'] != result or page['results'] != result:
+                    raise ValueError('Futaba M source pagination total differs')
+                if number == 1 and (observed['first_receipt'] != receipt or observed['results'] != result):
+                    raise ValueError('Futaba M first observed API inventory differs')
+                books = source['book_informations']
+                if not isinstance(books, list) or len(books) != min(25, total - (number - 1) * 25) or page['count'] != len(books):
+                    raise ValueError('Futaba M complete page/terminal count differs')
+                for ordinal, book in enumerate(books):
+                    if book.get('publication_form_value') != '単行本':
+                        raise ValueError('Futaba M explicit form differs')
+                    row = _row(book, receipt, ordinal, proof['observed_probe_contract']['path'], label_literal=label, label_id=label_id, search_url=search)
+                    if row['publisher_reference_id'] in seen:
+                        raise ValueError('Futaba M duplicate opaque product ID')
+                    seen.add(row['publisher_reference_id'])
+                    rows.append(row)
+        if set(receipts) != requested or len(rows) != 616:
+            raise ValueError('Futaba M complete receipt range or unique total differs')
+        return rows
+    except (KeyError, TypeError, AttributeError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError('Futaba M source evidence schema cannot be reproduced') from exc
