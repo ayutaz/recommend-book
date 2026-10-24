@@ -254,7 +254,9 @@ def _cards(index_id, document):
 def publisher_assertions(proof, artifact, cache):
     """Reproduce official card IDs/authors from pinned source receipts and HTML."""
     key = ('publisher_assertions', str(_resolved_path(proof['frames_path'], cache)), proof['frames_sha256'],
-           str(_resolved_path(proof['source_root'], cache)), proof.get('sbcr_series_sha256'), proof.get('label_aliases_sha256'))
+           str(_resolved_path(proof['source_root'], cache)), proof.get('sbcr_series_sha256'),
+           proof.get('label_aliases_sha256'), proof.get('cobalt_series_sha256'),
+           str(_resolved_path(proof['cobalt_series_path'], cache)) if proof.get('cobalt_series_path') else None)
     if key in cache:
         return cache[key]
     frames = json.loads(artifact(proof['frames_path'], proof['frames_sha256'], cache))
@@ -315,6 +317,15 @@ def publisher_assertions(proof, artifact, cache):
                                  explicit_book_memberships=books, creator_role_basis='ndl_author_role_intersection')
     if proof.get('label_aliases_path'):
         _verify_hj_alias(proof, result, root, artifact, cache)
+    if proof.get('cobalt_series_path'):
+        from .light_novel_cobalt_series_v1 import verify_cobalt_series
+        for row in verify_cobalt_series(proof['cobalt_series_path'], proof['cobalt_series_sha256']):
+            reference = 'publisher-series:' + hashlib.sha256(row['official_series_url'].encode()).hexdigest()[:24]
+            if reference in result:
+                raise ValueError('duplicate explicit publisher series reference')
+            result[reference] = {**row, 'reference_id': reference, 'index_id': 'cobalt-explicit-series',
+                'source_url': row['official_series_url'], 'title': row['series_title'],
+                'authors': [row['series_author']['display_text']]}
     cache[key] = result
     return result
 

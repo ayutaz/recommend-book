@@ -1117,6 +1117,64 @@ def test_iris_neo_distribution_and_complete_title_extensions_work_together(iris_
 
 
 @pytest.fixture
+def cobalt_member(publisher_edition_v2, tmp_path, monkeypatch):
+    cat, record, _ = publisher_edition_v2(publisher='集英社', imprint='コバルト文庫',
+        title='巻独自の正式題', volume=None, official_title='巻独自の正式題')
+    series_url = 'https://www.shueisha.co.jp/books/search/search.html?seriesid=52670'
+    book_url = 'https://ebooks.shueisha.co.jp/detail.php?book=sc1'
+    group = {'kind': 'official_series_reference', 'official_series_id': '52670',
+        'official_series_url': series_url, 'series_title': '出版社の正式シリーズ名', 'publisher': None, 'label': None,
+        'series_author': {'role': '著者', 'display_text': '著者', 'role_source': 'ebook_author_list',
+            'role_label_selector': 'h2 img[alt="著者50音別書籍リスト"]', 'author_field_selector': 'dl#word_1 dd[1]>b'},
+        'independent_series_evidence': {'source_key': 'cobalt_anniversary', 'selector': 'ul.anthology-list li[1]',
+            'label_text': 'シリーズ本編購入はこちら'},
+        'ebook_group_evidence': {'source_key': 'ebook_author_list', 'selector': 'dl#word_1 dd[1] span em'},
+        'books': [{'title': '巻独自の正式題', 'source_url': book_url, 'publisher_book_id': 'sc1',
+            'author_display_text': '著者', 'isbn': None, 'source_selector': 'dl#word_1 dd[2]'}],
+        'source_evidence': [{'source_url': 'https://orangebunko.shueisha.co.jp/feature/cobalt50th_specialbooks',
+                'raw_sha256': 'a' * 64, 'locator': 'ul.anthology-list li[1]'},
+            {'source_url': 'https://ebooks.shueisha.co.jp/cobalt/', 'raw_sha256': 'b' * 64, 'locator': 'dl#word_1'}]}
+    import recommend_book.light_novel_cobalt_series_v1 as source
+    monkeypatch.setattr(source, 'verify_cobalt_series', lambda path, sha: [group])
+    frames = tmp_path / 'empty-frames.json'; fsha = write(frames, [])
+    extra = tmp_path / 'cobalt-manifest.json'; esha = write(extra, {})
+    assert cat.import_editions([record])['inserted'] == 1
+    reference = 'publisher-series:' + hashlib.sha256(series_url.encode()).hexdigest()[:24]
+    return cat, record, frames, fsha, extra, esha, reference, group
+
+
+def test_explicit_cobalt_member_adds_searchable_series_and_unnumbered_membership(cobalt_member):
+    cat, record, frames, sha, extra, esha, reference, group = cobalt_member
+    result = cat.import_ndl_series_from_publishers(frames, sha, source_root=frames.parent,
+        cobalt_series_path=extra, cobalt_series_sha256=esha, reference_ids={reference})
+    assert result['inserted'] == 1 and result['verified_edition_memberships'] == 1
+    series = cat.work_detail('lns:ndl:' + record['id'])
+    assert series['title'] == group['series_title'] and series['title'] != record['title']
+    assert series['aliases'] == []  # A member's reading is not a series alias.
+    assert series['publication_label'] is None and series['publishers'] == []
+    assert series['series_title_source'] == 'publisher_explicit_group'
+    assert series['members'][0]['entry_id'] == 'lne:ndl:' + record['id']
+    assert series['members'][0]['volume_number'] is None
+    assert cat.search_catalogue(query=group['series_title'], entry_kind='series')['total'] == 1
+    assert cat.work_detail('lne:ndl:' + record['id'])['series_entry_id'] == series['entry_id']
+
+
+def test_explicit_cobalt_search_title_is_reproduced_even_after_metadata_rehash(cobalt_member):
+    cat, record, frames, sha, extra, esha, reference, _ = cobalt_member
+    assert cat.import_ndl_series_from_publishers(frames, sha, source_root=frames.parent,
+        cobalt_series_path=extra, cobalt_series_sha256=esha, reference_ids={reference})['inserted'] == 1
+    with cat._connect() as db:
+        key = 'lns:ndl:' + record['id']
+        saved = json.loads(db.execute('SELECT record_json FROM entries WHERE entry_id=?', (key,)).fetchone()[0])
+        saved['title'] = '原資料にない偽シリーズ名'
+        encoded = json.dumps(saved, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+        db.execute('UPDATE entries SET record_json=?,record_sha256=? WHERE entry_id=?',
+                   (encoded, hashlib.sha256(encoded.encode()).hexdigest(), key))
+    with pytest.raises(ValueError, match='search title'):
+        cat.search_catalogue(query=saved['title'], entry_kind='series')
+
+
+@pytest.fixture
 def tobooks_edition(publisher_edition_v2, monkeypatch):
     cat, record, _ = publisher_edition_v2(publisher='TOブックス', imprint='TOブックス',
         title='主書名 : 副書名', official_title='主書名３ 副書名')

@@ -436,12 +436,15 @@ class LightNovelCatalogue:
         assertion = publisher_assertions(proof, self._artifact, cache).get(proof['reference_id'])
         if assertion is None:
             raise ValueError('official novel series assertion absent')
-        match = match_bibliography(assertion, self._source_with_title_parts(anchor, cache), normalize_search, allow_unnumbered=True)
+        match = self._publisher_series_match(assertion, anchor, cache, allow_unnumbered=True)
         if match is None:
             raise ValueError('NDL anchor does not reproduce publisher series identity')
+        explicit = assertion.get('index_id') == 'cobalt-explicit-series'
+        if explicit and record.get('title') != assertion['title']:
+            raise ValueError('explicit series search title differs from official source')
         entry_id = 'lns:ndl:' + anchor['id']
         return {**base, 'entry_id': entry_id, 'work_id': entry_id, 'entry_kind': 'series',
-                'title': match['title'], 'aliases': anchor['source_record']['extra'].get('title_readings', []),
+                'title': match['title'], 'aliases': [] if explicit else anchor['source_record']['extra'].get('title_readings', []),
                 'title_origin': match['title_origin'],
                 'authors': [{'qid': None, 'name': a['name'], 'ndl_authorities': a['authority_ids']} for a in match['authors']],
                 'original_language': None, 'language': None, 'original_language_status': 'unknown',
@@ -452,7 +455,14 @@ class LightNovelCatalogue:
                 'series_identity_basis': 'publisher_series_and_ndl_bibliography',
                 'series_assertion_source_url': assertion['source_url'],
                 'publisher_series_reference_id': assertion['reference_id'],
-                'source_attributions': [{**s, 'scope': 'series_bibliographic_metadata'} for s in base['source_attributions']]}
+                'source_attributions': [{**s, 'scope': 'series_member_bibliographic_anchor' if explicit else 'series_bibliographic_metadata'}
+                                        for s in base['source_attributions']],
+                **({'series_title_source': 'publisher_explicit_group', 'publication_label': None, 'publishers': [],
+                    'content_sources': [
+                        {'source_url': assertion['source_url'], 'attribution': 'シリーズ名・著者・収録参照: 集英社公式資料'},
+                        {'source_url': base['source_url'], 'attribution': base['source_attributions'][0]['credit'],
+                         'license_url': base['source_attributions'][0]['license_url']}]}
+                   if explicit else {})}
 
     def _source_with_title_parts(self, edition, cache):
         """Parse only explicit ISBD separators in reproduced RDF title fields."""
@@ -477,21 +487,38 @@ class LightNovelCatalogue:
                               'kind': 'rdf_title_isbd_main', 'source_value': value})
         return {**source, '_cataloguing_main_titles': parts}
 
+    def _publisher_series_match(self, assertion, edition_record, cache, *, allow_unnumbered=False):
+        if assertion.get('index_id') == 'cobalt-explicit-series':
+            from .light_novel_explicit_series_match_v1 import match_cobalt_member
+            parts = self._edition_primary_bibliographic_parts(edition_record, cache)
+            return match_cobalt_member(assertion, parts) if parts else None
+        from .light_novel_ndl_series_v1 import match_bibliography
+        return match_bibliography(assertion, self._source_with_title_parts(edition_record, cache),
+                                  normalize_search, allow_unnumbered=allow_unnumbered)
+
     def _ndl_membership_match(self, series, series_record, edition_record, cache):
         from .light_novel_ndl_series_v1 import publisher_assertions, match_bibliography
         proof = series_record['publisher_series_proof']
         assertion = publisher_assertions(proof, self._artifact, cache).get(proof['reference_id'])
         source = self._source_with_title_parts(edition_record, cache)
         anchor = self._source_with_title_parts(series_record['anchor_edition_record'], cache)
-        match = match_bibliography(assertion, source, normalize_search,
-                                  allow_unnumbered=source['source_id'] == anchor['source_id']) if assertion else None
-        anchor_match = match_bibliography(assertion, anchor, normalize_search, allow_unnumbered=True) if assertion else None
+        match = self._publisher_series_match(assertion, edition_record, cache,
+            allow_unnumbered=source['source_id'] == anchor['source_id']) if assertion else None
+        anchor_match = self._publisher_series_match(assertion, series_record['anchor_edition_record'], cache,
+            allow_unnumbered=True) if assertion else None
         if not match or not anchor_match:
             return None
         def ids(value):
             return {authority.rsplit('/', 1)[-1] for a in value['authors'] for authority in a['authority_ids']}
         if ids(match) != ids(anchor_match):
             return None
+        if assertion.get('index_id') == 'cobalt-explicit-series':
+            return {'rule_version': 'cobalt-explicit-ndl-series-membership-v1', 'scope': 'edition_membership_only',
+                'edition_id': 'lne:ndl:' + source['source_id'], 'series_entry_id': series['entry_id'],
+                'matched_title': match['matched_ndl_title'], 'official_series_title': assertion['title'],
+                'volume': match['volume'], 'volume_number': match['volume_number'],
+                'author_authority_ids': sorted(ids(match)), 'imprint': match['imprint'], 'ndc_codes': match['ndc_codes'],
+                'sources': [source['source_url'], assertion['source_url']], 'explicit_member_match': match}
         return {'rule_version': 'publisher-ndl-series-membership-v1', 'scope': 'edition_membership_only',
                 'edition_id': 'lne:ndl:' + source['source_id'], 'series_entry_id': series['entry_id'],
                 'matched_title': match['title'], 'volume': match['volume'], 'volume_number': match['volume_number'],
@@ -506,9 +533,17 @@ class LightNovelCatalogue:
     def _ndl_membership_candidates(self, rows, stored, cache):
         series_rows = [r for r in rows if r['entry_id'].startswith('lns:ndl:')]
         records = {key: json.loads(value['record_json']) for key, value in stored.items()}
-        index = {}
+        index, explicit_index = {}, {}
         for series in series_rows:
             index.setdefault(normalize_search(series['title']), []).append(series)
+            proof = records[series['entry_id']]['publisher_series_proof']
+            if proof.get('cobalt_series_path'):
+                from .light_novel_ndl_series_v1 import publisher_assertions
+                from .light_novel_explicit_series_match_v1 import candidate_title_keys
+                assertion = publisher_assertions(proof, self._artifact, cache).get(proof['reference_id'])
+                if assertion and assertion.get('index_id') == 'cobalt-explicit-series':
+                    for key in candidate_title_keys(assertion):
+                        explicit_index.setdefault(key, []).append(series)
         result = {}
         for edition in rows:
             if edition['entry_kind'] != 'edition':
@@ -517,6 +552,10 @@ class LightNovelCatalogue:
             source = self._source_with_title_parts(record, cache)
             candidates = {s['entry_id']: s for t in [*source['titles'], *source.get('_cataloguing_main_titles', [])]
                           for s in index.get(normalize_search(t['value']), [])}
+            if explicit_index:
+                from .light_novel_explicit_series_match_v1 import candidate_ndl_title_keys
+                candidates.update({s['entry_id']: s for key in candidate_ndl_title_keys(source)
+                                   for s in explicit_index.get(key, [])})
             matched = [match for series in candidates.values()
                        if (match := self._ndl_membership_match(series, records[series['entry_id']], record, cache))]
             if len(matched) == 1:
@@ -526,6 +565,7 @@ class LightNovelCatalogue:
     def import_ndl_series_from_publishers(self, frames_path, expected_sha256, *, source_root,
                                          sbcr_series_path=None, sbcr_series_sha256=None,
                                          label_aliases_path=None, label_aliases_sha256=None,
+                                         cobalt_series_path=None, cobalt_series_sha256=None,
                                          reference_ids=None):
         """Admit uniquely cross-checked series; retain a stable NDL anchor ID."""
         from .light_novel_ndl_series_v1 import publisher_assertions, match_bibliography
@@ -555,6 +595,14 @@ class LightNovelCatalogue:
                     self._artifact(snapshot, digest, cache)
                 source_proof[name + '_path'] = str(snapshot.resolve())
                 source_proof[name + '_sha256'] = digest
+        if bool(cobalt_series_path) != bool(cobalt_series_sha256):
+            raise ValueError('Cobalt supplemental path and SHA are required together')
+        if cobalt_series_path:
+            self._artifact(cobalt_series_path, cobalt_series_sha256, cache)
+            # This manifest's raw paths are relative to its own source directory.
+            # Preserve that hash-pinned location rather than rebasing its paths.
+            source_proof.update(cobalt_series_path=str(Path(cobalt_series_path).resolve()),
+                                cobalt_series_sha256=cobalt_series_sha256)
         assertions = publisher_assertions(source_proof, self._artifact, cache)
         with self._connect() as db:
             stored = {r['entry_id']: dict(r) for r in db.execute('SELECT * FROM entries')}
@@ -572,13 +620,22 @@ class LightNovelCatalogue:
         completed = requested & existing.keys() if scoped else set()
         active = requested - completed
         target_titles = {normalize_search(assertions[key]['title']) for key in active}
+        explicit_titles = set()
+        if cobalt_series_path:
+            from .light_novel_explicit_series_match_v1 import candidate_title_keys, candidate_ndl_title_keys
+            for key in active:
+                if assertions[key].get('index_id') == 'cobalt-explicit-series':
+                    explicit_titles.update(candidate_title_keys(assertions[key]))
         selected = set(stored) if not scoped else set()
         if scoped:
             for key, record in records.items():
-                if stored[key]['kind'] == 'edition':
+                if stored[key]['kind'] == 'edition' or record.get('schema_version') in {
+                        'light-novel-edition-v1', 'light-novel-edition-bulk-v1'}:
                     titles = [row['value'] for row in record['source_record']['titles']]
                     title_keys = {normalize_search(value) for title in titles
                         for value in (title, re.split(r' (?:=|:) ', title, maxsplit=1)[0])}
+                    if explicit_titles and explicit_titles & candidate_ndl_title_keys(record['source_record']):
+                        selected.add(key)
                 elif key.startswith('lns:wd:'):
                     title_keys = {normalize_search(value) for value in [record['title'], *record.get('aliases', [])]}
                 elif record.get('schema_version') == 'light-novel-ndl-series-v1':
@@ -618,8 +675,10 @@ class LightNovelCatalogue:
                 hold('potential_wikidata_series_overlap_requires_authority_review')
                 continue
             qualified = []
-            for edition in editions.get(key, {}).values():
-                match = match_bibliography(assertion, self._source_with_title_parts(edition, cache), normalize_search, allow_unnumbered=True)
+            candidates = (records[row['entry_id']] for row in rows if row['entry_kind'] == 'edition') if (
+                assertion.get('index_id') == 'cobalt-explicit-series') else editions.get(key, {}).values()
+            for edition in candidates:
+                match = self._publisher_series_match(assertion, edition, cache, allow_unnumbered=True)
                 if match:
                     qualified.append((edition, match))
             if not qualified:
@@ -638,6 +697,8 @@ class LightNovelCatalogue:
                 continue
             proposals.append({'schema_version': 'light-novel-ndl-series-v1', 'source': 'ndl', 'id': anchor['id'],
                               'anchor_edition_record': anchor, 'publisher_series_proof': {**source_proof, 'reference_id': reference}})
+            if assertion.get('index_id') == 'cobalt-explicit-series':
+                proposals[-1]['title'] = assertion['title']
         anchors = {}
         for proposal in proposals:
             anchors.setdefault(proposal['id'], []).append(proposal)
@@ -1437,6 +1498,8 @@ class LightNovelCatalogue:
             titles = [base.get('title', ''), *base.get('aliases', []),
                       *[t['value'] for t in source.get('titles', [])],
                       *source.get('extra', {}).get('title_readings', [])]
+            if record.get('publisher_series_proof', {}).get('cobalt_series_path') and record.get('title'):
+                titles.append(record['title'])
             authors = [a.get('label', '') if isinstance(a, dict) else a for a in base.get('authors', [])]
             values[identity] = normalize_search(' '.join([*titles, *authors]))
             title_keys[identity] = {normalize_search(t) for t in titles if t}

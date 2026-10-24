@@ -133,6 +133,17 @@ def test_similarity_shortcut_does_not_hide_absent_or_invalid_entries(site, monke
     assert detail_calls == ['lne:ndl:missing']
 
 
+@pytest.mark.parametrize('marker', ['publisher_explicit_group', 'unverified', {'private': 'internal proof'}])
+def test_series_title_origin_exports_only_the_supported_public_scope(marker):
+    row = {'entry_id': 'lns:ndl:R100000002-I1', 'entry_kind': 'series',
+        'series_identity_basis': 'publisher_series_and_ndl_bibliography',
+        'series_title_source': marker, 'title_origin': {'raw_path': 'internal-only'},
+        'series_assertion_source_url': 'https://www.shueisha.co.jp/books/search/search.html?seriesid=52670'}
+    result = public_work(row)
+    assert ('series_title_source' in result) is (marker == 'publisher_explicit_group')
+    assert 'title_origin' not in result
+
+
 def test_typed_preferences_keep_qids_distinct_and_reject_unsafe_identifiers(site):
     base, catalogue = site
     result = fetch(base, '/api/recommendations', {'liked_qids': ['Q2'],

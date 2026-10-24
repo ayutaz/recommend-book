@@ -324,6 +324,8 @@ def public_work(row):
     if row.get('series_identity_basis') == 'publisher_series_and_ndl_bibliography':
         result['series_identity_basis'] = row['series_identity_basis']
         result['series_assertion_source_url'] = _link(row.get('series_assertion_source_url'))
+        if row.get('series_title_source') == 'publisher_explicit_group':
+            result['series_title_source'] = 'publisher_explicit_group'
     if row.get('entry_kind') == 'edition' and row.get('edition_bibliography_confirmed') is True:
         result['confirmation_source_url'] = _link(row.get('confirmation_source_url'))
     for key in ('language', 'publication_label', 'volume'):
@@ -519,7 +521,7 @@ async function showDetail(identifier){
   if(row.admission_status==='bibliographic_candidate_only')body.append(node('p','レーベルなどの書誌情報から集めた候補です。ライトノベルであることは未確定です。','muted'));
   if(row.edition_bibliography_confirmed){body.append(node('p','出版社の書籍情報と国立国会図書館の書誌で照合した版です。','muted'));if(row.confirmation_source_url){const p=node('p','照合元：'),a=node('a','出版社の書籍ページ');a.href=row.confirmation_source_url;a.target='_blank';a.rel='noopener noreferrer';p.append(a);body.append(p);}}
   if(row.publication_label)body.append(node('p','書誌に記載されたシリーズ・レーベル：'+row.publication_label,'muted'));
-  if(row.series_identity_basis==='publisher_series_and_ndl_bibliography'&&row.series_assertion_source_url){const p=node('p','シリーズの同定根拠：'),a=node('a','出版社のシリーズページ');a.href=row.series_assertion_source_url;a.target='_blank';a.rel='noopener noreferrer';p.append(a);body.append(p,node('p','書名・著者などの表示は国立国会図書館の書誌情報に基づきます。','muted'));}
+  if(row.series_identity_basis==='publisher_series_and_ndl_bibliography'&&row.series_assertion_source_url){const p=node('p','シリーズの同定根拠：'),a=node('a','出版社のシリーズページ');a.href=row.series_assertion_source_url;a.target='_blank';a.rel='noopener noreferrer';p.append(a);body.append(p,node('p',row.series_title_source==='publisher_explicit_group'?'シリーズ名と著者は出版社の明示情報、各巻の書誌は国立国会図書館の情報に基づきます。':'書名・著者などの表示は国立国会図書館の書誌情報に基づきます。','muted'));}
   if(row.relation_resolution==='original_work_and_story_series_unresolved')body.append(node('p','原作・物語シリーズとの対応は未確認です。','muted'));
   if(row.relation_resolution==='edition_series_membership_verified')body.append(node('p','物語シリーズへの所属を出典で確認済みです。版と原作品は別の項目として扱います。','muted'));
   if(row.entry_kind==='series')body.append(node('p','シリーズ全体の情報です。内容特徴や読書状態は各巻へ自動反映しません。','muted'));
