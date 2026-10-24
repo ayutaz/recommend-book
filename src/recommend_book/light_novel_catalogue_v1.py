@@ -376,9 +376,9 @@ class LightNovelCatalogue:
                 'classification_scope': 'edition', 'content_features_adopted': False,
                 'recommendation_mode': 'insufficient_evidence'}
 
-    def ingest(self, records):
+    def ingest(self, records, *, _cache=None, _projected=None):
         result = {'inserted': 0, 'updated': 0, 'unchanged': 0, 'failed': 0, 'failures': []}
-        cache = {}
+        cache = {} if _cache is None else _cache
         with self._connect() as db:
             for record in records:
                 try:
@@ -386,6 +386,8 @@ class LightNovelCatalogue:
                     encoded = _json(record)
                     digest = hashlib.sha256(encoded.encode()).hexdigest()
                     previous = db.execute('SELECT record_sha256 FROM entries WHERE entry_id=?', (row['entry_id'],)).fetchone()
+                    if _projected is not None:
+                        _projected[row['entry_id']] = row
                     if previous and previous['record_sha256'] == digest:
                         result['unchanged'] += 1
                         continue
@@ -523,7 +525,8 @@ class LightNovelCatalogue:
 
     def import_ndl_series_from_publishers(self, frames_path, expected_sha256, *, source_root,
                                          sbcr_series_path=None, sbcr_series_sha256=None,
-                                         label_aliases_path=None, label_aliases_sha256=None):
+                                         label_aliases_path=None, label_aliases_sha256=None,
+                                         reference_ids=None):
         """Admit uniquely cross-checked series; retain a stable NDL anchor ID."""
         from .light_novel_ndl_series_v1 import publisher_assertions, match_bibliography
         cache = {}
@@ -553,10 +556,45 @@ class LightNovelCatalogue:
                 source_proof[name + '_path'] = str(snapshot.resolve())
                 source_proof[name + '_sha256'] = digest
         assertions = publisher_assertions(source_proof, self._artifact, cache)
-        rows = self._rows(include_features=False, _cache=cache)
         with self._connect() as db:
             stored = {r['entry_id']: dict(r) for r in db.execute('SELECT * FROM entries')}
-        records = {key: json.loads(value['record_json']) for key, value in stored.items()}
+        records = {}
+        for key, value in stored.items():
+            if hashlib.sha256(value['record_json'].encode()).hexdigest() != value['record_sha256']:
+                raise ValueError('stored metadata SHA mismatch')
+            records[key] = json.loads(value['record_json'])
+        existing = {record['publisher_series_proof']['reference_id']: record
+                    for record in records.values() if record.get('schema_version') == 'light-novel-ndl-series-v1'}
+        scoped = reference_ids is not None
+        requested = set(assertions) if not scoped else set(reference_ids)
+        if requested - assertions.keys():
+            raise ValueError('unknown publisher series reference')
+        completed = requested & existing.keys() if scoped else set()
+        active = requested - completed
+        target_titles = {normalize_search(assertions[key]['title']) for key in active}
+        selected = set(stored) if not scoped else set()
+        if scoped:
+            for key, record in records.items():
+                if stored[key]['kind'] == 'edition':
+                    titles = [row['value'] for row in record['source_record']['titles']]
+                    title_keys = {normalize_search(value) for title in titles
+                        for value in (title, re.split(r' (?:=|:) ', title, maxsplit=1)[0])}
+                elif key.startswith('lns:wd:'):
+                    title_keys = {normalize_search(value) for value in [record['title'], *record.get('aliases', [])]}
+                elif record.get('schema_version') == 'light-novel-ndl-series-v1':
+                    assertion = assertions.get(record['publisher_series_proof']['reference_id'])
+                    title_keys = {normalize_search(assertion['title'])} if assertion else set()
+                else:
+                    continue
+                if title_keys & target_titles:
+                    selected.add(key)
+        projected = {}
+        for key in selected:
+            row = self._project(records[key], cache)
+            if row['entry_id'] != key or row['entry_kind'] != stored[key]['kind']:
+                raise ValueError('stored typed identity differs')
+            projected[key] = row
+        rows = list(projected.values())
         editions = {}
         for row in rows:
             if row['entry_kind'] == 'edition':
@@ -565,14 +603,16 @@ class LightNovelCatalogue:
                     editions.setdefault(normalize_search(title['value']), {})[row['entry_id']] = records[row['entry_id']]
         wd_titles = {normalize_search(title) for row in rows if row['entry_kind'] == 'series' and row['qid']
                      for title in [row['title'], *row['aliases']]}
-        existing = {record['publisher_series_proof']['reference_id']: record
-                    for record in records.values() if record.get('schema_version') == 'light-novel-ndl-series-v1'}
-        result = {'inserted': 0, 'updated': 0, 'unchanged': 0, 'held': 0, 'held_reasons': {}, 'failures': []}
+        result = {'inserted': 0, 'updated': 0, 'unchanged': len(completed), 'held': 0, 'held_reasons': {}, 'failures': [],
+                  'requested_series_references': len(requested), 'proposal_references': len(active),
+                  'candidate_entries_verified': len(selected)}
         def hold(reason):
             result['held'] += 1
             result['held_reasons'][reason] = result['held_reasons'].get(reason, 0) + 1
         proposals = []
         for reference, assertion in assertions.items():
+            if reference not in active:
+                continue
             key = normalize_search(assertion['title'])
             if key in wd_titles:
                 hold('potential_wikidata_series_overlap_requires_authority_review')
@@ -593,6 +633,9 @@ class LightNovelCatalogue:
             anchor = previous['anchor_edition_record'] if previous else min(qualified, key=lambda pair: (
                 pair[1]['volume_number'] is None, pair[1]['volume_number'] or 0,
                 pair[0]['source_record']['publication_year'] or 9999, pair[0]['id']))[0]
+            if any(record['id'] == anchor['id'] and owner != reference for owner, record in existing.items()):
+                hold('ambiguous_publisher_series_for_same_ndl_anchor')
+                continue
             proposals.append({'schema_version': 'light-novel-ndl-series-v1', 'source': 'ndl', 'id': anchor['id'],
                               'anchor_edition_record': anchor, 'publisher_series_proof': {**source_proof, 'reference_id': reference}})
         anchors = {}
@@ -605,26 +648,47 @@ class LightNovelCatalogue:
                     hold('ambiguous_publisher_series_for_same_ndl_anchor')
                 continue
             admitted.extend(group)
-        imported = self.ingest(admitted)
+        added_rows = {}
+        imported = self.ingest(admitted, _cache=cache, _projected=added_rows) if admitted else {
+            'inserted': 0, 'updated': 0, 'unchanged': 0, 'failed': 0, 'failures': []}
         for key in ('inserted', 'updated', 'unchanged'):
             result[key] += imported[key]
         result['failures'].extend(imported['failures'])
         for _ in range(imported['failed']):
             hold('projection_validation_failed')
         # Persist edition membership separately; it never creates an original work.
-        rows = self._rows(include_features=False)
-        with self._connect() as db:
-            stored = {r['entry_id']: dict(r) for r in db.execute('SELECT * FROM entries')}
-        memberships = self._ndl_membership_candidates(rows, stored, {})
+        for record in admitted:
+            key = 'lns:ndl:' + record['id']
+            if key not in added_rows:
+                continue
+            encoded = _json(record)
+            stored[key] = {'entry_id': key, 'kind': 'series', 'record_json': encoded,
+                           'record_sha256': hashlib.sha256(encoded.encode()).hexdigest()}
+            projected[key] = added_rows[key]
+        membership_stored = {key: stored[key] for key in projected}
+        memberships = self._ndl_membership_candidates(list(projected.values()), membership_stored, cache)
+        new_memberships = unchanged_memberships = conflicts = 0
         with self._connect() as db:
             for edition_id, membership in memberships.items():
                 series_id = membership['series_entry_id']
                 proof = {'kind': 'publisher_ndl_series_membership', 'edition_record_sha256': stored[edition_id]['record_sha256'],
                          'series_record_sha256': stored[series_id]['record_sha256'], 'membership': membership}
                 encoded = _json(proof)
+                digest = hashlib.sha256(encoded.encode()).hexdigest()
+                previous = db.execute('SELECT proof_sha256 FROM edition_series_memberships WHERE edition_id=?', (edition_id,)).fetchone()
+                if previous and previous['proof_sha256'] == digest:
+                    unchanged_memberships += 1
+                    continue
+                if scoped and previous:
+                    conflicts += 1
+                    hold('existing_edition_membership_conflict')
+                    continue
                 db.execute('INSERT OR REPLACE INTO edition_series_memberships VALUES(?,?,?,?)',
-                           (edition_id, series_id, encoded, hashlib.sha256(encoded.encode()).hexdigest()))
-        result['verified_edition_memberships'] = len(memberships)
+                           (edition_id, series_id, encoded, digest))
+                new_memberships += 1
+        result['verified_edition_memberships'] = len(memberships) - conflicts
+        result['new_edition_memberships'] = new_memberships
+        result['unchanged_edition_memberships'] = unchanged_memberships
         return result
 
     def _author_authorities(self, manifest_path, expected_sha256, cache):

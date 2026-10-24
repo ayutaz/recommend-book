@@ -1116,6 +1116,76 @@ def test_iris_neo_distribution_and_complete_title_extensions_work_together(iris_
     assert proof['publisher_match']['distribution_agents'] and proof['title_match']['volume'] == '3'
 
 
+def test_series_delta_scope_avoids_unrelated_raw_and_reuses_same_cache(publisher_ndl_bundle, tmp_path, monkeypatch):
+    from pathlib import Path
+    import xml.etree.ElementTree as ET
+    from recommend_book.ingestion.ndl import NDLAdapter
+    from recommend_book.ingestion.core import RawArtifact
+    cat, edition, frames, sha, root, _ = publisher_ndl_bundle
+    other = json.loads(json.dumps(edition))
+    raw = tmp_path / 'unrelated-edition.xml'
+    raw.write_text(Path(edition['provenance']['raw_path']).read_text(encoding='utf-8')
+        .replace('R100000002-I1', 'R100000002-I2').replace(edition['title'], '無関係な別書名'), encoding='utf-8')
+    digest = hashlib.sha256(raw.read_bytes()).hexdigest()
+    source = NDLAdapter(None)._normalize(ET.fromstring(raw.read_bytes()), RawArtifact(digest, str(raw), raw.stat().st_size,
+        edition['source_record']['retrieved_at'], 'https://ndlsearch.ndl.go.jp/api/sru'), 'iss-ndl-opac', locator='records[1]/recordData').model_dump(mode='json')
+    other.update(id=source['source_id'], source_url=source['source_url'], title=source['titles'][0]['value'], source_record=source)
+    other['provenance'].update(url=source['source_url'], raw_path=str(raw), raw_sha256=digest)
+    assert cat.import_editions([other])['inserted'] == 1
+    raw.write_bytes(b'unrelated source is unavailable')
+    target_raw = Path(edition['provenance']['raw_path'])
+    real_read = Path.read_bytes
+    reads = []
+    def observed_read(path):
+        if path == target_raw:
+            reads.append(path)
+        return real_read(path)
+    monkeypatch.setattr(Path, 'read_bytes', observed_read)
+    monkeypatch.setattr(cat, '_rows', lambda **kwargs: pytest.fail('full rows must not run inside series import'))
+    monkeypatch.setattr(cat, '_publisher_books', lambda *args: pytest.fail('unneeded book confirmation replay'))
+    reference = 'publisher-series:' + hashlib.sha256(b'https://firecross.jp/hjbunko/series/1').hexdigest()[:24]
+    result = cat.import_ndl_series_from_publishers(frames, sha, source_root=root, reference_ids={reference})
+    assert result['inserted'] == 1 and result['verified_edition_memberships'] == 1
+    assert len(reads) == 1
+
+
+@pytest.mark.parametrize('tamper', ['sha', 'rehashed_projection', 'second_cached_record_identity'])
+def test_series_delta_revalidates_each_target_projection(publisher_ndl_bundle, tamper):
+    cat, edition, frames, sha, root, _ = publisher_ndl_bundle
+    with cat._connect() as db:
+        if tamper == 'sha':
+            db.execute('UPDATE entries SET record_sha256=?', ('f' * 64,))
+        elif tamper == 'rehashed_projection':
+            edition['publisher'] = '偽出版社'
+            encoded = json.dumps(edition, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+            db.execute('UPDATE entries SET record_json=?,record_sha256=?', (encoded, hashlib.sha256(encoded.encode()).hexdigest()))
+        else:
+            row = db.execute('SELECT * FROM entries').fetchone()
+            db.execute('INSERT INTO entries VALUES(?,?,?,?)',
+                ('lne:ndl:R100000002-I2', 'edition', row['record_json'], row['record_sha256']))
+    reference = 'publisher-series:' + hashlib.sha256(b'https://firecross.jp/hjbunko/series/1').hexdigest()[:24]
+    with pytest.raises(ValueError):
+        cat.import_ndl_series_from_publishers(frames, sha, source_root=root, reference_ids={reference})
+    with cat._connect() as db:
+        assert db.execute('SELECT count(*) FROM entries WHERE kind=?', ('series',)).fetchone()[0] == 0
+
+
+def test_series_delta_preserves_completed_records_without_reingesting(publisher_ndl_bundle, monkeypatch):
+    cat, _, frames, sha, root, _ = publisher_ndl_bundle
+    # The existing unscoped API remains compatible.
+    assert cat.import_ndl_series_from_publishers(frames, sha, source_root=root)['inserted'] == 1
+    with cat._connect() as db:
+        before = [tuple(row) for row in db.execute('SELECT * FROM entries WHERE kind=?', ('series',))]
+        memberships = [tuple(row) for row in db.execute('SELECT * FROM edition_series_memberships')]
+    monkeypatch.setattr(cat, 'ingest', lambda *args, **kwargs: pytest.fail('completed series must not be reingested'))
+    reference = 'publisher-series:' + hashlib.sha256(b'https://firecross.jp/hjbunko/series/1').hexdigest()[:24]
+    result = cat.import_ndl_series_from_publishers(frames, sha, source_root=root, reference_ids={reference})
+    assert result['unchanged'] == 1 and result['inserted'] == 0
+    with cat._connect() as db:
+        assert [tuple(row) for row in db.execute('SELECT * FROM entries WHERE kind=?', ('series',))] == before
+        assert [tuple(row) for row in db.execute('SELECT * FROM edition_series_memberships')] == memberships
+
+
 @pytest.fixture
 def bulk_bundle(edition_bundle, tmp_path):
     from pathlib import Path
