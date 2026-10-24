@@ -19,7 +19,7 @@
 
 資料のジャンルによる類似候補と、読書履歴に基づく個人推薦は区別します。独立した正解データによる分類精度、確信度の校正、本人向け推薦の改善は未評価です。翻訳・版の対応や独立した名寄せ精度も未検証です。
 
-日本のライトノベルは必須対象ですが、現在はシリーズ単位の収集・検索・推薦が未対応で、「魔法科高校の劣等生」も未収録です。この不足の解消を次の件数拡張より優先します。
+日本のライトノベル用に、シリーズ・各巻・版を分けた検索と推薦を追加しました。「魔法科高校の劣等生」はシリーズとして検索し、好きな作品に指定できます。現時点で1,276シリーズを収録し、52シリーズに内容根拠付きの特徴があります。出版社・レーベル別の不足を補っており、ほぼ網羅できた段階ではありません。[追加状況と残作業](docs/light-novels-progress-v1.md)を参照してください。
 
 詳細分類では、テーマ・物語構造・主人公・雰囲気などの根拠付き特徴を使います。根拠がない項目は不明とし、原作本文の裏付けがない文体は推定しません。
 
@@ -31,10 +31,10 @@ Python 3.14と[uv](https://docs.astral.sh/uv/)を使います。この環境の�
 
 ```powershell
 uv sync --locked
-uv run python scripts/serve_scale_catalogue_v1.py --database data/autonomous-next-v3/scale-v1/catalogue.sqlite --port 8766
+uv run --locked python scripts/serve_scale_catalogue_v1.py --database data/autonomous-next-v3/scale-v1/catalogue.sqlite --light-novels-database data/light-novels-v1/catalogue.sqlite --port 8769
 ```
 
-ブラウザで [小説の本棚](http://127.0.0.1:8766/) を開きます。
+ブラウザで [小説の本棚](http://127.0.0.1:8769/) を開きます。「対象」で「日本のライトノベル」、「種別」で「シリーズ」を選ぶとシリーズ単位で探せます。ライトノベルDBを用意していない環境では、`--light-novels-database`を省略して世界小説だけを開けます。
 
 取得データ・DB・個人履歴はGit対象外の `data/` に保存します。リポジトリを取得するだけでは推薦用データは揃いません。従来の試作画面は `data/autonomous-next-v3/database/phase17-world-delivery-v1/index.html` にあります。
 
@@ -42,11 +42,11 @@ uv run python scripts/serve_scale_catalogue_v1.py --database data/autonomous-nex
 
 ## ここから進めること
 
-最新の計画は[v22：日本のライトノベル対応](docs/autonomous-next-phase-plan-v22.md)、現在地は[2万分類の到達状況](docs/scale-classification-v4.md)にまとめています。依頼された18:01の計画1〜3は完了しました。新たな不具合や変更がなければ同じ分類・監査・画面確認を繰り返しません。
+最新の計画は[v22：日本のライトノベル対応](docs/autonomous-next-phase-plan-v22.md)、現在地は[ライトノベル対応の進捗](docs/light-novels-progress-v1.md)にまとめています。[2万分類の到達状況](docs/scale-classification-v4.md)は前段階の記録です。新たな不具合や変更がなければ同じ分類・監査・画面確認を繰り返しません。
 
-1. 「魔法科高校の劣等生」を小説シリーズとして検索し、好きな作品に指定して推薦できる経路を作ります。シリーズ・各巻・版は区別します。
-2. WikidataとNDL作成の書誌を優先し、日本のライトノベル100シリーズで確認した後、1,000シリーズへ広げます。
-3. シリーズ数・巻数・内容分類数を別に管理し、その実測を基にライトノベルの追加と世界小説の3万・5万・10万作品への拡張を進めます。
+1. 出版社のシリーズ一覧とNDL作成の書誌を照合し、既存の1,276シリーズにない作品を補います。
+2. 固定20シリーズの照合と、内容特徴あり500シリーズ以上への拡張を進めます。
+3. レーベル・年代ごとの収録と未解決の不足を報告し、日本のライトノベルの利用を保ちながら世界小説の3万・5万・10万作品への拡張へ進みます。
 
 2万分類版のmain反映は[PR #30](https://github.com/ayutaz/recommend-book/pull/30)で別に進めます。現在はdraftです。一般公開・商用提供は用途条件と公開構成が成立した段階で扱います。
 
