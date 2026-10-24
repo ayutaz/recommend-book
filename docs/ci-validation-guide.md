@@ -11,9 +11,9 @@
 | `test_collect_scale20k_content_v1.py::test_preflight_rejects_stale_rights_before_any_selection` | `native-source-registry-v1.json` |
 | `test_scale20k_native_v2.py::test_unknown_genre_import_and_existing_control_constructor_connect_end_to_end` | `content-operational-driver-v2.py` |
 
-Ubuntuは2 failed・2,629 passed・7 skipped、Windowsは2 failed・2,630 passed・6 skipped。この失敗は未修正であり、CI成功やmainへのマージ準備完了とは扱わない。収集済みデータを公開するのではなく、一時ディレクトリ内の合成fixtureで必要な入力を作り、既存の拒否条件と接続を試験できるように修正する。skipの追加や固定hash確認の緩和で通さない。
+この過去のrunはUbuntuが2 failed・2,629 passed・7 skipped、Windowsが2 failed・2,630 passed・6 skippedだった。その後、一時ディレクトリ内の合成fixtureへ切り替え、関連17試験のローカル成功を確認した。修正は`7fdc2d8efaccd75e87af9b1bf07d4ba80cd42c3a`としてpush済み。2026-10-24 18:34 JST時点で、このcommitの[run 40080781445](https://github.com/ayutaz/recommend-book/actions/runs/40080781445)は両OSとも実行待ちであり、CI成功やマージ準備完了とは扱わない。収集済みデータの公開、skipの追加、固定hash確認の緩和は行っていない。
 
-修正時はまず上記2試験と変更に関係する試験を実行し、確定した実装で両OSのCIを確認する。実データの分類・審査・DB採用、最終監査、実HTTP・画面確認はfixture CIと別に確認する。文書だけの更新では、リンク・差分・保存結果との整合を確認し、分類や全件pytestを追加実行しない。
+今後の補助実装についても変更に関係する試験を確認し、確定した実装で両OSのCIを確認する。実データの分類・審査・DB採用、最終監査、実HTTP・画面確認はfixture CIと別に確認する。文書だけの更新では、リンク・差分・保存結果との整合を確認し、分類や全件pytestを追加実行しない。
 
 ## 過去のPython移行と検証（2026-10-20・phase16）
 
