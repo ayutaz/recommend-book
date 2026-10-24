@@ -752,3 +752,144 @@ def test_dx_comics_are_denied_even_when_other_edition_evidence_matches(setup_cat
         'isbn': '9784798613161', 'title': '小説と同名の漫画', 'credits': [{'role': '著者', 'name': '著者'}],
         'publisher': '集英社', 'label': label}
     assert cat._publisher_edition_match('shueisha-dx', book, {}, {}) is None
+
+
+@pytest.fixture
+def bulk_bundle(edition_bundle, tmp_path):
+    from pathlib import Path
+    cat, _, edition = edition_bundle
+    conditions = Path(edition['provenance']['conditions_path'])
+    policy = json.loads(conditions.read_text())
+    policy['version'] = 'light-novel-source-conditions-bulk-v2'
+    policy['ndl'].update(provider='iss-ndl-opac-national', source_provider_evidence_url='https://ndlsearch.ndl.go.jp/bib/help')
+    policy['ndl']['usages']['llm_input'] = False
+    for i, url in enumerate(('https://ndlsearch.ndl.go.jp/bib/help', 'https://www.ndl.go.jp/data/data_service/jnb')):
+        raw = tmp_path / f'national-help-{i}'
+        raw.write_text('official conditions')
+        policy['snapshots'].append({'url': url, 'raw_path': str(raw), 'raw_sha256': hashlib.sha256(raw.read_bytes()).hexdigest()})
+    condition_path = tmp_path / 'bulk-conditions.json'
+    condition_sha = write(condition_path, policy)
+    from test_light_novel_ndl_bulk_v1 import document
+    raw = tmp_path / 'bulk.xml'
+    raw.write_text(document(), encoding='utf-8')
+    receipt = {'version': 'ndl-official-bulk-ui-probe-v2', 'source_provider': 'iss-ndl-opac-national',
+        'source_url': 'https://ndlsearch.ndl.go.jp/bib?cs=marc&keyword=test',
+        'official_help': 'https://ndlsearch.ndl.go.jp/bib/help', 'retrieved_at': '2026-10-24T00:00:00Z',
+        'ui_total': 1, 'documents': 1, 'admin_records': 1, 'bibliographic_records': 1, 'unique_ids': 1,
+        'bytes': raw.stat().st_size, 'raw_path': str(raw), 'raw_sha256': hashlib.sha256(raw.read_bytes()).hexdigest(),
+        'repository_ids': ['R100000002'], 'all_count_match': True, 'maximum_selected': 5000,
+        'conditions_path': str(condition_path), 'conditions_sha256': condition_sha}
+    path = tmp_path / 'bulk-receipt.json'
+    return cat, edition, path, write(path, receipt), raw
+
+
+def test_bulk_own_bibliography_roundtrip_and_raw_revalidation(bulk_bundle):
+    cat, _, path, sha, raw = bulk_bundle
+    assert cat.import_ndl_bulk(path, sha)['inserted'] == 1
+    row = cat.work_detail('lne:ndl:R100000002-I1')
+    assert row['title'] == '日本語小説'
+    assert row['publishers'] == [{'qid': None, 'label': '出版社'}]
+    assert row['source_attributions'][0]['provider'] == 'iss-ndl-opac-national'
+    assert not row['light_novel_confirmed'] and row['original_language'] is None
+    assert cat.import_ndl_bulk(path, sha)['existing_identities_preserved'] == 1
+    assert '他館' not in json.dumps(row, ensure_ascii=False)
+    raw.write_bytes(b'changed')
+    with pytest.raises(ValueError):
+        cat.work_detail('lne:ndl:R100000002-I1')
+
+
+def test_bulk_preserves_existing_sru_identity_and_history(bulk_bundle):
+    cat, edition, path, sha, _ = bulk_bundle
+    cat.ingest([edition])
+    cat.set_read_status('lne:ndl:R100000002-I1', 'reading')
+    result = cat.import_ndl_bulk(path, sha)
+    assert result['inserted'] == 0 and result['existing_identities_preserved'] == 1
+    row = cat.work_detail('lne:ndl:R100000002-I1')
+    assert row['title'] == edition['title'] and row['read_status'] == 'reading'
+    assert row['source_attributions'][0]['provider'] == 'iss-ndl-opac'
+
+
+def test_narrow_search_and_detail_authenticate_only_candidates_and_relatives(setup_catalogue, monkeypatch):
+    from pathlib import Path
+    cat, records = setup_catalogue
+    cat.ingest(records)
+    original = cat._project
+    calls = []
+    def project(record, cache):
+        calls.append(record['id'])
+        return original(record, cache)
+    monkeypatch.setattr(cat, '_project', project)
+    Path(records[1]['provenance']['raw_path']).write_text('{}')
+    assert cat.search_catalogue('マホウカ')['total'] == 1
+    assert set(calls) == {'Q1', 'Q3'}
+    calls.clear()
+    assert cat.work_detail('lns:wd:Q1')['members'][0]['entry_id'] == 'lnw:wd:Q3'
+    assert set(calls) == {'Q1', 'Q3'}
+    with pytest.raises(ValueError, match='SHA'):
+        cat.catalogue_stats()
+
+
+def test_narrow_search_does_not_publish_forged_saved_projection(setup_catalogue):
+    cat, records = setup_catalogue
+    cat.ingest(records)
+    record = records[1]
+    record['title'] = '偽装題名'
+    encoded = json.dumps(record, ensure_ascii=False)
+    with cat._connect() as db:
+        db.execute('UPDATE entries SET record_json=?,record_sha256=? WHERE entry_id=?',
+            (encoded, hashlib.sha256(encoded.encode()).hexdigest(), 'lns:wd:Q2'))
+    with pytest.raises(ValueError, match='title'):
+        cat.search_catalogue('偽装題名')
+
+
+def test_narrow_search_checks_all_saved_record_digests(setup_catalogue):
+    cat, records = setup_catalogue
+    cat.ingest(records)
+    with cat._connect() as db:
+        db.execute("UPDATE entries SET record_json='{}' WHERE entry_id='lns:wd:Q2'")
+    with pytest.raises(ValueError, match='SHA'):
+        cat.search_catalogue('魔法科')
+
+
+@pytest.mark.parametrize('provider,expected', [('iss-ndl-opac-national', True), ('aozora', False)])
+def test_publisher_series_matching_accepts_authenticated_national_provider_only(publisher_ndl_bundle, provider, expected):
+    from recommend_book.light_novel_ndl_series_v1 import publisher_assertions, match_bibliography
+    cat, edition, frames, sha, root, _ = publisher_ndl_bundle
+    proof = {'frames_path': str(frames), 'frames_sha256': sha, 'source_root': str(root)}
+    assertion = next(iter(publisher_assertions(proof, cat._artifact, {}).values()))
+    source = {**edition['source_record'], 'provider_id': provider}
+    assert bool(match_bibliography(assertion, source, normalize_search)) is expected
+
+
+def test_source_only_recommendation_verifies_liked_and_selected_features_only(setup_catalogue, monkeypatch):
+    cat, records = setup_catalogue
+    cat.ingest(records)
+    calls = []
+    def verify(entry_ids=None):
+        calls.append(entry_ids)
+        assert entry_ids is not None  # An irrelevant native window must not be opened.
+        return {}
+    monkeypatch.setattr(cat, '_feature_rows', verify)
+    result = cat.recommend_preferences(liked_entry_ids=['lns:wd:Q1'])
+    assert [r['entry_id'] for r in result['items']] == ['lns:wd:Q2']
+    assert result['items'][0]['reasons'][0]['kind'] == 'source_genre'
+    assert calls == [{'lns:wd:Q1'}, {'lns:wd:Q2'}]
+
+
+def test_explicit_subseries_p179_deduplicates_recommendations_without_copying_features(setup_catalogue):
+    from pathlib import Path
+    cat, records = setup_catalogue
+    child = records[2]
+    child['kind'] = 'series'
+    raw = Path(child['provenance']['raw_path'])
+    payload = json.loads(raw.read_text(encoding='utf8'))
+    payload['entities']['Q3']['claims']['P31'] = [claim('Q104213567')]
+    child['provenance']['raw_sha256'] = write(raw, payload)
+    cat.ingest(records)
+    result = cat.recommend_preferences(liked_entry_ids=['lns:wd:Q2'])
+    assert len(result['items']) == 1
+    assert cat.work_detail('lns:wd:Q1')['members'][0]['entry_id'] == 'lns:wd:Q3'
+    assert cat.work_detail('lns:wd:Q3')['llm_features'] == []
+    cat.set_read_status('lns:wd:Q3', 'read')
+    assert cat.work_detail('lns:wd:Q1')['read_status'] == 'unknown'
+    assert cat.similar_works('lns:wd:Q2')['items'] == []

@@ -24,8 +24,10 @@ def main():
     parser.add_argument('--publisher-books-provider', choices=('kadokawa', 'shueisha-dx', 'ichijinsha-iris'))
     parser.add_argument('--publisher-books', type=Path)
     parser.add_argument('--publisher-books-sha256')
+    parser.add_argument('--ndl-bulk-receipt', type=Path)
+    parser.add_argument('--ndl-bulk-receipt-sha256')
     args = parser.parse_args()
-    if not any((args.metadata, args.features, args.author_authorities, args.publisher_series_frames, args.publisher_books)):
+    if not any((args.metadata, args.features, args.author_authorities, args.publisher_series_frames, args.publisher_books, args.ndl_bulk_receipt)):
         parser.error('at least one metadata/features/author-authorities/publisher-series input is required')
     if bool(args.features) != bool(args.features_sha256):
         parser.error('--features and --features-sha256 are required together')
@@ -39,8 +41,12 @@ def main():
     book_inputs = (args.publisher_books_provider, args.publisher_books, args.publisher_books_sha256)
     if any(book_inputs) and not all(book_inputs):
         parser.error('--publisher-books-provider, --publisher-books, and --publisher-books-sha256 are required together')
+    if bool(args.ndl_bulk_receipt) != bool(args.ndl_bulk_receipt_sha256):
+        parser.error('--ndl-bulk-receipt and --ndl-bulk-receipt-sha256 are required together')
     catalogue = LightNovelCatalogue(args.database)
     result = {}
+    if args.ndl_bulk_receipt:
+        result['ndl_bulk'] = catalogue.import_ndl_bulk(args.ndl_bulk_receipt, args.ndl_bulk_receipt_sha256)
     if args.metadata:
         result['metadata'] = catalogue.import_metadata(args.metadata)
     if args.features:

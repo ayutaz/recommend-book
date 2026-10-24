@@ -147,14 +147,18 @@ class LightNovelCatalogue:
             cache[key] = json.loads(self._artifact(path, expected, cache))
         return cache[key]
 
-    def _conditions(self, provenance, source, cache):
+    def _conditions(self, provenance, source, cache, *, provider=None):
         document = self._payload(provenance['conditions_path'], provenance['conditions_sha256'], cache)
-        if document.get('version') != 'light-novel-source-conditions-v1':
+        national = source == 'ndl' and provider == 'iss-ndl-opac-national'
+        expected_version = 'light-novel-source-conditions-bulk-v2' if national else 'light-novel-source-conditions-v1'
+        if document.get('version') != expected_version:
             raise ValueError('unsupported source conditions')
         policy = document.get(source, {})
         if not all(policy.get('usages', {}).get(u) is True for u in ('local_storage', 'metadata_display', 'metadata_recommendation')):
             raise ValueError('metadata usage held')
         wanted = {'https://www.wikidata.org/wiki/Wikidata:Licensing'} if source == 'wikidata' else {'https://www.ndl.go.jp/data/data_service/quickguide', 'https://ndlsearch.ndl.go.jp/help/api'}
+        if national:
+            wanted |= {'https://ndlsearch.ndl.go.jp/bib/help', 'https://www.ndl.go.jp/data/data_service/jnb'}
         snapshots = {s['url']: s for s in document.get('snapshots', [])}
         if not wanted <= snapshots.keys():
             raise ValueError('source conditions snapshots absent')
@@ -163,14 +167,17 @@ class LightNovelCatalogue:
             self._artifact(proof['raw_path'], proof['raw_sha256'], cache)
         if source == 'wikidata' and (policy.get('license') != 'CC0' or policy.get('prose_excluded') is not True):
             raise ValueError('structured Wikidata metadata policy differs')
-        if source == 'ndl' and policy.get('provider') != 'iss-ndl-opac':
+        if source == 'ndl' and policy.get('provider') != (provider or 'iss-ndl-opac'):
             raise ValueError('NDL-created metadata policy absent')
+        if national and (policy.get('source_provider_evidence_url') != 'https://ndlsearch.ndl.go.jp/bib/help'
+                         or policy.get('usages', {}).get('llm_input') is not False):
+            raise ValueError('national bibliography scope/prose boundary absent')
         return policy
 
     def _project(self, record, cache):
         if record.get('schema_version') == 'light-novel-ndl-series-v1':
             return self._project_ndl_series(record, cache)
-        if record.get('schema_version') == 'light-novel-edition-v1':
+        if record.get('schema_version') in {'light-novel-edition-v1', 'light-novel-edition-bulk-v1'}:
             return self._project_edition(record, cache)
         if record.get('schema_version') not in {'light-novel-metadata-v1', 'light-novel-metadata-v2'} or record.get('source') != 'wikidata':
             raise ValueError('unsupported metadata contract')
@@ -268,7 +275,9 @@ class LightNovelCatalogue:
         import xml.etree.ElementTree as ET
         from .ingestion.core import RawArtifact
         from .ingestion.ndl import NDLAdapter, SRU
-        if record.get('source') != 'ndl' or record.get('provider') != 'iss-ndl-opac':
+        provider = record.get('provider')
+        national = record.get('schema_version') == 'light-novel-edition-bulk-v1'
+        if record.get('source') != 'ndl' or provider != ('iss-ndl-opac-national' if national else 'iss-ndl-opac'):
             raise ValueError('only NDL-created bibliographic editions are admitted')
         source_id = record['id']
         if not re.fullmatch(r'R100000002-[A-Za-z0-9._-]+', source_id):
@@ -276,11 +285,24 @@ class LightNovelCatalogue:
         if record.get('original_work_id') or record.get('series_entry_id'):
             raise ValueError('NDL edition to story relation requires separate source review')
         proof = record['provenance']
-        self._conditions(proof, 'ndl', cache)
+        self._conditions(proof, 'ndl', cache, provider=provider)
         source_record = record['source_record']
         raw = self._artifact(proof['raw_path'], proof['raw_sha256'], cache)
         key = ('ndl_records', proof['raw_path'], proof['raw_sha256'], source_record['retrieved_at'])
         node_key = ('ndl_nodes', proof['raw_path'], proof['raw_sha256'])
+        receipt = None
+        if national:
+            from .light_novel_ndl_bulk_v1 import verify_bulk_receipt
+            receipt_key = ('national_receipt', proof['receipt_path'], proof['receipt_sha256'])
+            if receipt_key not in cache:
+                cache[receipt_key] = verify_bulk_receipt(proof['receipt_path'], proof['receipt_sha256'], self._artifact, cache)
+            receipt, documents = cache[receipt_key]
+            if any(proof.get(k) != receipt.get(k) for k in ('raw_path', 'raw_sha256', 'conditions_path', 'conditions_sha256')):
+                raise ValueError('bulk provenance differs from fixed receipt')
+            if node_key not in cache:
+                cache[node_key] = {row['source_id']: (row['node'], row['index']) for row in documents}
+            if source_id not in cache[node_key] or proof.get('document_index') != cache[node_key][source_id][1]:
+                raise ValueError('bulk own bibliography document index differs')
         if node_key not in cache:
             try:
                 xml = ET.fromstring(raw)
@@ -307,9 +329,12 @@ class LightNovelCatalogue:
             cache[key] = {}
         if source_id not in cache[key] and source_id in cache[node_key]:
             node, index = cache[node_key][source_id]
-            adapter = NDLAdapter(None, approved_providers={'iss-ndl-opac'})
-            artifact = RawArtifact(proof['raw_sha256'], proof['raw_path'], len(raw), source_record['retrieved_at'], 'https://ndlsearch.ndl.go.jp/api/sru')
-            item = adapter._normalize(node, artifact, 'iss-ndl-opac', locator=f'records[{index}]/recordData')
+            adapter = NDLAdapter(None, approved_providers={provider})
+            artifact = RawArtifact(proof['raw_sha256'], proof['raw_path'], len(raw),
+                receipt['retrieved_at'] if national else source_record['retrieved_at'],
+                receipt['source_url'] if national else 'https://ndlsearch.ndl.go.jp/api/sru')
+            locator = f'bulk-docs[{index}]/rdf:RDF' if national else f'records[{index}]/recordData'
+            item = adapter._normalize(node, artifact, provider, locator=locator)
             cache[key][source_id] = item.model_dump(mode='json')
         actual = cache[key].get(source_id)
         if not actual or actual != source_record:
@@ -345,7 +370,7 @@ class LightNovelCatalogue:
                 'relation_resolution': 'original_work_and_story_series_unresolved',
                 'source_url': wanted_url, 'relations': {p: [] for p in RELATIONS}, 'read_status': 'unknown',
                 'recommendable': False, 'llm_features': [], 'native_features': [], 'strict72_features': [],
-                'content_sources': [], 'source_attributions': [{'source': 'ndl', 'provider': 'iss-ndl-opac',
+                'content_sources': [], 'source_attributions': [{'source': 'ndl', 'provider': provider,
                     'source_url': wanted_url, 'scope': 'edition', 'credit': 'NDLサーチAPIの国立国会図書館書誌データを加工して作成',
                     'license_url': 'https://www.ndl.go.jp/data/data_service/quickguide'}],
                 'classification_scope': 'edition', 'content_features_adopted': False,
@@ -382,6 +407,20 @@ class LightNovelCatalogue:
 
     def import_editions(self, records):
         return self.ingest(records)
+
+    def import_ndl_bulk(self, receipt_path, expected_sha256):
+        """Add new own-NDL edition identities, preserving existing SRU bindings."""
+        from .light_novel_ndl_bulk_v1 import verify_bulk_receipt, bulk_metadata_records
+        cache = {}
+        receipt, documents = verify_bulk_receipt(receipt_path, expected_sha256, self._artifact, cache)
+        self._conditions(receipt, 'ndl', cache, provider='iss-ndl-opac-national')
+        records = bulk_metadata_records(receipt_path, expected_sha256, receipt, documents)
+        with self._connect() as db:
+            existing = {row[0] for row in db.execute('SELECT entry_id FROM entries')}
+        new = [record for record in records if 'lne:ndl:' + record['id'] not in existing]
+        result = self.ingest(new)
+        result.update(downloaded_own_editions=len(records), existing_identities_preserved=len(records) - len(new))
+        return result
 
     def _project_ndl_series(self, record, cache):
         from .light_novel_ndl_series_v1 import publisher_assertions, match_bibliography
@@ -961,17 +1000,79 @@ class LightNovelCatalogue:
             'held_count': sum(label.get('axis', label.get('label_id', '').split('.')[0]) == axis for label in feature.get('held_labels', [])),
             'unknown': not any(label.get('axis') == axis for label in labels)} for axis in AXES]
 
-    def _rows(self, *, include_features=True, feature_entry_ids=None, _cache=None):
+    def _candidate_ids(self, records, *, query=None, entry_id=None):
+        """Use digest-checked saved fields only to find a verification superset.
+
+        All admitted candidates and their potentially competing series are
+        subsequently reprojected from raw evidence. Saved fields are never a
+        public projection or proof of a relation.
+        """
+        key = normalize_search(query or '')
+        if not key and entry_id is None:
+            return None
+        values, title_keys, series_titles, qids = {}, {}, {}, {}
+        edges = {identity: set() for identity in records}
+        for identity, record in records.items():
+            base = record.get('anchor_edition_record', record)
+            source = base.get('source_record', {})
+            titles = [base.get('title', ''), *base.get('aliases', []),
+                      *[t['value'] for t in source.get('titles', [])],
+                      *source.get('extra', {}).get('title_readings', [])]
+            authors = [a.get('label', '') if isinstance(a, dict) else a for a in base.get('authors', [])]
+            values[identity] = normalize_search(' '.join([*titles, *authors]))
+            title_keys[identity] = {normalize_search(t) for t in titles if t}
+            # A possible RDF ISBD main title widens selection only. Its literal
+            # source-field structure is checked later by _source_with_title_parts.
+            title_keys[identity].update(normalize_search(re.split(r' (?:=|:) ', t, maxsplit=1)[0]) for t in titles if t)
+            if identity.startswith('lns:'):
+                for title in title_keys[identity]:
+                    series_titles.setdefault(title, set()).add(identity)
+            if record.get('source') == 'wikidata':
+                qids[record['id']] = identity
+        for identity, record in records.items():
+            for prop in ('P179', 'P527'):
+                for qid in record.get('relations', {}).get(prop, []):
+                    if qid in qids:
+                        other = qids[qid]
+                        edges[identity].add(other)
+                        edges[other].add(identity)
+        with self._connect() as db:
+            bindings = db.execute('SELECT edition_id,series_id FROM edition_series_memberships').fetchall()
+        for binding in bindings:
+            a, b = binding['edition_id'], binding['series_id']
+            if a in edges and b in edges:
+                edges[a].add(b)
+                edges[b].add(a)
+        selected = {entry_id} & records.keys() if entry_id else {identity for identity, text in values.items() if key in text}
+        pending = list(selected)
+        while pending:
+            identity = pending.pop()
+            relatives = set(edges[identity])
+            for title in title_keys[identity]:
+                relatives.update(series_titles.get(title, ()))
+            added = relatives - selected
+            selected.update(added)
+            pending.extend(added)
+        return selected
+
+    def _rows(self, *, include_features=True, feature_entry_ids=None, _cache=None,
+              candidate_query=None, detail_entry_id=None):
         cache = {} if _cache is None else _cache
         with self._connect() as db:
             stored = db.execute('SELECT e.*, r.status FROM entries e LEFT JOIN read_status r USING(entry_id)').fetchall()
             has_features = db.execute('SELECT count(*) FROM features').fetchone()[0]
-        features = self._feature_rows(feature_entry_ids) if include_features and has_features else {}
-        rows = []
+        records = {}
         for entry in stored:
             if hashlib.sha256(entry['record_json'].encode()).hexdigest() != entry['record_sha256']:
                 raise ValueError('stored metadata SHA mismatch')
-            record = json.loads(entry['record_json'])
+            records[entry['entry_id']] = json.loads(entry['record_json'])
+        candidate_ids = self._candidate_ids(records, query=candidate_query, entry_id=detail_entry_id)
+        if candidate_ids is not None:
+            stored = [entry for entry in stored if entry['entry_id'] in candidate_ids]
+        features = self._feature_rows(feature_entry_ids) if include_features and has_features else {}
+        rows = []
+        for entry in stored:
+            record = records[entry['entry_id']]
             row = self._project(record, cache)
             if row['entry_id'] != entry['entry_id'] or row['entry_kind'] != entry['kind']:
                 raise ValueError('stored typed identity differs')
@@ -1002,12 +1103,12 @@ class LightNovelCatalogue:
                 join(row['entry_id'], series_id)
             for qid in row['relations'].get('P179', []):
                 other = by_qid.get(qid)
-                if other and other['entry_kind'] == 'series' and row['entry_kind'] == 'work':
+                if other and other['entry_kind'] == 'series' and row['entry_kind'] in {'work', 'series'}:
                     join(row['entry_id'], other['entry_id'])
             if row['entry_kind'] == 'series':
                 for qid in row['relations'].get('P527', []):
                     other = by_qid.get(qid)
-                    if other and other['entry_kind'] == 'work':
+                    if other and other['entry_kind'] in {'work', 'series'}:
                         join(other['entry_id'], row['entry_id'])
         return {key: find(key) for key in parent}
 
@@ -1056,7 +1157,7 @@ class LightNovelCatalogue:
                        year_to=year_to, read_filter=read_filter, entry_kind=entry_kind)
         query_key = normalize_search(query)
         kind_priority = {'series': 0, 'work': 1, 'edition': 2}
-        rows = sorted(self._filtered(self._rows(include_features=False), **filters), key=lambda r: (
+        rows = sorted(self._filtered(self._rows(include_features=False, candidate_query=query), **filters), key=lambda r: (
             0 if query_key and normalize_search(r['title']) == query_key else 1,
             kind_priority[r['entry_kind']], r['title'], r['entry_id']))
         if exclude_work_qids:
@@ -1070,7 +1171,7 @@ class LightNovelCatalogue:
 
     def work_detail(self, entry_id, **_):
         entry_id = _entry(entry_id)
-        rows = self._rows(feature_entry_ids={entry_id})
+        rows = self._rows(feature_entry_ids={entry_id}, detail_entry_id=entry_id)
         row = next((r for r in rows if r['entry_id'] == entry_id), None)
         if row:
             families = self._families(rows)
@@ -1095,7 +1196,7 @@ class LightNovelCatalogue:
         return {'entry_id': entry_id, 'work_id': entry_id, 'read_status': status}
 
     def catalogue_facets(self):
-        rows = self._rows()
+        rows = self._rows(include_features=False)
         genres = {}
         kinds = {}
         languages = {}
@@ -1159,10 +1260,13 @@ class LightNovelCatalogue:
         avoided = _feature_ids(avoided_features, 'avoided_features', taxonomy)
         weights = _weights(axis_weights)
         liked = [_entry(x) for x in _normalise_list(liked_entry_ids, 'liked_entry_ids')]
-        rows = self._rows()
+        rows = self._rows(include_features=False)
         indexed = {r['entry_id']: r for r in rows}
         if any(key not in indexed for key in liked):
             raise ValueError('liked light-novel entry is absent')
+        liked_features = self._feature_rows(set(liked))
+        for key in liked:
+            self._apply_feature(indexed[key], liked_features.get(key))
         families = self._families(rows)
         excluded = {families[key] for key in liked}
         if exclude_read:
@@ -1181,6 +1285,14 @@ class LightNovelCatalogue:
         requested_features = preferred | {f['label_id'] for key in liked for f in indexed[key]['llm_features']}
         candidates = self._filtered(rows, genre=genre, language=language, year_from=year_from, year_to=year_to)
         series_families = {families[r['entry_id']] for r in rows if r['entry_kind'] == 'series'}
+        uses_native_scores = bool(requested_features or avoided)
+        if uses_native_scores:
+            feature_ids = {row['entry_id'] for row in candidates
+                if families[row['entry_id']] not in excluded and row['entry_kind'] != 'edition'
+                and not (row['entry_kind'] == 'work' and families[row['entry_id']] in series_families)}
+            features = self._feature_rows(feature_ids)
+            for row in candidates:
+                self._apply_feature(row, features.get(row['entry_id']))
         ranked = []
         for row in candidates:
             if families[row['entry_id']] in excluded or row['entry_kind'] == 'edition':
@@ -1217,6 +1329,12 @@ class LightNovelCatalogue:
                 chosen.append(row)
                 if len(chosen) == limit:
                     break
+        if not uses_native_scores:
+            # Native labels cannot affect a genre-only score. Authenticate the
+            # selected cards' labels for display, retaining the source reasons.
+            features = self._feature_rows({row['entry_id'] for row in chosen})
+            for row in chosen:
+                self._apply_feature(row, features.get(row['entry_id']))
         return {'mode': 'series_preferences' if chosen else 'insufficient_evidence', 'personalized': False,
                 'items': chosen, 'liked_entry_ids': liked, 'classification_scope': 'series',
                 'explanation': 'シリーズの内容特徴と資料記載ジャンルによる未校正の類似度です。書誌のみと内容根拠付きの理由を区別しています。' if chosen else '利用できる共通特徴が不足しています。',

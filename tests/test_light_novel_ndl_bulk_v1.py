@@ -1,6 +1,9 @@
+import hashlib
+import json
+
 import pytest
 
-from recommend_book.light_novel_ndl_bulk_v1 import parse_bulk_documents
+from recommend_book.light_novel_ndl_bulk_v1 import parse_bulk_documents, verify_bulk_receipt
 
 
 def document(identity='R100000002-I1', extra=''):
@@ -30,7 +33,40 @@ def test_concatenated_roots_only_project_admin_linked_own_bibliography():
     document().replace('<n:bibRecordCategory>R100000002', '<n:bibRecordCategory>R100000001'),
     document()+'unparsed garbage',
     document(extra='<n:BibResource rdf:about="https://ndlsearch.ndl.go.jp/books/R100000002-I1#material"><d:title>別主書誌</d:title></n:BibResource>'),
+    document().replace('</n:BibResource>', '<d:relation><n:BibResource><d:title>埋込他館書誌</d:title></n:BibResource></d:relation></n:BibResource>', 1),
 ])
 def test_ambiguous_foreign_unlinked_or_unparsed_bulk_is_rejected(raw):
     with pytest.raises(ValueError):
         parse_bulk_documents(raw.encode())
+
+
+def test_receipt_counts_scope_and_source_hash_are_replayed(tmp_path):
+    raw = tmp_path / 'raw.xml'
+    raw.write_bytes(document().encode())
+    receipt = {'version': 'ndl-official-bulk-ui-probe-v2', 'source_provider': 'iss-ndl-opac-national',
+        'source_url': 'https://ndlsearch.ndl.go.jp/bib?cs=marc&keyword=test',
+        'official_help': 'https://ndlsearch.ndl.go.jp/bib/help', 'ui_total': 1, 'documents': 1,
+        'admin_records': 1, 'bibliographic_records': 1, 'unique_ids': 1, 'bytes': raw.stat().st_size,
+        'raw_path': str(raw), 'raw_sha256': hashlib.sha256(raw.read_bytes()).hexdigest(),
+        'repository_ids': ['R100000002'], 'all_count_match': True, 'maximum_selected': 5000}
+    path = tmp_path / 'receipt.json'
+    def artifact(filename, expected, cache):
+        data = __import__('pathlib').Path(filename).read_bytes()
+        if hashlib.sha256(data).hexdigest() != expected:
+            raise ValueError('SHA mismatch')
+        return data
+    def invoke():
+        path.write_text(json.dumps(receipt))
+        return verify_bulk_receipt(path, hashlib.sha256(path.read_bytes()).hexdigest(), artifact, {})
+    assert len(invoke()[1]) == 1
+    receipt['ui_total'] = 2
+    with pytest.raises(ValueError):
+        invoke()
+    receipt['ui_total'] = 1
+    receipt['source_provider'] = 'iss-ndl-opac'
+    with pytest.raises(ValueError):
+        invoke()
+    receipt['source_provider'] = 'iss-ndl-opac-national'
+    raw.write_bytes(b'changed')
+    with pytest.raises(ValueError):
+        invoke()

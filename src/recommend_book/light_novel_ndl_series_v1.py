@@ -321,7 +321,7 @@ def publisher_assertions(proof, artifact, cache):
 
 def match_bibliography(assertion, source, normalize_search, *, allow_unnumbered=False):
     """Six mandatory checks; neither a title nor an ISBN proves a series."""
-    if source['provider_id'] != 'iss-ndl-opac' or source['record_kind'] != 'edition' or source['language'] not in {'ja', 'jpn'}:
+    if source['provider_id'] not in {'iss-ndl-opac', 'iss-ndl-opac-national'} or source['record_kind'] != 'edition' or source['language'] not in {'ja', 'jpn'}:
         return None
     candidates = [{**t, 'kind': 'reproduced_rdf_title', 'locator': 'recordData/title'} for t in source['titles']]
     candidates += source.get('_cataloguing_main_titles', [])
