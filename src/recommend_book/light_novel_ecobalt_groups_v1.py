@@ -99,7 +99,8 @@ def _parse(raw, receipt):
     native_dls = [n for n in tree.nodes(tag='dl') if n.attrs.get('id', '').startswith('word_')]
     if not dls or dls != native_dls:
         raise ValueError('eCobalt kana DL scope differs from corrected DOM selector')
-    groups, old_groups, books, ungrouped, seen_ids, seen_keys, seen_dls = [], [], [], [], set(), set(), set()
+    groups, old_groups, books, ungrouped, safe_ungrouped = [], [], [], [], []
+    seen_ids, seen_keys, seen_dls = set(), set(), set()
     for dl in dls:
         dlid = dl.attrs.get('id', '')
         if not re.fullmatch(r'word_[^\s#\[\]().>:"\']+', dlid) or dlid in seen_dls:
@@ -189,9 +190,7 @@ def _parse(raw, receipt):
                 'membership_basis': 'adjacent_after_explicit_series_heading_within_same_dl_and_author' if belongs else None,
                 'membership_status': 'publisher_index_grouping_candidate_no_invented_series_url' if belongs else 'ungrouped'}
             books.append(book)
-            if belongs:
-                old_active['explicit_memberships'].append(book)
-                active['members'].append({'publisher_reference_id': 'shueisha-ebook:'+match[1], 'opaque_book_url_key': match[1],
+            safe_book = {'publisher_reference_id': 'shueisha-ebook:'+match[1], 'opaque_book_url_key': match[1],
                     'source_unit': 'publisher_product_reference', 'source_url': url, 'title': title,
                     'author_display': display, 'credits': [{'role': 'unknown', 'name': display}],
                     'credit_literals': [{'name': display, 'entry_role_literal': None, 'role_context_literal': _CAPTION,
@@ -201,17 +200,35 @@ def _parse(raw, receipt):
                     'official_lightnovel_tag': None, 'media_references': None, 'story_series_asserted': False,
                     'original_work_identity_asserted': False, 'paper_electronic_same_edition_asserted': False,
                     'source_selector': selector, 'source_evidence': [{'source_url': _PAGE,
-                        'raw_sha256': receipt['sha256'], 'locator': selector+' a[href] > b / span'}]})
+                        'raw_sha256': receipt['sha256'], 'locator': selector+' a[href] > b / span'}]}
+            if belongs:
+                old_active['explicit_memberships'].append(book)
+                active['members'].append(safe_book)
             else:
                 ungrouped.append(book)
+                key = {'provider': 'ecobalt', 'source_page': _PAGE, 'source_scope': 'author_index_product_reference',
+                       'opaque_book_url_key': match[1], 'official_product_url': url}
+                serialized = json.dumps(key, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+                safe_book.update(kind='official_publisher_product_reference',
+                    reference_id='ecobalt-product-local:'+hashlib.sha256(serialized.encode()).hexdigest(),
+                    reference_id_kind='local_hash_of_official_product_reference_fields', reference_id_is_official=False,
+                    local_reference_key=key, membership_status='ungrouped',
+                    role_context={'literal': _CAPTION, 'locator': _CAPTION_LOCATOR, 'scope': 'author_index_display_only'},
+                    usage_permissions=dict(_USAGE), light_novel_status='unknown',
+                    actual_work_identity_asserted=False, edition_identity_asserted=False)
+                safe_ungrouped.append(safe_book)
         close('dl#'+dlid, 'dl_end')
     if any(not g['members'] or 'group_end' not in g for g in groups):
         raise ValueError('eCobalt heading interval is empty or unclosed')
-    return groups, old_groups, books, ungrouped
+    return groups, old_groups, books, ungrouped, safe_ungrouped
 
 
-def verify_ecobalt_groups(manifest_path: str | Path, sha256: str) -> list[dict]:
-    """Return all heading groups; authenticate the separate ungrouped partition."""
+def verify_ecobalt_frame(manifest_path: str | Path, sha256: str) -> dict:
+    """Authenticate both partitions in one scan, without inventing leaf groups.
+
+    Call this once when consuming groups and ungrouped product references in
+    the same operation. A returned product reference asserts only its listing.
+    """
     path = Path(manifest_path).resolve()
     root = path.parent
     try:
@@ -256,14 +273,20 @@ def verify_ecobalt_groups(manifest_path: str | Path, sha256: str) -> list[dict]:
             'official_series_ids_available': False, 'holds': _HOLDS, 'rights': _FRAME_RIGHTS}
         if frame != expected_frame:
             raise ValueError('eCobalt source frame/selector/finite scope differs')
-        groups, old_groups, books, ungrouped = _parse(raw, receipt)
+        groups, old_groups, books, ungrouped, safe_ungrouped = _parse(raw, receipt)
         actual = {'groups': len(groups), 'products': len(books), 'members': sum(len(g['members']) for g in groups), 'ungrouped': len(ungrouped)}
-        if (actual != counts or old_groups != handoff or books != declared_books or ungrouped != declared_ungrouped):
+        if (actual != counts or old_groups != handoff or books != declared_books or ungrouped != declared_ungrouped
+                or len(safe_ungrouped) != counts['ungrouped']):
             raise ValueError('eCobalt raw heading/product/role/selector/partition projection differs')
         for g in groups:
             g['frame_member_count'] = len(g['members'])
             g['frame_partition'] = {'product_references': counts['products'], 'grouped_members': counts['members'], 'ungrouped_products': counts['ungrouped']}
             g['ungrouped_projection_pin'] = dict(proof['source_ungrouped'])
-        return groups
+        return {'groups': groups, 'ungrouped_references': safe_ungrouped}
     except (KeyError, TypeError, AttributeError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError('eCobalt listing evidence cannot be reproduced') from exc
+
+
+def verify_ecobalt_groups(manifest_path: str | Path, sha256: str) -> list[dict]:
+    """Compatibility wrapper returning the unchanged heading-group projection."""
+    return verify_ecobalt_frame(manifest_path, sha256)['groups']

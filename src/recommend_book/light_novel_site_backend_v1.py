@@ -13,8 +13,8 @@ import re
 
 
 _QID = re.compile(r'Q[1-9][0-9]*')
-_LIGHT = re.compile(r'(?:ln[sw]:wd:Q[1-9][0-9]*|ln[se]:ndl:[A-Za-z0-9._-]+|lng:pub:(?:futaba|orange|ecobalt):[0-9a-f]{32})')
-_KINDS = {'series', 'work', 'edition', 'publisher_group'}
+_LIGHT = re.compile(r'(?:ln[sw]:wd:Q[1-9][0-9]*|ln[se]:ndl:[A-Za-z0-9._-]+|lng:pub:(?:futaba|orange|ecobalt):[0-9a-f]{32}|lnr:pub:ecobalt:[0-9a-f]{32})')
+_KINDS = {'series', 'work', 'edition', 'publisher_group', 'publisher_reference'}
 _STATES = {'unknown', 'unread', 'reading', 'read'}
 
 
@@ -163,6 +163,7 @@ class UnifiedCatalogue:
     @staticmethod
     def _combined_stats(world, light):
         return {**world, 'light_novel_series': light['series'],
+                'light_novel_publisher_references': light.get('publisher_reference_count', 0),
                 'light_novel_publisher_work_groups': light.get('publisher_work_groups', 0),
                 'light_novel_publisher_bibliographic_records': light.get('publisher_bibliographic_correspondences', 0),
                 'light_novel_featured_series': light['content_feature_series'],
@@ -258,11 +259,14 @@ class UnifiedCatalogue:
                 if _light_id(key) != light or row['status'] not in _STATES:
                     raise ValueError('stored reading-state identity or status is invalid')
                 datetime.fromisoformat(row['updated_at'].replace('Z', '+00:00'))
-                kind = 'work' if not light else {'lns': 'series', 'lnw': 'work', 'lne': 'edition', 'lng': 'publisher_group'}[key[:3]]
+                kind = 'work' if not light else {'lns': 'series', 'lnw': 'work', 'lne': 'edition', 'lng': 'publisher_group', 'lnr': 'publisher_reference'}[key[:3]]
                 records.append({'entry_id': key, 'entry_kind': kind, 'status': row['status'],
                                 'updated_at': row['updated_at']})
         records.sort(key=lambda r: r['entry_id'])
-        version = 'catalogue-history-export-v3' if any(r['entry_kind'] == 'publisher_group' for r in records) else 'catalogue-history-export-v2'
+        if any(r['entry_kind'] == 'publisher_reference' for r in records):
+            version = 'catalogue-history-export-v4'
+        else:
+            version = 'catalogue-history-export-v3' if any(r['entry_kind'] == 'publisher_group' for r in records) else 'catalogue-history-export-v2'
         return {'version': version, 'kind': 'read-status',
                 'records': records, 'record_count': len(records)}
 

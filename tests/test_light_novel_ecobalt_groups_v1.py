@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from recommend_book.light_novel_ecobalt_groups_v1 import verify_ecobalt_groups
+from recommend_book.light_novel_ecobalt_groups_v1 import verify_ecobalt_frame, verify_ecobalt_groups
 
 
 PAGE = 'https://ebooks.shueisha.co.jp/cobalt/'
@@ -191,3 +191,86 @@ def test_rehashed_raw_must_still_support_own_dom_and_role_context(source, kind):
     expected = {'caption': 'global author-index caption', 'outer_scope': 'corrected DOM selector',
                 'heading_link': 'heading name display', 'duplicate_native_id': 'absent or duplicate'}
     with pytest.raises(ValueError, match=expected[kind]): verify(source)
+
+
+def test_frame_preserves_complete_legacy_groups_and_materializes_leafs_in_one_parse(source, monkeypatch):
+    import recommend_book.light_novel_ecobalt_groups_v1 as module
+    original = module._parse
+    calls = []
+    def counted(*args):
+        calls.append(1)
+        return original(*args)
+    monkeypatch.setattr(module, '_parse', counted)
+    frame = verify_ecobalt_frame(source['root']/'proof.json', source['sha'])
+    assert calls == [1]
+    assert set(frame) == {'groups', 'ungrouped_references'}
+    # Fixed before the frame API refactor; covers every nested group field.
+    canonical = json.dumps(frame['groups'], ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()
+    assert sha(canonical) == 'f6c5891cbce7629384047685a0b832938de984bd9ad25b99c586cafd5eec07da'
+    assert verify(source) == frame['groups']
+    leafs = frame['ungrouped_references']
+    assert len(leafs) == 3
+    assert {r['publisher_reference_id'] for r in leafs} == {'shueisha-ebook:sc0', 'shueisha-ebook:sc3', 'shueisha-ebook:sc4'}
+    assert not ({r['source_url'] for r in leafs} & {m['source_url'] for g in frame['groups'] for m in g['members']})
+    for row in leafs:
+        key = row['local_reference_key']
+        assert key == {'provider': 'ecobalt', 'source_page': PAGE, 'source_scope': 'author_index_product_reference',
+                       'opaque_book_url_key': row['opaque_book_url_key'], 'official_product_url': row['source_url']}
+        assert row['reference_id'] == 'ecobalt-product-local:'+sha(json.dumps(key, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode())
+        assert row['reference_id_is_official'] is False and row['membership_status'] == 'ungrouped'
+        assert row['role_context']['scope'] == 'author_index_display_only'
+        assert row['credit_literals'][0]['entry_role_literal'] is None and row['credits'][0]['role'] == 'unknown'
+        assert row['usage_permissions'] == USAGE
+        assert all(row[k] is None for k in ['isbn', 'form', 'label', 'publisher', 'media_references', 'official_lightnovel_tag'])
+    assert all(x not in json.dumps(frame, ensure_ascii=False) for x in ['PRIVATE_PROSE', 'PRIVATE_TOOLTIP', 'PRIVATE_IMAGE', '著者：'])
+
+
+def test_leaf_complete_literal_same_title_different_products_and_numeric_id(source):
+    p = source['root']/'page.html'
+    title = '同名の完全題　３【電子版限定】'
+    html = p.read_text(encoding='utf-8').replace('未所属の完全題', title).replace('別表示の題', title).replace('book=sc4', 'book=9789999999999')
+    raw = html.encode(); p.write_bytes(raw)
+    for row in source['books']+source['ungrouped']:
+        if row['publisher_book_id'] in {'sc0', 'sc3'}: row['title'] = ' '.join(title.split())
+        if row['publisher_book_id'] == 'sc4':
+            row['publisher_book_id'] = '9789999999999'; row['source_url'] = 'https://ebooks.shueisha.co.jp/detail.php?book=9789999999999'
+    rebind_raw(source, raw); save(source)
+    rows = verify_ecobalt_frame(source['root']/'proof.json', source['sha'])['ungrouped_references']
+    same = [r for r in rows if r['title'] == title]
+    assert len(same) == 2 and same[0]['reference_id'] != same[1]['reference_id']
+    numeric = next(r for r in rows if r['opaque_book_url_key'] == '9789999999999')
+    assert numeric['isbn'] is None and numeric['credits'] == [{'role': 'unknown', 'name': '甲'}]
+
+
+def test_frame_authenticates_maximum_324_leaf_partition_without_inventing_groups(source):
+    p = source['root']/'page.html'; html = p.read_text(encoding='utf-8')
+    extra = ''.join(f'<dd><a href="/detail.php?book=scu{n}"><b>甲</b><span>追加未所属{n}</span></a></dd>' for n in range(321))
+    raw = html.replace('</dl>', extra+'</dl>', 1).encode(); p.write_bytes(raw)
+    rebind_raw(source, raw)
+    new = []
+    for n in range(321):
+        row = copy.deepcopy(source['ungrouped'][-1])
+        row.update(publisher_book_id=f'scu{n}', source_url=f'https://ebooks.shueisha.co.jp/detail.php?book=scu{n}', title=f'追加未所属{n}')
+        row['source_evidence']['selector'] = f'dl#word_あ dd:nth-of-type({n+8}) a > b / span'
+        new.append(row)
+    source['books'][-1:-1] = copy.deepcopy(new)
+    source['ungrouped'].extend(new)
+    source['frame'].update(books=327, unique_book_urls=327, ungrouped_books=324)
+    source['ledger']['frames'][0].update(books=327, ungrouped_books=324)
+    source['proof']['expected_counts'].update(products=327, ungrouped=324)
+    save(source)
+    frame = verify_ecobalt_frame(source['root']/'proof.json', source['sha'])
+    assert len(frame['groups']) == 3 and len(frame['ungrouped_references']) == 324
+    assert sum(len(g['members']) for g in frame['groups'])+len(frame['ungrouped_references']) == 327
+
+
+@pytest.mark.parametrize('field', ['title', 'role', 'id', 'selector'])
+def test_leaf_output_still_requires_exact_declared_ungrouped_raw_projection(source, field):
+    row = source['ungrouped'][0]
+    if field == 'title': row['title'] = '偽題'
+    elif field == 'role': row['credits'][0]['role'] = '原作'
+    elif field == 'id': row['publisher_book_id'] = 'forged'
+    else: row['source_evidence']['selector'] = 'dl#word_あ dd:nth-of-type(999)'
+    save(source)
+    with pytest.raises(ValueError, match='partition projection'):
+        verify_ecobalt_frame(source['root']/'proof.json', source['sha'])

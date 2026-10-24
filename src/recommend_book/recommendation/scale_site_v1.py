@@ -9,9 +9,9 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 
 _QID = r'Q[1-9][0-9]*'
-_ENTRY_ID = r'(?:ln[sw]:wd:Q[1-9][0-9]*|ln[se]:ndl:[A-Za-z0-9_-][A-Za-z0-9._-]{0,119}|lng:pub:(?:futaba|orange|ecobalt):[0-9a-f]{32})'
+_ENTRY_ID = r'(?:ln[sw]:wd:Q[1-9][0-9]*|ln[se]:ndl:[A-Za-z0-9_-][A-Za-z0-9._-]{0,119}|lng:pub:(?:futaba|orange|ecobalt):[0-9a-f]{32}|lnr:pub:ecobalt:[0-9a-f]{32})'
 _FAMILIES = ('all', 'world', 'light_novel')
-_ENTRY_KINDS = ('series', 'work', 'edition', 'publisher_group')
+_ENTRY_KINDS = ('series', 'work', 'edition', 'publisher_group', 'publisher_reference')
 _ADMISSION_STATES = ('bibliographic_candidate_only', 'light_novel_confirmed', 'edition_series_membership_verified',
                      'ndl_series_identity_verified', 'publisher_ndl_edition_verified', 'publisher_work_group_verified',
                      'publisher_bibliographic_record_verified',
@@ -21,6 +21,7 @@ _STAT_KEYS = ('works', 'searchable_works', 'feature_bearing_works', 'recommendab
               'strict72_works', 'llm_works', 'raw_classified_works', 'eligible_classified_works', 'personal_score_works', 'held_works',
               'content_history_links', 'bibliographic_history_links',
               'light_novel_series', 'light_novel_publisher_work_groups', 'light_novel_publisher_bibliographic_records',
+              'light_novel_publisher_references',
               'light_novel_featured_series', 'light_novel_works', 'light_novel_editions')
 
 
@@ -406,8 +407,44 @@ def _public_publisher_product_references(values, *, source_kind):
     return result
 
 
+def _public_publisher_reference(row):
+    result = {'entry_kind': 'publisher_reference', 'family': 'light_novel',
+        'title': row.get('title') if isinstance(row.get('title'), str) else '',
+        'qid': '', 'authors': [], 'aliases': [], 'genres': [], 'region': [], 'year': None,
+        'language': None, 'original_language': None, 'isbn': [], 'members': [],
+        'light_novel_confirmed': False, 'recommendable': False,
+        'story_series_identity_asserted': False, 'original_work_identity_asserted': False,
+        'paper_electronic_same_edition_asserted': False,
+        'read_status': row.get('read_status') if row.get('read_status') in ('read', 'unread', 'reading') else 'unknown',
+        'source_url': _link(row.get('source_url'))}
+    identifier = row.get('entry_id')
+    if isinstance(identifier, str) and re.fullmatch(r'lnr:pub:ecobalt:[0-9a-f]{32}', identifier):
+        result['entry_id'] = identifier
+        result['work_id'] = identifier
+    if (row.get('reference_identity_basis') != 'publisher_product_reference'
+            or row.get('publisher_reference_kind') != 'ecobalt_author_index_product_reference'):
+        return result
+    result.update(reference_identity_basis='publisher_product_reference',
+                  publisher_reference_kind='ecobalt_author_index_product_reference')
+    context = row.get('role_context')
+    if (isinstance(row.get('author_display'), str) and isinstance(context, dict)
+            and context.get('literal') == '著者50音別書籍リスト'
+            and context.get('scope') == 'author_index_display_only'):
+        result['author_display'] = row['author_display']
+        result['role_context'] = {'literal': context['literal'], 'scope': context['scope']}
+    products = _public_publisher_product_references([row.get('publisher_product_reference')],
+        source_kind='ecobalt_author_index_source_group')
+    if products:
+        product = products[0]
+        product.update(label=None, form=None, media_references=[])
+        result['publisher_product_reference'] = product
+    return result
+
+
 def public_work(row):
     """Explicit boundary: never serialize a database row or provenance packet wholesale."""
+    if row.get('entry_kind') == 'publisher_reference':
+        return _public_publisher_reference(row)
     result = {key: _text(row.get(key)) for key in ('qid', 'work_id', 'title', 'original_language')}
     if 'original_language' in row and row['original_language'] is None:
         result['original_language'] = None
@@ -613,7 +650,7 @@ def public_work(row):
 _HTML = '''<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>小説の本棚</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
 <body><header><div class="wrap"><p class="eyebrow">FICTION CATALOGUE</p><h1>次に読む一冊を、探す。</h1><p>小説・ライトノベルの書誌と、根拠のある類似作品をたどる本棚。</p></div></header>
 <main class="wrap"><section aria-label="収録状況"><button id="load-overview" type="button">収録状況と詳しい絞込みを表示</button><div id="stats" class="stats"></div><p class="muted">資料のジャンルは粗い特徴です。LLM分類と区別して表示します。推薦の品質・個人向け改善は未評価です。</p></section>
-<section class="panel"><form id="search-form"><label class="search-label" for="search-query">書名・別題・著者</label><div class="search-row"><input id="search-query" name="q" type="search" placeholder="気になる作品や著者を検索"><button type="submit">検索</button></div><div class="filters"><label>対象<select id="family"><option value="all">全作品</option><option value="light_novel">日本のライトノベル</option><option value="world">世界の小説</option></select></label><label>種別<select id="entry-kind"><option value="">すべて</option><option value="series">シリーズ・作品グループ</option><option value="work">各巻・単独作品</option><option value="edition">版・書誌</option></select></label><label>ジャンル<select id="genre"><option value="">すべて</option></select></label><label>原言語<select id="language"><option value="">すべて</option></select></label><label>刊行年から<input id="year-from" type="number" min="-5000" max="3000" placeholder="例 1900"></label><label>まで<input id="year-to" type="number" min="-5000" max="3000" placeholder="例 2026"></label><label class="check"><input id="exclude-read" type="checkbox">既読を除く</label><button type="button" id="reset">条件をリセット</button></div></form></section>
+<section class="panel"><form id="search-form"><label class="search-label" for="search-query">書名・別題・著者</label><div class="search-row"><input id="search-query" name="q" type="search" placeholder="気になる作品や著者を検索"><button type="submit">検索</button></div><div class="filters"><label>対象<select id="family"><option value="all">全作品</option><option value="light_novel">日本のライトノベル</option><option value="world">世界の小説</option></select></label><label>種別<select id="entry-kind"><option value="">すべて</option><option value="series">シリーズ・作品グループ</option><option value="work">各巻・単独作品</option><option value="edition">版・書誌</option><option value="publisher_reference">出版社の掲載書誌</option></select></label><label>ジャンル<select id="genre"><option value="">すべて</option></select></label><label>原言語<select id="language"><option value="">すべて</option></select></label><label>刊行年から<input id="year-from" type="number" min="-5000" max="3000" placeholder="例 1900"></label><label>まで<input id="year-to" type="number" min="-5000" max="3000" placeholder="例 2026"></label><label class="check"><input id="exclude-read" type="checkbox">既読を除く</label><button type="button" id="reset">条件をリセット</button></div></form></section>
 <section class="panel preference-panel" aria-labelledby="preference-title"><h2 id="preference-title">好みから探す</h2><p class="muted">検索結果や詳細画面で「好きな作品に追加」を押すと、複数作品を基準にできます。選択肢は分類体系に定義されたラベルです。作品ごとの採用件数は未集計で、推薦時に個別検証します。</p><div class="preference-favorites"><strong>好きな作品</strong><div id="favorite-works" class="selected-list"><span class="muted">まだ選択されていません。</span></div></div><div id="preference-facets" class="preference-facets"><p class="muted">詳しい条件を選ぶには「収録状況と詳しい絞込みを表示」を押してください。</p></div><div id="axis-weights" class="axis-weights" aria-label="分類軸の重み"></div><div class="filters"><label>推薦対象<select id="preference-family"><option value="all">全作品</option><option value="light_novel">日本のライトノベル</option><option value="world">世界の小説</option></select></label><label>ジャンル<select id="preference-genre"><option value="">すべて</option></select></label><label>原言語<select id="preference-language"><option value="">すべて</option></select></label><label>刊行年から<input id="preference-year-from" type="number" min="-5000" max="3000"></label><label>まで<input id="preference-year-to" type="number" min="-5000" max="3000"></label><label class="check"><input id="preference-exclude-read" type="checkbox" checked>既読を除く</label><button type="button" class="primary" id="recommend">この条件で推薦</button></div><p class="muted">推薦スコアは未校正の順位付けです。個人の読書履歴による精度改善や的中確率を示しません。</p><p id="preference-message" role="status" aria-live="polite"></p><div id="recommendations" class="recommendations"></div></section>
 <section class="panel history-panel" aria-labelledby="history-title"><h2 id="history-title">この端末の読書状態</h2><p class="muted">既読・未読・読書中の状態は台帳のローカル保存先に保存されます。削除する前にJSONへ持ち出せます。削除対象は読書状態だけで、作品・出典・分類証跡は残ります。</p><div class="filters"><button type="button" id="export-history">読書状態をJSONで保存</button><button type="button" id="delete-history">保存後に読書状態を削除</button></div><p id="history-message" role="status" aria-live="polite"></p></section>
 <div class="result-heading"><h2 id="shown-count">読み込み中…</h2><span class="muted">シリーズ・各巻・版の読書状態はそれぞれ保存します</span></div><p id="message" role="status" aria-live="polite"></p><div id="results" class="grid"></div><nav class="pagination" aria-label="ページ"><button id="page-prev">前のページ</button><span id="page-label"></span><button id="page-next">次のページ</button></nav>
@@ -632,13 +669,13 @@ async function exportHistory(download=true){const data=await api('/api/history/e
 async function deleteHistory(){const message=$('history-message');message.textContent='';try{const exported=await exportHistory(true);if(!window.confirm('JSONの保存操作を開始しました。ファイルが保存されたことを確認できた場合のみ「OK」を押してください。確認できない場合は「キャンセル」を選んでください。読書状態だけを削除します。')){message.textContent='削除を取り消しました。';return;}await api('/api/history/read-status/delete',{method:'POST',headers:{'Content-Type':'application/json','X-Catalogue-Request':'1'},body:JSON.stringify({confirmation:'DELETE_READ_STATUS',export_sha256:exported.sha256})});message.textContent='読書状態を削除しました。作品・出典・分類証跡は残っています。';await search();}catch(e){message.textContent=e.message;}}
 function entryKey(row){return row.entry_id||row.qid;}
 function entryPath(id){return /^Q[1-9][0-9]*$/.test(id)?'/api/works/'+id:'/api/entries/'+encodeURIComponent(id);}
-function entryLabel(row){if(row.entry_kind==='publisher_group')return '出版社の掲載グループ・ラノベ未確定';if(row.publisher_work_group_kind==='futaba_mnovels_grouping')return '出版社の作品グループ・ラノベ未確定';return row.light_novel_confirmed===false?'書誌候補・ラノベ未確定':row.entry_kind==='series'?(row.series_identity_basis==='publisher_work_group_and_ndl_bibliography'?'ライトノベル・作品グループ':'ライトノベル・シリーズ'):row.entry_kind==='edition'?(row.edition_bibliography_confirmed?'ライトノベル・版':'版・書誌'):row.family==='light_novel'?'ライトノベル・各巻／単独作品':'小説';}
-function describe(row){if(row.entry_kind==='publisher_group')return '出版社の掲載情報 / 原作品・物語シリーズは未確認';const language=row.entry_kind==='edition'?'版の言語：'+(languageName(row.language)||'不明')+' / 原言語：'+(languageName(row.original_language)||'不明'):languageName(row.original_language)||'原言語不明';return [(row.authors||[]).map(x=>x.name).join('・')||'著者情報なし',row.year?row.year+'年':'刊行年不明',language].join(' / ');}
+function entryLabel(row){if(row.entry_kind==='publisher_reference')return '出版社の掲載書誌・ラノベ未確定';if(row.entry_kind==='publisher_group')return '出版社の掲載グループ・ラノベ未確定';if(row.publisher_work_group_kind==='futaba_mnovels_grouping')return '出版社の作品グループ・ラノベ未確定';return row.light_novel_confirmed===false?'書誌候補・ラノベ未確定':row.entry_kind==='series'?(row.series_identity_basis==='publisher_work_group_and_ndl_bibliography'?'ライトノベル・作品グループ':'ライトノベル・シリーズ'):row.entry_kind==='edition'?(row.edition_bibliography_confirmed?'ライトノベル・版':'版・書誌'):row.family==='light_novel'?'ライトノベル・各巻／単独作品':'小説';}
+function describe(row){if(['publisher_group','publisher_reference'].includes(row.entry_kind)){const display=row.entry_kind==='publisher_reference'?row.author_display:row.heading_author_display;return [display?'掲載リストの著者表示：'+display:null,'出版社の掲載情報 / 原作品・物語シリーズは未確認'].filter(Boolean).join(' / ');}const language=row.entry_kind==='edition'?'版の言語：'+(languageName(row.language)||'不明')+' / 原言語：'+(languageName(row.original_language)||'不明'):languageName(row.original_language)||'原言語不明';return [(row.authors||[]).map(x=>x.name).join('・')||'著者情報なし',row.year?row.year+'年':'刊行年不明',language].join(' / ');}
 function languageName(code){if(/^Q[0-9]+$/.test(code))return '言語名未取得';try{return code?new Intl.DisplayNames(['ja'],{type:'language'}).of(code):'';}catch{return code;}}
 function tags(parent,values){for(const v of values||[])parent.append(node('span',typeof v==='string'?v:v.label,'tag'));}
 function statusControl(row){const label=node('label',['series','publisher_group'].includes(row.entry_kind)?(['publisher_work_group_and_ndl_bibliography','publisher_source_group'].includes(row.series_identity_basis)?'作品グループの読書状態：':'シリーズの読書状態：'):'読書状態：'),select=node('select');select.setAttribute('aria-label',row.title+'の読書状態');for(const [value,text]of Object.entries(statusNames)){const option=node('option',text);option.value=value;select.append(option);}select.value=row.read_status||'unknown';select.addEventListener('change',async()=>{select.disabled=true;try{await api(entryPath(entryKey(row))+'/read-status',{method:'POST',headers:{'Content-Type':'application/json','X-Catalogue-Request':'1'},body:JSON.stringify({status:select.value})});row.read_status=select.value;await search();}catch(e){select.value=row.read_status||'unknown';$('message').textContent=e.message;}finally{select.disabled=false;}});label.append(select);return label;}
 function renderFavorites(){const parent=$('favorite-works');parent.replaceChildren();if(!state.favorites.size){parent.append(node('span','まだ選択されていません。','muted'));return;}for(const row of state.favorites.values()){const item=node('span',undefined,'selected-item');item.append(node('span',row.title||row.qid));const remove=node('button','解除');remove.type='button';remove.setAttribute('aria-label',row.title+'を好きな作品から解除');remove.addEventListener('click',()=>{state.favorites.delete(entryKey(row));renderFavorites();});item.append(remove);parent.append(item);}}
-function favoriteControl(row){const button=node('button',state.favorites.has(entryKey(row))?'好きな作品から解除':'好きな作品に追加','favorite-toggle');button.type='button';button.addEventListener('click',()=>{if(state.favorites.has(entryKey(row)))state.favorites.delete(entryKey(row));else state.favorites.set(entryKey(row),{entry_id:row.entry_id,qid:row.qid,title:row.title||row.qid});renderFavorites();button.textContent=state.favorites.has(entryKey(row))?'好きな作品から解除':'好きな作品に追加';});return button;}
+function favoriteControl(row){if(row.entry_kind==='publisher_reference')return node('span','推薦に使える内容特徴は未収録','muted');const button=node('button',state.favorites.has(entryKey(row))?'好きな作品から解除':'好きな作品に追加','favorite-toggle');button.type='button';button.addEventListener('click',()=>{if(state.favorites.has(entryKey(row)))state.favorites.delete(entryKey(row));else state.favorites.set(entryKey(row),{entry_id:row.entry_id,qid:row.qid,title:row.title||row.qid});renderFavorites();button.textContent=state.favorites.has(entryKey(row))?'好きな作品から解除':'好きな作品に追加';});return button;}
 function card(row){const c=node('article',undefined,'card'),title=node('button',row.title||'書名不明','title-button');title.type='button';title.addEventListener('click',()=>showDetail(entryKey(row)));c.append(title,node('p',entryLabel(row),'muted'),node('p',describe(row),'muted'));const aliases=(row.aliases||[]).slice(0,3);if(aliases.length)c.append(node('p','別題：'+aliases.join(' / '),'muted'));const genres=node('div');tags(genres,row.genres);c.append(genres);const bottom=node('div',undefined,'card-bottom');bottom.append(favoriteControl(row),node('p',(row.llm_features||[]).length?'内容分類あり':row.genres?.length?'資料記載のジャンルあり':'書誌のみ（内容特徴は未収録）','muted'),statusControl(row));c.append(bottom);return c;}
 function query(){const q=new URLSearchParams({page:state.page,page_size:30});for(const [key,id]of [['family','family'],['entry_kind','entry-kind'],['q','search-query'],['genre','genre'],['language','language'],['year_from','year-from'],['year_to','year-to']])if($(id).value)q.set(key,$(id).value);if($('exclude-read').checked)q.set('exclude_read','1');return q;}
 async function search({allowEmpty=false}={}){if(!state.hasSearched&&!$('search-query').value.trim()&&!allowEmpty)return;state.hasSearched=true;const request=++state.request;$('message').textContent='';$('shown-count').textContent='検索中…';try{const data=await api('/api/entries?'+query());if(request!==state.request)return;state.pages=data.pages;state.page=data.page;state.total=data.total;$('results').replaceChildren(...data.items.map(card));$('shown-count').textContent=data.total.toLocaleString()+'件'+(data.total?' ・ '+((data.page-1)*data.page_size+1)+'–'+Math.min(data.page*data.page_size,data.total)+'件目':'');if(!data.total)$('results').append(node('p','条件に合う作品がありません。検索語や絞り込み条件を変えてください。'));$('page-label').textContent=data.page+' / '+Math.max(1,data.pages);$('page-prev').disabled=data.page<=1;$('page-next').disabled=data.page>=data.pages;}catch(e){if(request===state.request){$('shown-count').textContent='検索を完了できませんでした';$('message').textContent=e.message;}}}
@@ -651,6 +688,7 @@ async function showDetail(identifier){
   body.replaceChildren(node('h2',row.title),node('p',entryLabel(row),'muted'),node('p',describe(row)),favoriteControl(row));
   if(row.aliases?.length)body.append(node('p','別題：'+row.aliases.join(' / ')));
   body.append(statusControl(row));
+  if(row.entry_kind==='publisher_reference')body.append(node('p','出版社の一覧に掲載された書誌参照です。原作品・物語シリーズやNDLの版との対応、ISBN・媒体・個別の担当役割は未確認です。読書状態はこの掲載参照だけに保存し、他の作品や版へ自動反映しません。','muted'));
   if(row.admission_status==='bibliographic_candidate_only')body.append(node('p','レーベルなどの書誌情報から集めた候補です。ライトノベルであることは未確定です。','muted'));
   if(row.edition_bibliography_confirmed){body.append(node('p','出版社の書籍情報と国立国会図書館の書誌で照合した版です。','muted'));if(row.confirmation_source_url){const p=node('p','照合元：'),a=node('a','出版社の書籍ページ');a.href=row.confirmation_source_url;a.target='_blank';a.rel='noopener noreferrer';p.append(a);body.append(p);}}
   if(row.publisher_bibliography_matched){body.append(node('p','出版社の書名・著者・レーベル情報と対応を確認した書誌です。商品・刷単位の同一性は未確認です。','muted'));if(row.bibliography_source_url){const p=node('p','書誌の対応元：'),a=node('a','出版社の書籍情報');a.href=row.bibliography_source_url;a.target='_blank';a.rel='noopener noreferrer';p.append(a);body.append(p);}}
@@ -685,7 +723,7 @@ async function showDetail(identifier){
   }
  }catch(e){body.replaceChildren(node('p',e.message));}
 }
-async function stats(data){try{data=data||await api('/api/stats');const labels=[['works','世界小説'],['light_novel_series','ラノベのシリーズ'],['light_novel_publisher_work_groups','出版社の作品グループ'],['light_novel_publisher_bibliographic_records','出版社と対応した書誌'],['light_novel_featured_series','ラノベの内容特徴あり'],['light_novel_works','ラノベの各巻・単独作品'],['light_novel_editions','関連する版・書誌候補'],['searchable_works','検索可能'],['feature_bearing_works','推薦特徴あり'],['source_genre_works','資料ジャンルあり'],['eligible_classified_works','AI処理済み'],['llm_works','LLM特徴あり'],['personal_score_works','個人スコアあり'],['held_works','表示保留'],['content_history_links','履歴の内容接続'],['bibliographic_history_links','履歴の書誌接続']];$('stats').replaceChildren(...labels.map(([key,label])=>{const c=node('div',undefined,'stat');c.append(node('strong',data[key]===undefined?'未集計':Number(data[key]).toLocaleString()),node('span',label));return c;}));}catch(e){$('message').textContent=e.message;}}
+async function stats(data){try{data=data||await api('/api/stats');const labels=[['works','世界小説'],['light_novel_series','ラノベのシリーズ'],['light_novel_publisher_work_groups','出版社の作品グループ'],['light_novel_publisher_bibliographic_records','出版社と対応した書誌'],['light_novel_publisher_references','出版社の掲載書誌参照'],['light_novel_featured_series','ラノベの内容特徴あり'],['light_novel_works','ラノベの各巻・単独作品'],['light_novel_editions','関連する版・書誌候補'],['searchable_works','検索可能'],['feature_bearing_works','推薦特徴あり'],['source_genre_works','資料ジャンルあり'],['eligible_classified_works','AI処理済み'],['llm_works','LLM特徴あり'],['personal_score_works','個人スコアあり'],['held_works','表示保留'],['content_history_links','履歴の内容接続'],['bibliographic_history_links','履歴の書誌接続']];$('stats').replaceChildren(...labels.map(([key,label])=>{const c=node('div',undefined,'stat');c.append(node('strong',data[key]===undefined?'未集計':Number(data[key]).toLocaleString()),node('span',label));return c;}));}catch(e){$('message').textContent=e.message;}}
 async function facets(data){try{data=data||await api('/api/facets');const previous={};for(const id of ['genre','preference-genre','language','preference-language']){const select=$(id);previous[id]=select.value;select.replaceChildren(select.options[0]);}for(const item of data.genres||[]){for(const id of ['genre','preference-genre']){const option=node('option',item.label+' ('+item.count.toLocaleString()+')');option.value=item.qid;$(id).append(option);}}for(const item of data.languages||[]){for(const id of ['language','preference-language']){const option=node('option',(languageName(item.value)||'不明')+' ('+item.count.toLocaleString()+')');option.value=item.value;$(id).append(option);}}for(const [id,value] of Object.entries(previous))if([...$(id).options].some(option=>option.value===value))$(id).value=value;}catch(e){$('message').textContent=e.message;}}
 function renderPreferenceFacets(data){state.preferenceFacets=data.axes||{};const parent=$('preference-facets');parent.replaceChildren();if(data.coverage_note)parent.append(node('p',data.coverage_note,'muted'));for(const axis of ['theme','structure','protagonist','atmosphere']){const group=node('fieldset',undefined,'facet-group');group.append(node('h3',axisNames[axis]));const options=node('div',undefined,'facet-options');for(const item of state.preferenceFacets[axis]||[]){if(!item.label_id&&!item.qid)continue;const id=item.label_id||item.qid,label=node('label',undefined,'facet-option');const prefer=document.createElement('input');prefer.type='checkbox';prefer.value=id;prefer.dataset.axis=axis;prefer.dataset.direction='prefer';prefer.setAttribute('aria-label',axisNames[axis]+' '+(item.label||id)+'を重視');const avoid=document.createElement('input');avoid.type='checkbox';avoid.value=id;avoid.dataset.axis=axis;avoid.dataset.direction='avoid';avoid.setAttribute('aria-label',axisNames[axis]+' '+(item.label||id)+'を避ける');prefer.addEventListener('change',()=>{if(prefer.checked)avoid.checked=false;});avoid.addEventListener('change',()=>{if(avoid.checked)prefer.checked=false;});label.append(prefer,node('span',(item.label||id)+'を重視'),avoid,node('span','避ける'));options.append(label);}if(!options.childElementCount)options.append(node('span','この軸の選択肢はありません。','muted'));group.append(options);parent.append(group);}const weights=$('axis-weights');weights.replaceChildren(node('strong','分類軸の重み'));for(const axis of Object.keys(axisNames)){const label=node('label',undefined,'axis-weight');const input=document.createElement('input');input.type='range';input.min='0';input.max='2';input.step='.25';input.value='1';input.dataset.axis=axis;const output=node('output','1.00');input.addEventListener('input',()=>{output.textContent=Number(input.value).toFixed(2);});label.append(node('span',axisNames[axis]),input,output);weights.append(label);}}
 async function preferenceFacets(data){try{data=data||await api('/api/preference-facets');await facets(data);renderPreferenceFacets(data);}catch(e){$('preference-message').textContent=e.message;await facets();}}
@@ -794,7 +832,7 @@ def create_server(database=None, *, catalogue=None, light_novels_database=None, 
                             search = catalogue.search_world_catalogue
                         else:
                             options.update(family=family, entry_kind=entry_kind)
-                    elif path == '/api/entries' and (family == 'light_novel' or entry_kind in ('series', 'edition')):
+                    elif path == '/api/entries' and (family == 'light_novel' or entry_kind in ('series', 'edition', 'publisher_group', 'publisher_reference')):
                         self._send(200, dict(total=0, page=options['page'], page_size=options['page_size'], pages=0, items=[]))
                         return
                     data = search(**options)
@@ -813,7 +851,8 @@ def create_server(database=None, *, catalogue=None, light_novels_database=None, 
                                              and not row.get('genres') and not row.get('llm_features')
                                              and not row.get('strict72_features') and not row.get('native_features'))
                         if path.startswith('/api/entries/') and (
-                                row.get('entry_kind') == 'edition' and not row.get('recommendable') or featureless_group):
+                                row.get('entry_kind') == 'edition' and not row.get('recommendable') or featureless_group
+                                or row.get('entry_kind') == 'publisher_reference'):
                             data = {'mode': 'insufficient_evidence', 'items': []}
                         else:
                             data = catalogue.similar_works(qid, limit=8, exclude_read=value('exclude_read', '1') == '1')

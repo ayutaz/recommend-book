@@ -48,6 +48,18 @@ elements.get('load-overview').listeners.click();
 assert.equal(requests.length, 3, 'overview must load only after the explicit action');
 assert.equal(requests[2], '/api/overview');
 assert.equal(elements.get('load-overview').disabled, true, 'disable the control during the pending request');
+
+const headingA={entry_kind:'publisher_group',publisher_work_group_kind:'ecobalt_author_index_source_group',
+  title:'同じ題の掲載群',heading_author_display:'表示名A / 表示名B'};
+const headingB={...headingA,heading_author_display:'表示名C / 表示名D'};
+assert.notEqual(vm.runInNewContext('describe(ROW)',{...context,ROW:headingA}),
+                vm.runInNewContext('describe(ROW)',{...context,ROW:headingB}),
+                'same-title source groups must be distinguishable before opening details');
+const reference={entry_kind:'publisher_reference',title:'独立書誌',author_display:'表示名A / 表示名B'};
+assert.equal(vm.runInNewContext('entryLabel(ROW)',{...context,ROW:reference}), '出版社の掲載書誌・ラノベ未確定');
+assert.ok(vm.runInNewContext('describe(ROW)',{...context,ROW:reference}).includes('掲載リストの著者表示：表示名A / 表示名B'));
+assert.equal(vm.runInNewContext('favoriteControl(ROW)',{...context,ROW:reference}).listeners.click, undefined,
+             'a source-only product reference must not be selectable as recommendation evidence');
 '''
     result = subprocess.run([node, '-'], input='const SOURCE=' + json.dumps(_JS) + ';\n' + harness,
                             text=True, encoding='utf-8', capture_output=True, timeout=10)

@@ -419,6 +419,63 @@ def test_ecobalt_http_keeps_author_index_context_separate_from_book_authorship(s
     assert catalogue.calls[-1]['liked_entry_ids'] == [identifier]
 
 
+def test_ecobalt_standalone_reference_http_preserves_product_scope_and_unknown_roles(site, monkeypatch):
+    base, catalogue = site
+    identifier = 'lnr:pub:ecobalt:' + 'd' * 32
+    row = {'entry_id': identifier, 'entry_kind': 'publisher_reference', 'family': 'light_novel',
+        'title': '独立した電子書誌', 'reference_identity_basis': 'publisher_product_reference',
+        'publisher_reference_kind': 'ecobalt_author_index_product_reference',
+        'author_display': '表示名A / 表示名B',
+        'role_context': {'literal': '著者50音別書籍リスト', 'scope': 'author_index_display_only',
+                         'locator': 'PRIVATE-SENTINEL'},
+        'publisher_product_reference': {'title': '独立した電子書誌',
+            'publisher_reference_id': 'shueisha-ebook:1234567890123',
+            'source_url': 'https://ebooks.shueisha.co.jp/detail.php?book=1234567890123',
+            'author_display': '表示名A / 表示名B',
+            'credits': [{'role': 'unknown', 'name': '表示名A / 表示名B'},
+                        {'role': 'author', 'name': '推定しない'}],
+            'source_evidence': {'raw_path': 'PRIVATE-SENTINEL'}},
+        'source_url': 'https://ebooks.shueisha.co.jp/detail.php?book=1234567890123',
+        'authors': [{'name': '推定しない'}], 'recommendable': True,
+        'isbn': ['1234567890123'], 'light_novel_confirmed': True,
+        'members': [{'title': 'PRIVATE-SENTINEL'}],
+        'llm_features': [{'label': 'PRIVATE-SENTINEL'}]}
+    monkeypatch.setattr(catalogue, 'work_detail', lambda key: row if key == identifier else None)
+    result = fetch(base, '/api/entries/' + quote(identifier, safe=''))
+    assert result['entry_kind'] == 'publisher_reference' and result['entry_id'] == identifier
+    assert result['reference_identity_basis'] == 'publisher_product_reference'
+    assert result['publisher_reference_kind'] == 'ecobalt_author_index_product_reference'
+    assert result['author_display'] == '表示名A / 表示名B'
+    assert result['role_context'] == {'literal': '著者50音別書籍リスト', 'scope': 'author_index_display_only'}
+    assert result['authors'] == [] and result['members'] == [] and result['isbn'] == []
+    assert result['light_novel_confirmed'] is False and result['recommendable'] is False
+    assert result['story_series_identity_asserted'] is False
+    assert result['original_work_identity_asserted'] is False
+    assert result['paper_electronic_same_edition_asserted'] is False
+    product = result['publisher_product_reference']
+    assert product['publisher_reference_id'] == 'shueisha-ebook:1234567890123'
+    assert product['credits'] == [{'role': 'unknown', 'name': '表示名A / 表示名B'}]
+    assert 'PRIVATE-SENTINEL' not in json.dumps(result)
+    fetch(base, '/api/entries?family=light_novel&entry_kind=publisher_reference&q=Test')
+    assert catalogue.calls[-1]['entry_kind'] == 'publisher_reference'
+
+
+def test_ecobalt_standalone_reference_similar_authenticates_once_and_skips_global_scan(site, monkeypatch):
+    base, catalogue = site
+    identifier = 'lnr:pub:ecobalt:' + 'e' * 32
+    details = []
+    def detail(key):
+        details.append(key)
+        return {'entry_id': key, 'entry_kind': 'publisher_reference', 'recommendable': False}
+    def forbidden_similar(*args, **kwargs):
+        raise AssertionError('unclassified product reference cannot trigger global recommendation scans')
+    monkeypatch.setattr(catalogue, 'work_detail', detail)
+    monkeypatch.setattr(catalogue, 'similar_works', forbidden_similar)
+    assert fetch(base, '/api/entries/' + quote(identifier, safe='') + '/similar') == {
+        'mode': 'insufficient_evidence', 'personalized': False, 'items': []}
+    assert details == [identifier]
+
+
 def test_source_group_product_reference_boundary_rejects_nested_values_and_unsafe_links():
     result = public_work({'entry_id': 'lng:pub:futaba:' + 'a' * 32, 'entry_kind': 'publisher_group',
         'series_identity_basis': 'publisher_source_group',

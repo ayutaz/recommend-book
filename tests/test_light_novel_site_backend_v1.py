@@ -402,6 +402,53 @@ def test_ecobalt_source_group_typed_display_history_and_early_similar(
         combined.similar_works(identity)
 
 
+def test_ecobalt_publisher_reference_history_v4_retains_group_v3_and_old_typed_records(
+        ecobalt_source_group_bundle, tmp_path):
+    cat, _, path, sha, _ = ecobalt_source_group_bundle
+    world = Store(tmp_path / 'ecobalt-ref-world.sqlite', [])
+    combined = UnifiedCatalogue(world, cat)
+    assert combined.export_reading_history()['version'] == 'catalogue-history-export-v2'
+    group = next(iter(cat.import_ecobalt_source_groups(path, sha)['reference_entries'].values()))
+    combined.set_read_status(group, 'read')
+    before = combined.export_reading_history()
+    assert before['version'] == 'catalogue-history-export-v3'
+    identity = next(iter(cat.import_ecobalt_publisher_references(path, sha)['reference_entries'].values()))
+    assert combined.export_reading_history() == before  # Merely importing cannot upgrade old history.
+    assert combined.work_detail(identity)['entry_kind'] == 'publisher_reference'
+    assert combined.search_catalogue(family='light_novel', entry_kind='publisher_reference')['total'] == 3
+    assert combined.catalogue_stats()['light_novel_publisher_references'] == 3
+    combined.set_read_status(identity, 'reading')
+    after = combined.export_reading_history()
+    assert after['version'] == 'catalogue-history-export-v4'
+    assert [r for r in after['records'] if r['entry_id'] != identity] == before['records']
+    assert next(r for r in after['records'] if r['entry_id'] == identity)['entry_kind'] == 'publisher_reference'
+    assert combined.work_detail(group)['read_status'] == 'read'
+    for invalid in ['lnr:pub:orange:' + 'a'*32, 'lnr:pub:ecobalt:' + 'A'*32, 'lnr:pub:ecobalt:sc0']:
+        with pytest.raises(ValueError):
+            combined.work_detail(invalid)
+
+
+def test_ecobalt_publisher_reference_similar_authenticates_only_own_frame_before_early_exit(
+        ecobalt_source_group_bundle, tmp_path, monkeypatch):
+    cat, env, path, sha, _ = ecobalt_source_group_bundle
+    world = Store(tmp_path / 'ecobalt-ref-similar-world.sqlite', [])
+    combined = UnifiedCatalogue(world, cat)
+    identity = next(iter(cat.import_ecobalt_publisher_references(path, sha)['reference_entries'].values()))
+    def forbidden(*args, **kwargs):
+        raise AssertionError('leaf similarity cannot replay groups, features, or full/world catalogues')
+    for name in ['_rows', '_futaba_workgroups', '_orange_workgroups', '_ecobalt_workgroups',
+                 '_project_publisher_source_group', '_feature_rows', 'recommend_preferences']:
+        monkeypatch.setattr(cat, name, forbidden)
+    monkeypatch.setattr(world, 'recommend_preferences', forbidden)
+    monkeypatch.setattr(world, 'search_catalogue', forbidden)
+    result = combined.similar_works(identity)
+    assert result['mode'] == 'insufficient_evidence' and result['items'] == []
+    assert result['classification_scope'] == 'publisher_reference' and not world.calls
+    (env['root'] / 'page.html').write_bytes(b'changed own product reference witness')
+    with pytest.raises(ValueError):
+        combined.similar_works(identity)
+
+
 def test_ndl_authority_backed_series_is_not_fabricated_as_a_wikidata_work(stores):
     world, light, combined = stores
     key = 'lns:ndl:R100000002-I032593374'
