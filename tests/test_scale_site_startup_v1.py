@@ -28,21 +28,26 @@ const context = {document, URLSearchParams, Map, Intl,
   HTMLFormElement:{prototype:{reset(){document.getElementById('search-query').value='';}}},
   fetch(path){requests.push(path);return new Promise(()=>{});}};
 vm.runInNewContext(SOURCE, context);
-assert.deepEqual(requests, ['/api/overview']);
+assert.deepEqual(requests, [], 'initial display must not load the full catalogue overview');
 assert.equal(elements.get('page-prev').disabled, true);
 assert.equal(elements.get('page-next').disabled, true);
 elements.get('family').value='light_novel';
 elements.get('family').listeners.change();
-assert.equal(requests.length, 1, 'an empty initial filter must not scan all books');
+assert.equal(requests.length, 0, 'an empty initial filter must not scan all books');
 elements.get('search-query').value='Magic';
 elements.get('search-form').listeners.submit({preventDefault(){}});
-assert.equal(requests.length, 2);
-assert.equal(new URLSearchParams(requests[1].split('?')[1]).get('q'), 'Magic');
+assert.equal(requests.length, 1);
+assert.equal(new URLSearchParams(requests[0].split('?')[1]).get('q'), 'Magic');
 elements.get('reset').listeners.click();
-assert.equal(requests.length, 2, 'reset should restore the landing view');
+assert.equal(requests.length, 1, 'reset should restore the landing view');
 elements.get('search-form').listeners.submit({preventDefault(){}});
-assert.equal(requests.length, 3, 'an explicitly submitted empty search must still work');
-assert.equal(new URLSearchParams(requests[2].split('?')[1]).get('q') || '', '');
+assert.equal(requests.length, 2, 'an explicitly submitted empty search must still work');
+assert.equal(new URLSearchParams(requests[1].split('?')[1]).get('q') || '', '');
+
+elements.get('load-overview').listeners.click();
+assert.equal(requests.length, 3, 'overview must load only after the explicit action');
+assert.equal(requests[2], '/api/overview');
+assert.equal(elements.get('load-overview').disabled, true, 'disable the control during the pending request');
 '''
     result = subprocess.run([node, '-'], input='const SOURCE=' + json.dumps(_JS) + ';\n' + harness,
                             text=True, encoding='utf-8', capture_output=True, timeout=10)
