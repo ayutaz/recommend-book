@@ -11,6 +11,24 @@ from recommend_book.light_novel_publisher_references_v1 import verify_publisher_
 ISBN = '9784758047678'
 
 
+@pytest.mark.parametrize(('provider', 'module', 'function'), [
+    ('kodansha', 'recommend_book.light_novel_kodansha_references_v1', 'verify_kodansha_references'),
+    ('hifumi', 'recommend_book.light_novel_hifumi_references_v1', 'verify_hifumi_references'),
+])
+def test_additional_reference_providers_receive_the_original_pinned_manifest(tmp_path, monkeypatch, provider, module, function):
+    import importlib
+    path = tmp_path / 'source-frame.json'
+    digest = 'a' * 64
+    calls = []
+    def verify(pinned_path, expected_sha):
+        calls.append((pinned_path, expected_sha))
+        return [{'publisher_reference_id': provider + '-product:opaque', 'isbn': None}]
+    monkeypatch.setattr(importlib.import_module(module), function, verify)
+    rows = verify_publisher_references(provider, path, digest)
+    assert calls == [(path, digest)]
+    assert rows == [{'publisher_reference_id': provider + '-product:opaque', 'isbn': None}]
+
+
 def write_json(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, ensure_ascii=False), encoding='utf-8')

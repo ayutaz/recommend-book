@@ -510,10 +510,17 @@ def _gagaga(manifest, root):
 def verify_publisher_references(provider, manifest_path, sha256):
     """Return minimum bibliographic references from hash-pinned local evidence.
 
-    Providers are ``earthstar``, ``tobooks`` and ``gagaga``. No result asserts
+    Providers are ``earthstar``, ``tobooks``, ``gagaga``, ``kodansha`` and
+    ``hifumi``. No result asserts
     edition identity or story-series identity. Gagaga's unpinned private roster
     is never read; its manifest and raw sources are the entire replay contract.
     """
+    if provider == 'kodansha':
+        from .light_novel_kodansha_references_v1 import verify_kodansha_references
+        return verify_kodansha_references(manifest_path, sha256)
+    if provider == 'hifumi':
+        from .light_novel_hifumi_references_v1 import verify_hifumi_references
+        return verify_hifumi_references(manifest_path, sha256)
     if provider not in {'earthstar', 'tobooks', 'gagaga'}:
         raise ValueError('unsupported publisher reference provider')
     path = Path(manifest_path).resolve()
