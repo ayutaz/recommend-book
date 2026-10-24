@@ -1,12 +1,44 @@
 # CI 検証ガイド
 
-## 現在のPython・検証（2026-10-20・phase16）
+## 作業ブランチの検証状況（2026-10-24）
+
+最終実装`b4464aac32a4d56e89c120c99ad926c9b176c824`の[run 40093412432](https://github.com/ayutaz/recommend-book/actions/runs/40093412432)はUbuntu・WindowsのPython 3.14で成功した。lock確認・依存導入・fixture試験を両OSで通過し、2026-10-24 22:47 JSTに終了した。
+
+| OS | fixture試験の結果 | pytest実時間 |
+|---|---|---:|
+| Ubuntu | 2,690 passed・7 skipped | 68.91秒 |
+| Windows | 2,691 passed・6 skipped | 368.20秒 |
+
+以後の差分はMarkdownのみで、実装・試験・依存・workflowはCI対象と同じである。文書更新のために同じCIを追加しない。現在の計画・分類件数・main未反映の状況は[2万分類の実行状況](scale-classification-v4.md)を参照する。以下は修正とCIの履歴であり、過去の成功を最新実装の成功へ読み替えない。
+
+失敗内容まで確認した[run 40060754593](https://github.com/ayutaz/recommend-book/actions/runs/40060754593)の対象は `1e5216fa88a2f917e32a64f42091e948256acc3a`。Ubuntu・WindowsのPython 3.14で、次の2試験がGit管理外ファイルの不在により失敗した。
+
+| 試験 | CIにない依存ファイル |
+|---|---|
+| `test_collect_scale20k_content_v1.py::test_preflight_rejects_stale_rights_before_any_selection` | `native-source-registry-v1.json` |
+| `test_scale20k_native_v2.py::test_unknown_genre_import_and_existing_control_constructor_connect_end_to_end` | `content-operational-driver-v2.py` |
+
+この過去のrunはUbuntuが2 failed・2,629 passed・7 skipped、Windowsが2 failed・2,630 passed・6 skippedだった。その後、一時ディレクトリ内の合成fixtureへ切り替え、関連17試験のローカル成功を確認した。修正は`7fdc2d8efaccd75e87af9b1bf07d4ba80cd42c3a`としてpush済み。このcommitの[run 40080781445](https://github.com/ayutaz/recommend-book/actions/runs/40080781445)は両OSで成功した。Ubuntuは2,631 passed・7 skipped（68.69秒）、Windowsは2,632 passed・6 skipped（331.28秒）。これはfixture修正のCIであり、後続の最新実装のCI成功へ読み替えない。収集済みデータの公開、skipの追加、固定hash確認の緩和は行っていない。
+
+今後の補助実装についても変更に関係する試験を確認し、確定した実装で両OSのCIを確認する。実データの分類・審査・DB採用、最終監査、実HTTP・画面確認はfixture CIと別に確認する。文書だけの更新では、リンク・差分・保存結果との整合を確認し、分類や全件pytestを追加実行しない。
+
+分類末尾処理、監査・利用量の接続、CLI更新後の証跡照合を含む`ade2aad`と、監査API接続修正`a7a68af`のCIは、後続修正へ切り替えるため未実行の待機中に取消した。監査修正`9f79b49`の[run 40088860384](https://github.com/ayutaz/recommend-book/actions/runs/40088860384)は、両OSで後述の4試験が失敗した（Ubuntu 2,683 passed・7 skipped、Windows 2,684 passed・6 skipped）。旧形式の保留を現行形式の集計と分け、実監査結果の途中保存を追加した後の関連32試験と、実際の旧81作品・現行93作品・92作品の保留検証は成功している。
+
+4試験の失敗は、CLI準備の試験が子プロセス用のJSONキャッシュをpytest本体へ残し、後続のserialization試験へ読み取り専用辞書を返していたためだった。準備試験で子プロセス境界を隔離し、キャッシュ自体の既存試験を維持した。準備・serialization・分類の関連59試験が成功した。修正`801524f`は試験だけで、実監査・分類コード・取得済みデータは変更していない。このCIは後続の集計修正へ切り替えるため未実行の待機中に取消した。
+
+分類失敗0でも表示特徴の採用率で停止した区間を、認証済みの停止gate・隔離条件・件数一致を保って別集計する修正`12f2c84915de9cd210d8e9ad07c6c1c95ac75c59`をpushした。集計関連22試験と実際の利用量集計は成功し、このrunは未実行の待機中に取消し、下記の反映用commitへ切り替えた。固定済みv1・v2集計コードと過去の証跡は変更していない。
+
+反映用ブランチの`b4464aac32a4d56e89c120c99ad926c9b176c824`は、検証結果を含む`5a22c94`とGit treeが完全一致する。元の履歴は別に保存し、実装・試験・データのbytesは変更していない。このcommitに対するrun 40093412432をworkflow dispatchで一組だけ実行し、冒頭のとおり両OSで成功した。以後の文書差分では全CIを追加しない。
+
+先行する監査API接続修正後の関連42試験、実DBの採用済み117区間のcontrol検証、分類・台帳・推薦・archive関連70試験、archive・監査・利用量33試験、監査の4並列制御2試験も各時点で成功している。重複する試験があるため、これらを足した値を全件試験数としない。2万作品の実監査は221 manifest・追加117区間の採用条件を照合してexit 0で完了し、[結果](scale-catalogue-v4.md)へ記録した。これを両OSのfixture CI成功とは分ける。
+
+## 過去のPython移行と検証（2026-10-20・phase16）
 
 Python 3.14系へ設定を統一し、[PR #20](https://github.com/ayutaz/recommend-book/pull/20)でmainへ統合した。依存パッケージのバージョン変更は0。対象head`46e0532`の[run 39346947438](https://github.com/ayutaz/recommend-book/actions/runs/39346947438)はWindows・Ubuntuとも成功、ローカルは1,873 passed。phase16の後続差分はMarkdownのみで、ソース・依存・テストを変更していないため全件試験・CIを重複実行しない。
 
 新規15作品、6用途、表示・撤回復元、実際の中断再開、全工程実測は[別の実データ報告](phase16-flow-measurement-and-delivery-v1.md)。これを独立精度や本人向け改善の証明にしない。以下は各時点の固定記録である。
 
-## 最新の検証と統合（2026-10-20・phase15）
+## 過去の検証と統合（2026-10-20・phase15）
 
 新しいv4 runtime生成時だけJobStoreを1試行に固定し、失敗後の同一入力の自動再送を防ぐ。通信失敗、schema失敗、同じ名前空間での再開を実際の生成schedulerと検査用fixtureで確認し、対象68件成功。過去runtimeと通常runnerの既定は変更していない。
 

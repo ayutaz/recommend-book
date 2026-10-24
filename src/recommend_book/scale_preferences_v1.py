@@ -184,6 +184,20 @@ def _read_native_rows(catalogue, qids):
     return result
 
 
+def _decode_candidate_rows(stored_rows):
+    """Decode each candidate row once and retain its SQLite storage row."""
+    return [(json.loads(stored['row_json']), stored) for stored in stored_rows]
+
+
+def _merge_candidate_rows(*batches):
+    """Merge candidate batches with native rows overriding fallback rows."""
+    by_qid = {}
+    for batch in batches:
+        for row, stored in batch:
+            by_qid[row['qid']] = (row, stored)
+    return list(by_qid.values())
+
+
 def _jaccard(left, right):
     if not left or not right:
         return 0.0
@@ -427,9 +441,10 @@ def recommend_preferences(catalogue, *, liked_qids=None, preferred_features=None
             native_clause = 'EXISTS(SELECT 1 FROM native_classifications n WHERE n.qid=w.qid)'
             native_rows = select_candidates(db, extra=(native_clause,))
             fallback_rows = select_candidates(db, limit_rows=window)
-            by_qid = {json.loads(item['row_json'])['qid']: item for item in fallback_rows}
-            by_qid.update({json.loads(item['row_json'])['qid']: item for item in native_rows})
-            candidate_rows = list(by_qid.values())
+            candidate_rows = _merge_candidate_rows(
+                _decode_candidate_rows(fallback_rows),
+                _decode_candidate_rows(native_rows),
+            )
         elif liked_rows:
             liked_genres = sorted(set().union(*(_source_genres(item) for item in liked_rows)))
             if liked_genres:
@@ -439,18 +454,18 @@ def recommend_preferences(catalogue, *, liked_qids=None, preferred_features=None
                     extra=(f'EXISTS(SELECT 1 FROM work_genres sg WHERE sg.qid=w.qid AND sg.genre_qid IN ({placeholders}))',),
                     extra_params=liked_genres, limit_rows=window)
                 fallback_rows = select_candidates(db, limit_rows=window)
-                by_qid = {json.loads(item['row_json'])['qid']: item for item in fallback_rows}
-                by_qid.update({json.loads(item['row_json'])['qid']: item for item in source_rows})
-                candidate_rows = list(by_qid.values())
+                candidate_rows = _merge_candidate_rows(
+                    _decode_candidate_rows(fallback_rows),
+                    _decode_candidate_rows(source_rows),
+                )
             else:
-                candidate_rows = select_candidates(db, limit_rows=window)
+                candidate_rows = _decode_candidate_rows(select_candidates(db, limit_rows=window))
         else:
-            candidate_rows = select_candidates(db, limit_rows=window)
-    qids = [json.loads(row['row_json'])['qid'] for row in candidate_rows]
+            candidate_rows = _decode_candidate_rows(select_candidates(db, limit_rows=window))
+    qids = [row['qid'] for row, _ in candidate_rows]
     raw_rows = _read_native_rows(catalogue, qids) if native_interest else {}
     provisional = []
-    for stored in candidate_rows:
-        row = json.loads(stored['row_json'])
+    for row, stored in candidate_rows:
         raw = _raw_labels(raw_rows.get(row['qid']), taxonomy) if row['qid'] in raw_rows else []
         raw_ids = {label['label_id'] for label in raw}
         relevant = bool(raw_ids & preferred_values or raw_ids & avoided_values or
@@ -464,11 +479,10 @@ def recommend_preferences(catalogue, *, liked_qids=None, preferred_features=None
         # genuine upper bound for the lazy verification stopping rule.
         score, reasons = _score(row, native=raw if relevant else [], liked_rows=liked_rows,
                                 liked_native=liked_native, preferred=preferred, avoided={}, weights=weights)
-        provisional.append((score, row['title'], row['qid'], stored, relevant))
+        provisional.append((score, row['title'], row['qid'], row, stored, relevant))
     provisional.sort(key=lambda item: (-item[0], item[1], item[2]))
     scored = []
-    for index, (upper, _, qid, stored, relevant) in enumerate(provisional):
-        row = json.loads(stored['row_json'])
+    for index, (upper, _, qid, row, stored, relevant) in enumerate(provisional):
         native = (_native_features(catalogue, qid, verified, taxonomy, native_cache, native_info_cache)
                   if relevant else [])
         score, reasons = _score(row, native=native, liked_rows=liked_rows, liked_native=liked_native,
