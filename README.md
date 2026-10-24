@@ -42,6 +42,8 @@ uv run python scripts/serve_scale_catalogue_v1.py --database data/autonomous-nex
 
 実行中の計画は[v20](docs/autonomous-next-phase-plan-v20.md)、現在地と残作業は[2万分類の到達状況](docs/scale-classification-v4.md)にまとめています。2万作品の分類・最終監査・利用量集計と、拡張後の実HTTP・推薦画面は確認済みです。最終実装の両OS CIとmain反映が残っています。
 
+依頼された18:01の計画1〜3（残り7作品の追加、検証準備、2万作品の監査・動作確認）は完了しました。同計画4の最終CI・main反映は後続工程です。
+
 1. 過去の分類証跡の検証に必要な旧CLIを、hashが一致する実行ファイルとして別に保存し、検証経路へ接続済みです。
 2. 2万作品の分類・審査・用途条件・DB行と、追加分の利用量集計は完了しました。新しい変更や不具合がなければ同じ監査・画面確認を繰り返しません。
 3. 結果を文書化してコミット・pushし、最終実装の両OS CIを確認してmainへ反映します。反映用`b4464aa`のCIは実行待ちです。
