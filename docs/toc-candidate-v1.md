@@ -2,7 +2,7 @@
 
 更新: 2026-10-24（JST）。公式条件の確認日は2026-10-22のまま。今回は作業結果と次の計画を反映し、新しい許諾判断は行っていない。
 
-これは、ローカル試作からToC提供へ進むための利用条件の候補表である。公開版の利用規約や公開準備完了の判定ではない。2万作品の分類・監査・推薦動作確認と両OS CIは完了し、main反映が残っている。公開構成は未デプロイである。次の工程は[計画v21](autonomous-next-phase-plan-v21.md)を参照する。
+これは、ローカル試作からToC提供へ進むための利用条件の候補表である。公開版の利用規約や公開準備完了の判定ではない。2万作品の分類・監査・推薦動作確認と両OS CIは完了し、main反映が残っている。公開構成は未デプロイである。次の工程は[計画v22](autonomous-next-phase-plan-v22.md)の日本のライトノベル対応を優先する。同計画の新規経路は本表の採用済みデータへまだ含まれず、実際の追加時に提供元・項目・用途ごとに更新する。
 
 ## 対象と前提
 
@@ -83,7 +83,7 @@ cover image、novel full text、未審査の段落はこの receipt の範囲に
 
 ## 参照した保存成果物
 
-- `docs/autonomous-next-phase-plan-v21.md`（次の計画。固定済みv20は保持）
+- `docs/autonomous-next-phase-plan-v22.md`（次の計画。過去の計画は保持）
 - `docs/scale-catalogue-v4.md`（2万分類の最終結果と証跡の位置）
 - `docs/source-rights-review-scope-v3.md`
 - `docs/personal-recommendation-current-assessment-v1.md`
