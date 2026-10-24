@@ -104,6 +104,10 @@ def verify_kadokawa_books(manifest_path: str | Path, sha256: str) -> list[dict]:
                 'title': title, 'isbn': item.get('isbn'),
                 'credits': _credits(item.get('disp_author_name')),
                 'publisher': 'KADOKAWA', 'label': KADOKAWA_LABELS[label],
+                # Preserve the legacy value for old proofs while distinguishing
+                # site ownership from an absent individual publisher literal.
+                'catalogue_owner': 'KADOKAWA', 'publisher_field_basis': 'catalogue_owner_context',
+                'individual_publisher': None,
                 'label_scope': KADOKAWA_LABELS[label], 'official_label_id': int(label),
                 'official_label_site_id': item.get('label_site_id'),
                 'release_date': item.get('release_date'),

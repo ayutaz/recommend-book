@@ -931,13 +931,25 @@ class LightNovelCatalogue:
         if provider == 'ichijinsha-iris':
             from .light_novel_ichijinsha_books_v1 import verify_ichijinsha_books
             return verify_ichijinsha_books(manifest_path, expected_sha256)
-        if provider == 'tobooks':
+        if provider == 'hifumi':
+            from .light_novel_hifumi_details_v1 import verify_hifumi_product_details
+            return verify_hifumi_product_details(manifest_path, expected_sha256)
+        if provider in {'tobooks', 'futaba'}:
             from .light_novel_publisher_references_v1 import verify_publisher_references
             return [{**row, 'publisher_book_id': row['publisher_reference_id']}
                     for row in verify_publisher_references(provider, manifest_path, expected_sha256)]
         raise ValueError('unknown bibliographic publisher provider')
 
     def _publisher_edition_match(self, provider, publisher, edition, cache):
+        if provider in {'hifumi', 'futaba'}:
+            parts = self._edition_primary_bibliographic_parts(edition, cache)
+            if parts is None:
+                return None
+            if provider == 'hifumi':
+                from .light_novel_hifumi_details_v1 import match_hifumi_product_detail
+                return match_hifumi_product_detail(publisher, parts)
+            from .light_novel_futaba_match_v1 import match_futaba_reference
+            return match_futaba_reference(publisher, parts)
         if provider == 'tobooks':
             from .normalization import normalize_isbn
             from .light_novel_reference_match_v1 import match_tobooks_edition
@@ -957,7 +969,9 @@ class LightNovelCatalogue:
         if match is not None:
             return match
         if provider == 'kadokawa':
-            return self._publisher_edition_match_v2(provider, publisher, edition, cache, _part_information=True)
+            match = self._publisher_edition_match_v2(provider, publisher, edition, cache, _part_information=True)
+            return match if match is not None else self._publisher_edition_match_v2(
+                provider, publisher, edition, cache, _publisher_context=True)
         match = self._publisher_edition_match_iris_neo(provider, publisher, edition, cache)
         return match if match is not None else self._publisher_edition_match_iris_neo(provider, publisher, edition, cache, _extended=True)
 
@@ -1245,19 +1259,25 @@ class LightNovelCatalogue:
                 own_volume_count=len(volumes))
         return parts
 
-    def _publisher_edition_match_v2(self, provider, publisher, edition, cache, *, _part_information=False):
+    def _publisher_edition_match_v2(self, provider, publisher, edition, cache, *, _part_information=False, _publisher_context=False):
         from .normalization import normalize_isbn
         from .light_novel_ndl_series_v1 import person_key
         # This extension is backed by the finite KADOKAWA book frame only.
-        if provider != 'kadokawa' or publisher.get('product_form_id') != 3 or publisher.get('label') not in {
+        if (_part_information and _publisher_context) or provider != 'kadokawa' or publisher.get('product_form_id') != 3 or publisher.get('label') not in {
                 '電撃文庫', 'MF文庫J', 'ファンタジア文庫', '角川スニーカー文庫'}:
             return None
         parts = self._edition_primary_bibliographic_parts(edition, cache)
         if parts is None:
             return None
         source = parts['source']
-        if (source['language'] not in {'ja', 'jpn'} or source.get('publisher') != 'KADOKAWA'
-                or publisher.get('publisher') != 'KADOKAWA'
+        publisher_context = None
+        if _publisher_context:
+            from .light_novel_kadokawa_publisher_context_v1 import match_publisher_context
+            publisher_context = match_publisher_context(publisher, parts)
+            if publisher_context is None:
+                return None
+        if (source['language'] not in {'ja', 'jpn'}
+                or (not _publisher_context and (source.get('publisher') != 'KADOKAWA' or publisher.get('publisher') != 'KADOKAWA'))
                 or not any(code.startswith('913') for code in source.get('extra', {}).get('ndc_codes', []))):
             return None
         isbn = normalize_isbn(str(publisher.get('isbn') or ''))
@@ -1302,15 +1322,22 @@ class LightNovelCatalogue:
             title_match = match_unique_own_part_information_title(parts, publisher['title'])
         if title_match is None:
             return None
+        if _publisher_context:
+            from .light_novel_kadokawa_publisher_context_v1 import title_uses_complete_own_dct
+            if not title_uses_complete_own_dct(parts, title_match, publisher_context):
+                return None
         imprint = unicodedata.normalize('NFKC', source.get('series') or '').split(';')[0].strip()
         exact_imprint = normalize_search(publisher['label']) in {normalize_search(v) for v in imprint.split(' = ')}
         if exact_imprint:
             imprint_match = {'rule': 'exact_label', 'ndl_imprint': imprint, 'official_label': publisher['label']}
         elif (publisher.get('official_label_id') == 344 and publisher['label'] == 'ファンタジア文庫'
-              and imprint == '富士見ファンタジア文庫' and source['publisher'] == 'KADOKAWA'
-              and publisher.get('publisher') == 'KADOKAWA'):
+              and imprint == '富士見ファンタジア文庫'
+              and (_publisher_context or (source['publisher'] == 'KADOKAWA' and publisher.get('publisher') == 'KADOKAWA'))):
             imprint_match = {'rule': 'same_edition_kadokawa_fantasia_344_pair', 'official_label_id': 344,
                 'ndl_imprint': imprint, 'official_label': publisher['label'], 'scope': 'this_isbn_edition_only'}
+            if _publisher_context:
+                imprint_match.update(rule='same_isbn_edition_fantasia_344_pair_with_assessed_catalogue_owner_context',
+                    global_alias_asserted=False, label_history_map_asserted=False)
         else:
             return None
         official_authors = [credit['name'] for credit in publisher.get('credits', [])
@@ -1331,7 +1358,7 @@ class LightNovelCatalogue:
             if literal:
                 author_match.update(ndl_literal_credit=literal['literal'], locator=literal['locator'])
             matched_authors.append(author_match)
-        version = 'v4' if _part_information else 'v3' if title_match['rule'] == 'primary_isbd_reverse_title_and_explicit_volume_v1' else 'v2'
+        version = 'v5' if _publisher_context else 'v4' if _part_information else 'v3' if title_match['rule'] == 'primary_isbd_reverse_title_and_explicit_volume_v1' else 'v2'
         proof = {'rule_version': 'publisher-ndl-edition-confirmation-' + version, 'scope': 'edition_only',
                 'isbn13': isbn, 'matched_ndl_title': title_match['source_value'], 'title_match': title_match,
                 'authors': matched_authors, 'ndl_imprint': imprint, 'official_label': publisher['label'],
@@ -1343,6 +1370,10 @@ class LightNovelCatalogue:
         if _part_information:
             proof.update(confirmed_scope='contained_bibliographic_edition_only',
                 part_title_is_volume_title_asserted=False, product_sku_identity_asserted=False)
+        if _publisher_context:
+            proof.update(confirmed_scope='contained_bibliographic_edition_only', publisher_context_match=publisher_context,
+                publisher_identity_asserted=False, global_publisher_alias_asserted=False,
+                global_label_alias_asserted=False, label_history_map_asserted=False, product_sku_identity_asserted=False)
         return proof
 
     def confirm_publisher_editions(self, provider, manifest_path, expected_sha256):

@@ -46,6 +46,10 @@ def test_reproduce_book_metadata_and_author_roles(publisher_books):
     assert row['credits'] == [{'role': '著者', 'name': '架空 作家'},
                               {'role': 'イラスト', 'name': '別の人'}]
     assert row['title'] == '架空の冒険 1'
+    assert row['publisher'] == 'KADOKAWA'  # legacy producer value, not a book assertion
+    assert row['catalogue_owner'] == 'KADOKAWA'
+    assert row['publisher_field_basis'] == 'catalogue_owner_context'
+    assert row['individual_publisher'] is None
     assert row['official_series_id'] is None
     assert row['evidence']['json_pointer'] == '/result/book/0'
     assert 'catchphrase' not in json.dumps(rows)
@@ -93,3 +97,22 @@ def test_duplicate_receipts_do_not_inflate_editions(publisher_books):
     body['pages'].append(dict(body['pages'][0]))
     with pytest.raises(ValueError, match='duplicate page'):
         verify_kadokawa_books(path, write(path, body))
+
+
+def test_assessed_publisher_history_contract_has_public_facts_and_no_mutable_alias_state():
+    from recommend_book.light_novel_kadokawa_publisher_context_v1 import assessed_history_context
+    first=assessed_history_context()
+    assert len(first['named_subsidiaries']) == 9
+    assert 'メディアワークス' not in first['named_subsidiaries']
+    assert first['source_pages'] == [1]
+    assert first['scope'] == 'fixed_assessed_names_for_same_isbn_edition_catalogue_context_only'
+    assert not first['all_era_alias_asserted']
+    assert not first['individual_book_publisher_asserted']
+    assert not first['rights_or_licence_succession_asserted']
+    encoded=json.dumps(first)
+    assert 'raw_path' not in encoded and 'pdf_path' not in encoded and 'C:' not in encoded
+    first['named_subsidiaries'].append('メディアワークス')
+    first['source_pages'].append(3)
+    second=assessed_history_context()
+    assert 'メディアワークス' not in second['named_subsidiaries']
+    assert second['source_pages'] == [1]
