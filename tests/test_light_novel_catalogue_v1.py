@@ -755,6 +755,129 @@ def test_dx_comics_are_denied_even_when_other_edition_evidence_matches(setup_cat
 
 
 @pytest.fixture
+def publisher_edition_v2(edition_bundle):
+    from pathlib import Path
+    import xml.etree.ElementTree as ET
+    from xml.sax.saxutils import escape
+    from recommend_book.ingestion.ndl import NDLAdapter
+    from recommend_book.ingestion.core import RawArtifact
+    cat, _, template = edition_bundle
+
+    def build(*, title='主書名 : 副書名', volume='3', official_title='主書名３ 副書名',
+              imprint='角川スニーカー文庫', label='角川スニーカー文庫', label_id=339,
+              publisher='KADOKAWA', authority=True, literal='著者 著', extra=''):
+        record = json.loads(json.dumps(template))
+        raw = Path(record['provenance']['raw_path'])
+        url = record['source_url']
+        creator = ('<d:creator><rdf:Description rdf:about="http://id.ndl.go.jp/auth/entity/01234567">'
+                   '<f:name>著者</f:name></rdf:Description></d:creator>') if authority else ''
+        xml = f'''<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+          xmlns:d="http://purl.org/dc/terms/" xmlns:c="http://purl.org/dc/elements/1.1/"
+          xmlns:n="http://ndl.go.jp/dcndl/terms/" xmlns:f="http://xmlns.com/foaf/0.1/">
+          <n:BibResource rdf:about="{url}#material"><d:title>{escape(title + ('. ' + volume if volume else ''))}</d:title>
+          <c:title><rdf:Description><rdf:value>{escape(title)}</rdf:value></rdf:Description></c:title>
+          {('<n:volume>' + escape(volume) + '</n:volume>') if volume else ''}{creator}
+          {('<c:creator>' + escape(literal) + '</c:creator>') if literal else ''}
+          <d:publisher>{escape(publisher)}</d:publisher><d:language>jpn</d:language>
+          <n:seriesTitle>{escape(imprint)}</n:seriesTitle><d:identifier rdf:datatype="ISBN">9784798613161</d:identifier>
+          <d:subject rdf:resource="http://id.ndl.go.jp/class/ndc10/913.6"/>{extra}</n:BibResource></rdf:RDF>'''
+        raw.write_text(xml, encoding='utf-8')
+        digest = hashlib.sha256(raw.read_bytes()).hexdigest()
+        source = NDLAdapter(None)._normalize(ET.fromstring(xml), RawArtifact(digest, str(raw), len(raw.read_bytes()),
+            '2026-10-24T00:00:00Z', 'https://ndlsearch.ndl.go.jp/api/sru'), 'iss-ndl-opac', locator='records[1]/recordData').model_dump(mode='json')
+        record.update(source_record=source, title=source['titles'][0]['value'], volume=source['volume'],
+            authors=[a['name'] for a in source['contributors'] if a['role'] == 'author'],
+            publisher=source['publisher'], date=source['publication_year'],
+            isbn=[i['value'] for i in source['identifiers'] if i['source'] == 'isbn'],
+            label=source['series'], ndc=['913.6'], label_evidence=[{'query_term': imprint}])
+        record['provenance']['raw_sha256'] = digest
+        book = {'publisher_book_id': 'kadokawa:123456789012', 'source_url': 'https://www.kadokawa.co.jp/product/123456789012/',
+            'isbn': '9784798613161', 'title': official_title, 'credits': [{'role': '著者', 'name': '著者'}],
+            'publisher': 'KADOKAWA', 'label': label, 'official_label_id': label_id, 'product_form_id': 3}
+        return cat, record, book
+    return build
+
+
+def test_publisher_edition_v1_proof_is_unchanged(publisher_edition_v2):
+    cat, record, book = publisher_edition_v2(title='主書名', volume=None, official_title='主書名')
+    assert cat._publisher_edition_match('kadokawa', book, record, {}) == {
+        'rule_version': 'publisher-ndl-edition-confirmation-v1', 'scope': 'edition_only',
+        'isbn13': '9784798613161', 'matched_ndl_title': '主書名',
+        'authors': [{'official_credit': '著者', 'ndl_authorities': ['http://id.ndl.go.jp/auth/entity/01234567']}],
+        'ndl_imprint': '角川スニーカー文庫', 'official_label': '角川スニーカー文庫',
+        'ndl_publisher': 'KADOKAWA', 'original_work_identity_asserted': False,
+        'story_series_identity_asserted': False, 'sources': [record['source_url'], book['source_url']]}
+
+
+@pytest.mark.parametrize('official_title,version', [('主書名３ 副書名', 'v2'), ('主書名 副書名３', 'v1')])
+def test_publisher_edition_v2_composes_all_title_parts_with_exact_volume(publisher_edition_v2, official_title, version):
+    cat, record, book = publisher_edition_v2(official_title=official_title)
+    proof = cat._publisher_edition_match('kadokawa', book, record, {})
+    assert proof['rule_version'] == 'publisher-ndl-edition-confirmation-' + version
+    if version == 'v2':
+        assert proof['title_match']['volume'] == '3' and proof['title_match']['subtitle'] == '副書名'
+        assert proof['title_match']['locators'] and not proof['story_series_identity_asserted']
+    book['title'] = official_title.replace('３', '２')
+    assert cat._publisher_edition_match('kadokawa', book, record, {}) is None
+
+
+def test_publisher_edition_v2_wave_decoration_keeps_complete_subtitle(publisher_edition_v2):
+    cat, record, book = publisher_edition_v2(title='17歳と、18以上 : 後輩ギャル', volume=None,
+        official_title='17歳と、18以上 ～後輩ギャル～')
+    assert cat._publisher_edition_match('kadokawa', book, record, {})['title_match']['subtitle'] == '後輩ギャル'
+    book['title'] = '17歳と、18以上 ～別の後輩ギャル～'
+    assert cat._publisher_edition_match('kadokawa', book, record, {}) is None
+
+
+def test_publisher_edition_v2_never_uses_contents_title(publisher_edition_v2):
+    cat, record, book = publisher_edition_v2(title='本の正式題', volume=None, official_title='別作品 ～副題～',
+        extra='<d:tableOfContents><rdf:Description><d:title>別作品 : 副題</d:title></rdf:Description></d:tableOfContents>')
+    assert cat._publisher_edition_match('kadokawa', book, record, {}) is None
+
+
+def test_publisher_edition_v2_never_uses_contents_isbn_or_electronic_format(publisher_edition_v2):
+    cat, record, book = publisher_edition_v2(extra='<d:tableOfContents><rdf:Description>'
+        '<d:identifier rdf:datatype="ISBN">9784041173701</d:identifier></rdf:Description></d:tableOfContents>')
+    book['isbn'] = '9784041173701'
+    assert cat._publisher_edition_match('kadokawa', book, record, {}) is None
+    book['isbn'] = '9784798613161'
+    book['product_form_id'] = 13
+    assert cat._publisher_edition_match('kadokawa', book, record, {}) is None
+
+
+@pytest.mark.parametrize('change,accepted', [({}, True), ({'label_id': 330}, False),
+    ({'publisher': '別出版社'}, False), ({'imprint': '富士見ファンタジア文庫コミックス'}, False)])
+def test_publisher_edition_v2_fantasia_pair_is_edition_scoped(publisher_edition_v2, change, accepted):
+    options = dict(title='主書名', volume=None, official_title='主書名', imprint='富士見ファンタジア文庫',
+        label='ファンタジア文庫', label_id=344)
+    options.update(change)
+    cat, record, book = publisher_edition_v2(**options)
+    proof = cat._publisher_edition_match('kadokawa', book, record, {})
+    assert bool(proof) is accepted
+    if proof:
+        assert proof['rule_version'] == 'publisher-ndl-edition-confirmation-v2'
+        assert proof['imprint_match']['official_label_id'] == 344
+        assert proof['scope'] == 'edition_only'
+
+
+@pytest.mark.parametrize('literal,accepted', [('著者 著', True), ('著者', False), ('著者 イラスト', False)])
+def test_publisher_edition_v2_missing_authority_requires_explicit_writer_literal(publisher_edition_v2, literal, accepted):
+    cat, record, book = publisher_edition_v2(title='主書名', volume=None, official_title='主書名', authority=False, literal=literal)
+    proof = cat._publisher_edition_match('kadokawa', book, record, {})
+    assert bool(proof) is accepted
+    if proof:
+        assert proof['authors'][0]['authority_status'] == 'unknown'
+        assert proof['authors'][0]['ndl_authorities'] == []
+        assert proof['authors'][0]['ndl_literal_credit'] == '著者 著'
+
+
+def test_publisher_edition_v2_unknown_authority_cannot_replace_publisher_identity(publisher_edition_v2):
+    cat, record, book = publisher_edition_v2(title='主書名', volume=None, official_title='主書名',
+        authority=False, publisher='別出版社')
+    assert cat._publisher_edition_match('kadokawa', book, record, {}) is None
+
+
+@pytest.fixture
 def bulk_bundle(edition_bundle, tmp_path):
     from pathlib import Path
     cat, _, edition = edition_bundle

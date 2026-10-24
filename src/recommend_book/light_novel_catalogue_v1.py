@@ -667,6 +667,11 @@ class LightNovelCatalogue:
         raise ValueError('unknown bibliographic publisher provider')
 
     def _publisher_edition_match(self, provider, publisher, edition, cache):
+        # Keep every previously accepted v1 proof byte-for-byte reproducible.
+        match = self._publisher_edition_match_v1(provider, publisher, edition, cache)
+        return match if match is not None else self._publisher_edition_match_v2(provider, publisher, edition, cache)
+
+    def _publisher_edition_match_v1(self, provider, publisher, edition, cache):
         from .normalization import normalize_isbn
         from .light_novel_ndl_series_v1 import person_key
         scopes = {'kadokawa': {'電撃文庫', 'MF文庫J', 'ファンタジア文庫', '角川スニーカー文庫'},
@@ -712,6 +717,147 @@ class LightNovelCatalogue:
                 'ndl_imprint': imprint, 'official_label': publisher['label'],
                 'ndl_publisher': source['publisher'], 'original_work_identity_asserted': False,
                 'story_series_identity_asserted': False,
+                'sources': [source['source_url'], publisher['source_url']]}
+
+    def _edition_primary_bibliographic_parts(self, edition, cache):
+        """Read direct fields of this edition's sole own title-bearing resource.
+
+        The outer record has already passed its original provider/raw replay.
+        Contents, related records, readings and holding resources supply no
+        title variants or literal writer assertions here.
+        """
+        from .ingestion.ndl import DC, DCTERMS, DCNDL, RDF, _value_text, _contributor
+        source = self._source_with_title_parts(edition, cache)
+        provenance = edition['provenance']
+        node, _ = cache[('ndl_nodes', provenance['raw_path'], provenance['raw_sha256'])][source['source_id']]
+        resources = [value for value in node.iter(f'{{{DCNDL}}}BibResource')
+            if value.get(f'{{{RDF}}}about', '').split('#')[0] == source['source_url']
+            and any(child.tag in {f'{{{DC}}}title', f'{{{DCTERMS}}}title'} for child in value)]
+        if len(resources) != 1:
+            return None
+        primary = resources[0]
+        base = source['extra']['raw_locator'] + '/dcndl:BibResource[@rdf:about=' + primary.get(f'{{{RDF}}}about') + ']'
+        titles, volumes, literal_authors, contributors = [], [], [], []
+        identifiers, publishers, languages, imprints, ndc = [], [], [], [], []
+        for position, child in enumerate(primary):
+            locator = base + '/' + child.tag + f'[{position + 1}]'
+            value = _value_text(child)
+            if child.tag in {f'{{{DC}}}title', f'{{{DCTERMS}}}title'} and value:
+                titles.append({'value': value, 'locator': locator})
+            elif child.tag == f'{{{DCNDL}}}volume' and value:
+                volumes.append({'value': value, 'locator': locator})
+            elif child.tag in {f'{{{DC}}}creator', f'{{{DCTERMS}}}creator'} and value:
+                # A default creator role is insufficient when no authority exists.
+                marked = re.fullmatch(r'(.+?)\s*[\[（(]?\s*(著者|著|原作|作)\s*[\]）)]?', value)
+                contributor = _contributor(child)
+                if contributor:
+                    contributors.append(contributor.model_dump(mode='json'))
+                if marked and contributor and contributor.role == 'author':
+                    literal_authors.append({'name': contributor.name, 'literal': value, 'locator': locator})
+            elif child.tag == f'{{{DCTERMS}}}identifier' and child.get(f'{{{RDF}}}datatype', '').rsplit('/', 1)[-1] == 'ISBN':
+                identifiers.append({'source': 'isbn', 'value': value})
+            elif child.tag == f'{{{DCTERMS}}}publisher' and value:
+                publishers.append(value)
+            elif child.tag == f'{{{DCTERMS}}}language' and value:
+                languages.append(value)
+            elif child.tag == f'{{{DCNDL}}}seriesTitle' and value:
+                imprints.append(value)
+            elif child.tag == f'{{{DCTERMS}}}subject':
+                resource = child.get(f'{{{RDF}}}resource', '')
+                if re.fullmatch(r'https?://id\.ndl\.go\.jp/class/ndc[0-9]*/[0-9.]+', resource):
+                    ndc.append(resource.rsplit('/', 1)[-1])
+        if len({row['value'] for row in volumes}) > 1:
+            return None
+        direct_source = {**source, 'contributors': contributors, 'identifiers': identifiers,
+            'publisher': '; '.join(dict.fromkeys(publishers)) or None,
+            'language': languages[0] if len(set(languages)) == 1 else None,
+            'series': '; '.join(dict.fromkeys(imprints)) or None,
+            'extra': {**source['extra'], 'ndc_codes': ndc}}
+        return {'source': direct_source, 'titles': titles, 'volume': volumes[0] if volumes else None,
+                'literal_authors': literal_authors, 'source_raw_sha256': provenance['raw_sha256']}
+
+    def _publisher_edition_match_v2(self, provider, publisher, edition, cache):
+        from .normalization import normalize_isbn
+        from .light_novel_ndl_series_v1 import person_key
+        # This extension is backed by the finite KADOKAWA book frame only.
+        if provider != 'kadokawa' or publisher.get('product_form_id') != 3 or publisher.get('label') not in {
+                '電撃文庫', 'MF文庫J', 'ファンタジア文庫', '角川スニーカー文庫'}:
+            return None
+        parts = self._edition_primary_bibliographic_parts(edition, cache)
+        if parts is None:
+            return None
+        source = parts['source']
+        if (source['language'] not in {'ja', 'jpn'} or source.get('publisher') != 'KADOKAWA'
+                or publisher.get('publisher') != 'KADOKAWA'
+                or not any(code.startswith('913') for code in source.get('extra', {}).get('ndc_codes', []))):
+            return None
+        isbn = normalize_isbn(str(publisher.get('isbn') or ''))
+        if not isbn or isbn not in {normalize_isbn(row['value']) for row in source['identifiers'] if row['source'] == 'isbn'}:
+            return None
+
+        def title_key(value):
+            return ''.join(c for c in normalize_search(value).replace('〜', '~')
+                           if not unicodedata.category(c).startswith('P'))
+
+        volume = parts['volume']['value'] if parts['volume'] else None
+        candidates = []
+        for title in parts['titles']:
+            raw_title = title['value']
+            candidates.append((raw_title, {'rule': 'direct_primary_title', 'source_value': raw_title,
+                'main': raw_title, 'subtitle': None, 'volume': volume, 'locators': [title['locator']]}))
+            value = raw_title
+            if volume and value.endswith('. ' + volume):
+                value = value[:-len('. ' + volume)]
+            split = value.split(' : ', 1)
+            main, subtitle = split[0], split[1] if len(split) == 2 else None
+            if not main or subtitle == '':
+                continue
+            locators = [title['locator']] + ([parts['volume']['locator']] if volume else [])
+            variants = [main + (volume or '') + (subtitle or ''), main + (subtitle or '') + (volume or '')]
+            if subtitle:
+                variants += [main + (volume or '') + '~' + subtitle + '~',
+                             main + '~' + subtitle + '~' + (volume or '')]
+            candidates.extend((variant, {'rule': 'primary_isbd_title_and_explicit_volume', 'source_value': raw_title,
+                'main': main, 'subtitle': subtitle, 'volume': volume, 'locators': locators}) for variant in variants)
+        title_match = next((proof for value, proof in candidates if title_key(value) == title_key(publisher['title'])), None)
+        if title_match is None:
+            return None
+        imprint = unicodedata.normalize('NFKC', source.get('series') or '').split(';')[0].strip()
+        exact_imprint = normalize_search(publisher['label']) in {normalize_search(v) for v in imprint.split(' = ')}
+        if exact_imprint:
+            imprint_match = {'rule': 'exact_label', 'ndl_imprint': imprint, 'official_label': publisher['label']}
+        elif (publisher.get('official_label_id') == 344 and publisher['label'] == 'ファンタジア文庫'
+              and imprint == '富士見ファンタジア文庫' and source['publisher'] == 'KADOKAWA'
+              and publisher.get('publisher') == 'KADOKAWA'):
+            imprint_match = {'rule': 'same_edition_kadokawa_fantasia_344_pair', 'official_label_id': 344,
+                'ndl_imprint': imprint, 'official_label': publisher['label'], 'scope': 'this_isbn_edition_only'}
+        else:
+            return None
+        official_authors = [credit['name'] for credit in publisher.get('credits', [])
+            if credit.get('role') in {'author', '著', '著者', '原作', '著者・イラスト', '著・イラスト'}]
+        if not official_authors:
+            return None
+        matched_authors = []
+        for name in official_authors:
+            contributors = [author for author in source['contributors']
+                if author['role'] == 'author' and person_key(author['name']) == person_key(name)]
+            authorities = sorted({identifier['value'] for author in contributors for identifier in author['identifiers']
+                if identifier['source'] == 'ndl-authority' and re.fullmatch(r'https?://id\.ndl\.go\.jp/auth/(?:entity|ndlna)/[0-9]{6,12}', identifier['value'])})
+            literal = next((author for author in parts['literal_authors'] if person_key(author['name']) == person_key(name)), None)
+            if not authorities and (not contributors or literal is None):
+                return None
+            author_match = {'official_credit': name, 'ndl_authorities': authorities,
+                'authority_status': 'known' if authorities else 'unknown'}
+            if literal:
+                author_match.update(ndl_literal_credit=literal['literal'], locator=literal['locator'])
+            matched_authors.append(author_match)
+        return {'rule_version': 'publisher-ndl-edition-confirmation-v2', 'scope': 'edition_only',
+                'isbn13': isbn, 'matched_ndl_title': title_match['source_value'], 'title_match': title_match,
+                'authors': matched_authors, 'ndl_imprint': imprint, 'official_label': publisher['label'],
+                'imprint_match': imprint_match, 'ndl_publisher': source['publisher'],
+                'official_product_form_id': 3,
+                'source_raw_sha256': parts['source_raw_sha256'],
+                'original_work_identity_asserted': False, 'story_series_identity_asserted': False,
                 'sources': [source['source_url'], publisher['source_url']]}
 
     def confirm_publisher_editions(self, provider, manifest_path, expected_sha256):
