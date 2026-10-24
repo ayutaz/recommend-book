@@ -84,14 +84,14 @@ def _detail(root, pin, listed):
 
 
 def verify_hifumi_product_details(manifest_path, sha256):
-    """Replay at most three observed, raw-pinned LN book details without prose."""
+    """Replay raw-pinned details within the finite 548-reference LN frame."""
     path = Path(manifest_path).resolve()
     try:
         proof = json.loads(_read(path, sha256, MAX_METADATA_BYTES))
         if proof.get('schema_version') != 'hifumi-product-details-proof-v1':
             raise ValueError('Hifumi detail proof schema differs')
         pins = proof['details']
-        if not isinstance(pins, list) or not 1 <= len(pins) <= 3:
+        if not isinstance(pins, list) or not 1 <= len(pins) <= 548:
             raise ValueError('Hifumi detail frame outside fixed bounded scope')
         urls = [row['source_url'] for row in pins]
         if len(set(urls)) != len(urls) or any(not _PRODUCT.fullmatch(url) for url in urls):

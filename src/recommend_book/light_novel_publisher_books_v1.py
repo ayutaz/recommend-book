@@ -16,6 +16,8 @@ import re
 KADOKAWA_LABELS = {
     '330': '電撃文庫', '55': 'MF文庫J', '344': 'ファンタジア文庫',
     '154': '角川スニーカー文庫',
+    '53': 'MFブックス', '104': 'カドカワBOOKS', '197': 'ファミ通文庫',
+    '114': '角川ビーンズ文庫', '178': 'ビーズログ文庫',
 }
 _ENDPOINT = 'https://www.kadokawa.co.jp/product/search/'
 _QUERY_KEYS = {'pageno', 'pageno_book', 'pageno_media', 'size', 'label', 'releaseDate'}
@@ -96,6 +98,9 @@ def verify_kadokawa_books(manifest_path: str | Path, sha256: str) -> list[dict]:
             title = item.get('title')
             if not isinstance(title, str) or not title.strip():
                 raise ValueError('publisher book title missing')
+            forms = payload.get('product_form')
+            form = forms.get(str(item.get('product_form_id'))) if isinstance(forms, dict) else None
+            form_name = form.get('name') if isinstance(form, dict) else None
             row = {
                 'publisher_book_id': 'kadokawa:' + code,
                 'reference_id': 'publisher-edition:kadokawa:' + code,
@@ -112,6 +117,7 @@ def verify_kadokawa_books(manifest_path: str | Path, sha256: str) -> list[dict]:
                 'official_label_site_id': item.get('label_site_id'),
                 'release_date': item.get('release_date'),
                 'product_form_id': item.get('product_form_id'),
+                'official_product_form_name': form_name if isinstance(form_name, str) else None,
                 'official_series_id': None, 'explicit_series_membership': None,
                 'identity_to_catalogue': 'unassessed',
                 'evidence': {'source_url': _ENDPOINT, 'http_method': 'POST',

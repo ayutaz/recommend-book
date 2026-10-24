@@ -102,6 +102,46 @@ def test_raw_detail_and_ln_nav_supply_only_explicit_book_metadata(frame):
     assert match_hifumi_product_detail(row, parts())
 
 
+def test_more_than_three_details_still_require_each_book_in_the_pinned_ln_index(frame):
+    path, _, proof = frame
+    base_path = path.parent / proof['base_frame']['manifest_path']
+    base = json.loads(base_path.read_text(encoding='utf-8'))
+    original = proof['details'][0]
+    original_html = (path.parent / original['raw_path']).read_text(encoding='utf-8')
+    cards, pins = [], []
+    for number in range(1, 5):
+        url = URL.replace('opaque-book-1', f'opaque-book-{number}')
+        raw = path.parent / f'expanded-{number}.html'
+        raw_sha = save(raw, original_html.replace(URL, url))
+        receipt = {'source_url': url, 'final_url': url, 'http_status': 200,
+            'content_type': 'text/html; charset=utf-8', 'sha256': raw_sha, 'byte_length': raw.stat().st_size}
+        receipt_path = path.parent / f'expanded-{number}.receipt.json'
+        pins.append({'source_url': url, 'raw_path': raw.name, 'raw_sha256': raw_sha,
+            'receipt_path': receipt_path.name, 'receipt_sha256': save(receipt_path, receipt)})
+        cards.append('<div class="custom-item-row"><div class="custom-item-body">'
+            '<span class="label-badge">サーガフォレスト</span><h2><a href="' + url
+            + '">完全題３</a></h2></div></div>')
+    mixed_pin = base['mixed_index']
+    mixed_path = path.parent / mixed_pin['raw_path']
+    nav = mixed_path.read_text(encoding='utf-8').split('<div id="lineup-container">')[0]
+    mixed_pin['raw_sha256'] = save(mixed_path, nav + '<div id="lineup-container">' + ''.join(cards) + '</div>')
+    receipt_path = path.parent / mixed_pin['receipt_path']
+    receipt = json.loads(receipt_path.read_text(encoding='utf-8'))
+    receipt.update(sha256=mixed_pin['raw_sha256'], byte_length=mixed_path.stat().st_size)
+    mixed_pin['receipt_sha256'] = save(receipt_path, receipt)
+    proof['base_frame']['manifest_sha256'] = save(base_path, base)
+    proof['details'] = pins
+    rows = verify_hifumi_product_details(path, save(path, proof))
+    assert len(rows) == 4 and len({row['publisher_book_id'] for row in rows}) == 4
+    # A valid detail cannot be admitted after its exact card disappears.
+    mixed_pin['raw_sha256'] = save(mixed_path, nav + '<div id="lineup-container">' + ''.join(cards[:-1]) + '</div>')
+    receipt.update(sha256=mixed_pin['raw_sha256'], byte_length=mixed_path.stat().st_size)
+    mixed_pin['receipt_sha256'] = save(receipt_path, receipt)
+    proof['base_frame']['manifest_sha256'] = save(base_path, base)
+    with pytest.raises(ValueError, match='contained'):
+        verify_hifumi_product_details(path, save(path, proof))
+
+
 @pytest.mark.parametrize('change', ['raw', 'redirect', 'canonical', 'no_isbn', 'nav', 'label', 'path_escape'])
 def test_modified_or_unbound_raw_cannot_supply_detail_metadata(frame, change):
     path, _, proof = frame

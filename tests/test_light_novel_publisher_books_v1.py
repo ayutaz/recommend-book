@@ -116,3 +116,52 @@ def test_assessed_publisher_history_contract_has_public_facts_and_no_mutable_ali
     second=assessed_history_context()
     assert 'メディアワークス' not in second['named_subsidiaries']
     assert second['source_pages'] == [1]
+
+
+_ADDITIONAL_KAD_LABELS = [('53', 'MFブックス'), ('104', 'カドカワBOOKS'),
+    ('197', 'ファミ通文庫'), ('114', '角川ビーンズ文庫'), ('178', 'ビーズログ文庫')]
+
+
+@pytest.mark.parametrize('label_id,label', _ADDITIONAL_KAD_LABELS)
+def test_kadokawa_additional_label_acceptance_preserves_explicit_filter_scope(publisher_books, label_id, label):
+    path, _, raw, body = publisher_books
+    payload = json.loads(raw.read_text(encoding='utf-8'))
+    payload['result']['book'][0]['label_id'] = int(label_id)
+    body['pages'][0]['request_data']['label'] = label_id
+    body['pages'][0]['sha256'] = write(raw, payload)
+    row, = verify_kadokawa_books(path, write(path, body))
+    assert row['label'] == row['label_scope'] == label
+    assert row['official_label_id'] == int(label_id)
+    assert row['evidence']['request_data']['label'] == label_id
+    assert row['individual_publisher'] is None and row['catalogue_owner'] == 'KADOKAWA'
+    assert row['official_series_id'] is None and row['explicit_series_membership'] is None
+    assert row['identity_to_catalogue'] == 'unassessed'
+    assert 'catchphrase' not in json.dumps(row) and 'bookCoverUrl' not in json.dumps(row)
+
+
+@pytest.mark.parametrize('label_id,label', _ADDITIONAL_KAD_LABELS)
+def test_kadokawa_additional_label_query_cannot_admit_another_item_label(publisher_books, label_id, label):
+    path, _, raw, body = publisher_books
+    payload = json.loads(raw.read_text(encoding='utf-8'))
+    payload['result']['book'][0]['label_id'] = 330
+    body['pages'][0]['request_data']['label'] = label_id
+    body['pages'][0]['sha256'] = write(raw, payload)
+    with pytest.raises(ValueError, match='label'):
+        verify_kadokawa_books(path, write(path, body))
+
+
+def test_kadokawa_paper_form_raw_dictionary_supplies_literal_without_inferring_size(publisher_books):
+    path, _, raw, body = publisher_books
+    payload = json.loads(raw.read_text(encoding='utf-8'))
+    for form_id, dictionary, expected in [
+        (1, {'1': {'name': '単行本'}, '13': {'name': '電子専売'}}, '単行本'),
+        (13, {'1': {'name': '単行本'}, '13': {'name': '電子専売'}}, '電子専売'),
+        (1, {}, None),
+    ]:
+        payload['result']['book'][0]['product_form_id'] = form_id
+        payload['product_form'] = dictionary
+        body['pages'][0]['sha256'] = write(raw, payload)
+        row, = verify_kadokawa_books(path, write(path, body))
+        assert row['official_product_form_name'] == expected
+        assert row['product_form_id'] == form_id
+        assert 'B6' not in json.dumps(row, ensure_ascii=False)

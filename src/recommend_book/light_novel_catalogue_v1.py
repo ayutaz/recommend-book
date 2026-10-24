@@ -1024,7 +1024,8 @@ class LightNovelCatalogue:
     def _publisher_edition_match_v1(self, provider, publisher, edition, cache):
         from .normalization import normalize_isbn
         from .light_novel_ndl_series_v1 import person_key
-        scopes = {'kadokawa': {'電撃文庫', 'MF文庫J', 'ファンタジア文庫', '角川スニーカー文庫'},
+        from .light_novel_publisher_books_v1 import KADOKAWA_LABELS
+        scopes = {'kadokawa': set(KADOKAWA_LABELS.values()),
                   'shueisha-dx': {'ダッシュエックス文庫', 'スーパーダッシュ文庫', 'ダッシュエックス文庫DIGITAL',
                                   'Dノベルf／ダッシュエックスノベルエフ', 'Dノベル／ダッシュエックスノベル'},
                   'ichijinsha-iris': {'一迅社文庫アイリス', 'アイリスNEO', '一迅社文庫アイリスNEO'}}
@@ -1262,9 +1263,13 @@ class LightNovelCatalogue:
     def _publisher_edition_match_v2(self, provider, publisher, edition, cache, *, _part_information=False, _publisher_context=False):
         from .normalization import normalize_isbn
         from .light_novel_ndl_series_v1 import person_key
+        from .light_novel_publisher_books_v1 import KADOKAWA_LABELS
         # This extension is backed by the finite KADOKAWA book frame only.
-        if (_part_information and _publisher_context) or provider != 'kadokawa' or publisher.get('product_form_id') != 3 or publisher.get('label') not in {
-                '電撃文庫', 'MF文庫J', 'ファンタジア文庫', '角川スニーカー文庫'}:
+        product_form = publisher.get('product_form_id')
+        paper_book = product_form == 1 and publisher.get('official_product_form_name') == '単行本'
+        if ((_part_information and _publisher_context) or provider != 'kadokawa'
+                or type(product_form) is not int or (product_form != 3 and not paper_book)
+                or publisher.get('label') not in KADOKAWA_LABELS.values()):
             return None
         parts = self._edition_primary_bibliographic_parts(edition, cache)
         if parts is None:
@@ -1359,14 +1364,24 @@ class LightNovelCatalogue:
                 author_match.update(ndl_literal_credit=literal['literal'], locator=literal['locator'])
             matched_authors.append(author_match)
         version = 'v5' if _publisher_context else 'v4' if _part_information else 'v3' if title_match['rule'] == 'primary_isbd_reverse_title_and_explicit_volume_v1' else 'v2'
+        if paper_book:
+            version = 'v6'
         proof = {'rule_version': 'publisher-ndl-edition-confirmation-' + version, 'scope': 'edition_only',
                 'isbn13': isbn, 'matched_ndl_title': title_match['source_value'], 'title_match': title_match,
                 'authors': matched_authors, 'ndl_imprint': imprint, 'official_label': publisher['label'],
                 'imprint_match': imprint_match, 'ndl_publisher': source['publisher'],
-                'official_product_form_id': 3,
+                'official_product_form_id': product_form,
                 'source_raw_sha256': parts['source_raw_sha256'],
                 'original_work_identity_asserted': False, 'story_series_identity_asserted': False,
                 'sources': [source['source_url'], publisher['source_url']]}
+        if paper_book:
+            evidence = publisher.get('evidence', {})
+            if (evidence.get('source_url') != 'https://www.kadokawa.co.jp/product/search/'
+                    or not re.fullmatch(r'[0-9a-f]{64}', evidence.get('source_sha256', ''))):
+                return None
+            proof.update(official_product_form_name='単行本', product_form_evidence={
+                'source_url': evidence['source_url'], 'source_sha256': evidence['source_sha256'],
+                'json_pointer': '/product_form/1/name'})
         if _part_information:
             proof.update(confirmed_scope='contained_bibliographic_edition_only',
                 part_title_is_volume_title_asserted=False, product_sku_identity_asserted=False)
@@ -1475,6 +1490,9 @@ class LightNovelCatalogue:
 
     @staticmethod
     def _publisher_bibliography_references(provider, manifest_path, expected_sha256):
+        if provider in {'gc', 'alphapolis'}:
+            from .light_novel_publisher_references_v1 import verify_publisher_references
+            return verify_publisher_references(provider, manifest_path, expected_sha256)
         if provider == 'kodansha':
             from .light_novel_kodansha_references_v1 import verify_kodansha_references
             return verify_kodansha_references(manifest_path, expected_sha256)
@@ -1606,7 +1624,12 @@ class LightNovelCatalogue:
                     continue
                 row = indexed[identity]
                 row.update(publisher_bibliography_matched=True, bibliographic_correspondence_scope=SCOPE,
-                           bibliography_source_url=matches[0]['official_source_url'], light_novel_confirmed=True)
+                           bibliography_source_url=matches[0]['official_source_url'])
+                # A correspondence can authenticate a general novel's bibliography
+                # while its individual light-novel classification remains unknown.
+                if all(match.get('official_lightnovel_tag') is True
+                       or match.get('light_novel_status') == 'confirmed' for match in matches):
+                    row['light_novel_confirmed'] = True
                 if row.get('admission_status') not in {'edition_series_membership_verified',
                         'publisher_work_group_membership_verified', 'publisher_ndl_edition_verified'}:
                     row['admission_status'] = 'publisher_bibliographic_record_verified'

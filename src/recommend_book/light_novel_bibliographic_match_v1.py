@@ -30,6 +30,9 @@ _NDL = re.compile(r'R100000002-[A-Za-z0-9._-]+')
 
 def reference_hold_reason(provider, reference):
     """Report only a reference gate; it does not authenticate source artifacts."""
+    if provider in {'gc', 'alphapolis'}:
+        from .light_novel_catalogue_reference_match_v1 import reference_hold_reason as catalogue_hold
+        return catalogue_hold(provider, reference)
     try:
         writers = [c['name'] for c in reference['credits'] if c['role'] == 'author' and _person_key(c['name'])]
         if not writers:
@@ -190,6 +193,9 @@ def _match(provider, reference, parts):
 
 def match_bibliographic_reference(provider, reference, primary_parts):
     """Return a bounded bibliographic proof, or hold incomplete/conflicting facts."""
+    if provider in {'gc', 'alphapolis'}:
+        from .light_novel_catalogue_reference_match_v1 import match_catalogue_reference
+        return match_catalogue_reference(provider, reference, primary_parts)
     try:
         return _match(provider, reference, primary_parts)
     except (KeyError, TypeError, AttributeError, ValueError):

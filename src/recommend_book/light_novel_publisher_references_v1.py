@@ -511,10 +511,16 @@ def verify_publisher_references(provider, manifest_path, sha256):
     """Return minimum bibliographic references from hash-pinned local evidence.
 
     Providers are ``earthstar``, ``tobooks``, ``gagaga``, ``kodansha``,
-    ``hifumi``, ``overlap`` and ``futaba``. No result asserts
+    ``hifumi``, ``overlap``, ``futaba``, ``gc`` and ``alphapolis``. No result asserts
     edition identity or story-series identity. Gagaga's unpinned private roster
     is never read; its manifest and raw sources are the entire replay contract.
     """
+    if provider == 'gc':
+        from .light_novel_gc_references_v1 import verify_gc_references
+        return verify_gc_references(manifest_path, sha256)
+    if provider == 'alphapolis':
+        from .light_novel_alphapolis_references_v1 import verify_alphapolis_references
+        return verify_alphapolis_references(manifest_path, sha256)
     if provider == 'kodansha':
         from .light_novel_kodansha_references_v1 import verify_kodansha_references
         return verify_kodansha_references(manifest_path, sha256)

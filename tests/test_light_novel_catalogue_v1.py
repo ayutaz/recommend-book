@@ -2528,3 +2528,241 @@ def test_hifumi_futaba_book_confirmation_cannot_survive_broken_source_or_bibliog
         assert not detail.get('edition_bibliography_confirmed') and 'edition_confirmation_evidence' not in detail
     with cat._connect() as db:
         assert tuple(db.execute('SELECT * FROM edition_book_confirmations').fetchone()) == previous
+
+
+@pytest.fixture
+def sparse_catalogue_correspondence(publisher_edition_v2, monkeypatch, tmp_path):
+    """Only replace official source verification, retaining each real matcher."""
+    from recommend_book import light_novel_gc_references_v1 as gc_source
+    from recommend_book import light_novel_alphapolis_references_v1 as alpha_source
+    from recommend_book import light_novel_hifumi_references_v1 as hifumi_source
+    from recommend_book import light_novel_kodansha_references_v1 as kodansha_source
+
+    def build(provider):
+        publisher, imprint = {'gc': ('マイクロマガジン社', 'GC NOVELS'),
+            'alphapolis': ('アルファポリス', 'アルファポリス'), 'kodansha': ('講談社', '講談社ラノベ文庫'),
+            'hifumi': ('一二三書房', 'サーガフォレスト')}[provider]
+        cat, record, _ = publisher_edition_v2(publisher=publisher, imprint=imprint)
+        assert cat.import_editions([record])['inserted'] == 1
+        common = {'source_unit': 'publisher_product_reference', 'title': '主書名３ 副書名',
+            'isbn': None, 'publisher': None, 'form': None, 'volume': None,
+            'story_series_asserted': False, 'metadata_conflict': False, 'bibliographic_variants': []}
+        if provider == 'gc':
+            ref = {**common, 'publisher_reference_id': 'gc-product:1', 'official_product_id': '1',
+                'source_url': 'https://gcnovels.jp/book/1', 'label': None, 'label_literals': [],
+                'credits': [{'role': 'author', 'role_literal': '小説', 'name': '著者'}],
+                'official_lightnovel_tag': None, 'source_frame_scope': dict(gc_source._SCOPE),
+                'source_evidence': [{'source_url': gc_source._START, 'raw_sha256': 'a' * 64,
+                    'locator': 'ul.book-list > li.book-list-item-root[1] h3>a / ul.author>li'}]}
+        elif provider == 'alphapolis':
+            url = 'https://www.alphapolis.co.jp/book/alphapolis/tankou/100'
+            ref = {**common, 'publisher_reference_id': 'alphapolis-commercial-book:1/2',
+                'source_url': 'https://www.alphapolis.co.jp/book/detail/1/2', 'opaque_url_ids': ['1', '2'],
+                'title_literal': common['title'], 'subtitle_literal': '', 'complete_display_title': common['title'],
+                'label': 'アルファポリス', 'label_literals': ['アルファポリス'],
+                'credits': [{'role': 'author', 'role_display': '著', 'name': '著者'}],
+                'official_lightnovel_tag': None, 'edition_identity_asserted': False,
+                'original_work_identity_asserted': False, 'story_series_identity_asserted': False,
+                'source_scope_membership': {'source_unit': 'publisher_commercial_book_index_membership',
+                    'brand': 'alphapolis', 'entry_url': url, 'index_scope': 'alphapolis_novel_tankou_category_100',
+                    'membership_basis': 'explicit_book_card_and_own_label_tag_in_fixed_index',
+                    'label_context_literal': 'アルファポリス', 'individual_lightnovel_classification': 'unknown',
+                    'full_historical_catalogue_complete': False}, 'occurrence_count': 1,
+                'source_evidence': [{'source_url': url, 'raw_sha256': 'a' * 64,
+                    'locator': '.book-blocks .book:nth-of-type(1) h2.title/a; h3.sub-title; .label-tag; .authors .author'}]}
+        else:
+            label, url, identity, index_url = (
+                ('講談社ラノベ文庫', 'https://www.kodansha.co.jp/comic/products/0000000001',
+                 'kodansha-product:0000000001', 'https://www.kodansha.co.jp/comic/labels/lanove')
+                if provider == 'kodansha' else ('サーガフォレスト', 'https://hifumi.co.jp/lineup/opaque1/',
+                 'hifumi-product:opaque1', 'https://hifumi.co.jp/saga_forest/'))
+            ref = {**common, 'publisher_reference_id': identity, 'source_url': url,
+                'label': label, 'label_literals': [label], 'credits': [{'role': 'author', 'name': '著者'}],
+                'official_lightnovel_tag': True,
+                'source_evidence': [{'source_url': index_url, 'raw_sha256': 'a' * 64, 'locator': 'card[1]'}]}
+        manifest = tmp_path / (provider + '-sparse-catalogue.json')
+        sha = write(manifest, {'synthetic_source_scope': provider})
+        def verify(path, expected):
+            from pathlib import Path
+            assert Path(path).resolve() == manifest.resolve() and expected == sha
+            if hashlib.sha256(manifest.read_bytes()).hexdigest() != sha:
+                raise ValueError('synthetic source manifest changed')
+            return [ref]
+        module, name = {'gc': (gc_source, 'verify_gc_references'),
+            'alphapolis': (alpha_source, 'verify_alphapolis_references'),
+            'kodansha': (kodansha_source, 'verify_kodansha_references'),
+            'hifumi': (hifumi_source, 'verify_hifumi_references')}[provider]
+        monkeypatch.setattr(module, name, verify)
+        return cat, record, ref, manifest, sha
+    return build
+
+
+@pytest.mark.parametrize('provider', ['gc', 'alphapolis'])
+def test_sparse_catalogue_correspondence_never_confirms_unknown_lightnovel_or_isbn_edition(
+        sparse_catalogue_correspondence, provider):
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    cat, record, ref, manifest, sha = sparse_catalogue_correspondence(provider)
+    identity = 'lne:ndl:' + record['id']
+    result = cat.correlate_publisher_bibliographies(provider, manifest, sha)
+    assert result['new_correspondences'] == result['matched_publisher_references'] == 1
+    assert result['candidate_editions_verified'] == 1
+    with cat._connect() as db:
+        binding = dict(db.execute('SELECT * FROM publisher_bibliographic_correspondences').fetchone())
+        assert db.execute('SELECT count(*) FROM edition_book_confirmations').fetchone()[0] == 0
+        assert json.loads(db.execute('SELECT record_json FROM entries WHERE entry_id=?', (identity,)).fetchone()[0]) == record
+    assert binding['provider'] == provider
+    assert hashlib.sha256(binding['proof_json'].encode()).hexdigest() == binding['proof_sha256']
+    proof = json.loads(binding['proof_json'])
+    assert proof['scope'] == 'publisher_reference_to_ndl_bibliographic_record'
+    assert proof['matches'][0]['light_novel_status'] == 'unknown'
+    assert proof['matches'][0]['official_lightnovel_tag'] is None
+    assert proof['matches'][0]['official_publisher_asserted'] is False
+    if provider == 'gc':
+        assert proof['matches'][0]['official_label'] is None
+    assert proof['matches'][0]['original_work_identity_asserted'] is False
+    assert proof['matches'][0]['story_series_identity_asserted'] is False
+    assert cat.correlate_publisher_bibliographies(provider, manifest, sha)['unchanged_correspondences'] == 1
+    row = cat.work_detail(identity)
+    assert row['publisher_bibliography_matched'] is True and row['light_novel_confirmed'] is False
+    assert row['admission_status'] == 'publisher_bibliographic_record_verified'
+    assert row['bibliography_source_url'] == ref['source_url']
+    assert row['source_url'] == record['source_url'] and row['original_language'] is None
+    assert not row.get('edition_bibliography_confirmed') and 'edition_identity_basis' not in row
+    assert row['members'] == [] and row['llm_features'] == []
+    public = public_work(row)
+    assert public['publisher_bibliography_matched'] is True and public['light_novel_confirmed'] is False
+    assert public['bibliography_source_url'] == ref['source_url']
+    assert not public.get('edition_bibliography_confirmed')
+    encoded = json.dumps(public, ensure_ascii=False)
+    assert 'bibliographic_correspondence_evidence' not in public and 'raw_path' not in encoded and 'records[1]' not in encoded
+
+
+@pytest.mark.parametrize('provider', ['gc', 'alphapolis'])
+@pytest.mark.parametrize('change', ['own_raw', 'rehashed_projection'])
+def test_sparse_catalogue_correspondence_rejects_raw_or_rehashed_projection_tampering(
+        sparse_catalogue_correspondence, provider, change):
+    from pathlib import Path
+    cat, record, _, manifest, sha = sparse_catalogue_correspondence(provider)
+    if change == 'own_raw':
+        Path(record['provenance']['raw_path']).write_text('changed own raw', encoding='utf-8')
+    else:
+        record['source_record']['publisher'] = record['publisher'] = '原資料にない出版社'
+        encoded = json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+        with cat._connect() as db:
+            db.execute('UPDATE entries SET record_json=?,record_sha256=?',
+                (encoded, hashlib.sha256(encoded.encode()).hexdigest()))
+    with pytest.raises(ValueError):
+        cat.correlate_publisher_bibliographies(provider, manifest, sha)
+    with cat._connect() as db:
+        assert db.execute('SELECT count(*) FROM publisher_bibliographic_correspondences').fetchone()[0] == 0
+
+
+@pytest.mark.parametrize('provider', ['gc', 'alphapolis'])
+def test_sparse_catalogue_correspondence_cannot_replay_a_new_positive_genre_projection(
+        sparse_catalogue_correspondence, provider):
+    cat, record, ref, manifest, sha = sparse_catalogue_correspondence(provider)
+    assert cat.correlate_publisher_bibliographies(provider, manifest, sha)['new_correspondences'] == 1
+    ref['official_lightnovel_tag'] = True
+    assert cat.correlate_publisher_bibliographies(provider, manifest, sha)['new_correspondences'] == 0
+    row = cat.work_detail('lne:ndl:' + record['id'])
+    assert not row.get('publisher_bibliography_matched') and row['light_novel_confirmed'] is False
+
+
+@pytest.mark.parametrize('provider', ['kodansha', 'hifumi'])
+def test_sparse_catalogue_dispatch_preserves_legacy_ln_correspondence_status_and_proof(
+        sparse_catalogue_correspondence, provider):
+    cat, record, ref, manifest, sha = sparse_catalogue_correspondence(provider)
+    assert cat.correlate_publisher_bibliographies(provider, manifest, sha)['new_correspondences'] == 1
+    with cat._connect() as db:
+        proof = json.loads(db.execute('SELECT proof_json FROM publisher_bibliographic_correspondences').fetchone()[0])
+    match, = proof['matches']
+    assert match['rule_version'] == 'publisher-ndl-bibliographic-correspondence-v1'
+    assert match['official_lightnovel_tag'] is True and 'light_novel_status' not in match
+    assert match['official_source_url'] == ref['source_url']
+    assert match['source_raw_sha256'] == record['provenance']['raw_sha256']
+    assert match['official_publisher_asserted'] is False
+    assert match['same_edition_identity_asserted'] is False
+    row = cat.work_detail('lne:ndl:' + record['id'])
+    assert row['publisher_bibliography_matched'] is True and row['light_novel_confirmed'] is True
+    assert row['admission_status'] == 'publisher_bibliographic_record_verified'
+    assert not row.get('edition_bibliography_confirmed')
+
+
+_ADDITIONAL_KAD_MATCH_LABELS = [(53, 'MFブックス'), (104, 'カドカワBOOKS'),
+    (197, 'ファミ通文庫'), (114, '角川ビーンズ文庫'), (178, 'ビーズログ文庫')]
+
+
+@pytest.mark.parametrize('label_id,label', _ADDITIONAL_KAD_MATCH_LABELS)
+@pytest.mark.parametrize('mode', ['direct', 'composed'])
+def test_kadokawa_additional_label_matching_keeps_own_exact_imprint_and_full_title(
+        publisher_edition_v2, label_id, label, mode):
+    options = {'title': '主書名', 'volume': None, 'official_title': '主書名'} if mode == 'direct' else {}
+    cat, record, book = publisher_edition_v2(imprint=label, label=label, label_id=label_id, **options)
+    proof = cat._publisher_edition_match('kadokawa', book, record, {})
+    assert proof is not None
+    assert proof['rule_version'] == 'publisher-ndl-edition-confirmation-' + ('v1' if mode == 'direct' else 'v2')
+    assert proof['official_label'] == label and proof['ndl_imprint'] == label
+    assert proof['isbn13'] == '9784798613161' and proof['scope'] == 'edition_only'
+    assert proof['ndl_publisher'] == 'KADOKAWA'
+    assert proof['original_work_identity_asserted'] is False and proof['story_series_identity_asserted'] is False
+    if mode == 'composed':
+        assert proof['title_match']['main'] == '主書名'
+        assert proof['title_match']['subtitle'] == '副書名' and proof['title_match']['volume'] == '3'
+
+
+@pytest.mark.parametrize('label_id,label', _ADDITIONAL_KAD_MATCH_LABELS)
+def test_kadokawa_additional_label_mismatch_cannot_borrow_another_ndl_imprint(
+        publisher_edition_v2, label_id, label):
+    cat, record, book = publisher_edition_v2(imprint='電撃文庫', label=label, label_id=label_id)
+    assert cat._publisher_edition_match('kadokawa', book, record, {}) is None
+
+
+def test_kadokawa_paper_form_one_v6_requires_explicit_tankou_literal_for_all_nine_labels(publisher_edition_v2):
+    for label_id, label in [(330, '電撃文庫'), (55, 'MF文庫J'), (344, 'ファンタジア文庫'),
+            (154, '角川スニーカー文庫'), *_ADDITIONAL_KAD_MATCH_LABELS]:
+        cat, record, book = publisher_edition_v2(imprint=label, label=label, label_id=label_id)
+        kadokawa_owner_context(book)
+        book.update(product_form_id=1, official_product_form_name='単行本')
+        proof = cat._publisher_edition_match('kadokawa', book, record, {})
+        assert proof is not None, label
+        assert proof['rule_version'] == 'publisher-ndl-edition-confirmation-v6'
+        assert proof['official_product_form_id'] == 1 and proof['official_product_form_name'] == '単行本'
+        assert proof['product_form_evidence'] == {
+            'source_url': 'https://www.kadokawa.co.jp/product/search/',
+            'source_sha256': 'e' * 64, 'json_pointer': '/product_form/1/name'}
+        assert proof['official_label'] == proof['ndl_imprint'] == label
+        assert proof['title_match']['main'] == '主書名'
+        assert proof['title_match']['subtitle'] == '副書名' and proof['title_match']['volume'] == '3'
+        assert proof['original_work_identity_asserted'] is False and proof['story_series_identity_asserted'] is False
+        assert 'raw_path' not in json.dumps(proof['product_form_evidence'])
+        assert 'B6' not in json.dumps(proof, ensure_ascii=False)
+
+
+@pytest.mark.parametrize('change', ['missing_literal', 'different_definition', 'electronic', 'missing_subtitle'])
+def test_kadokawa_paper_form_one_does_not_replace_unknown_form_or_missing_title_parts(
+        publisher_edition_v2, change):
+    cat, record, book = publisher_edition_v2(imprint='MFブックス', label='MFブックス', label_id=53)
+    kadokawa_owner_context(book)
+    book.update(product_form_id=1, official_product_form_name='単行本')
+    if change == 'missing_literal':
+        book.pop('official_product_form_name')
+    elif change == 'different_definition':
+        book['official_product_form_name'] = '単行本（電子）'
+    elif change == 'electronic':
+        book.update(product_form_id=13, official_product_form_name='電子専売')
+    else:
+        book['title'] = '主書名３'
+    assert cat._publisher_edition_match('kadokawa', book, record, {}) is None
+
+
+def test_kadokawa_paper_form_one_addition_leaves_form_three_v2_to_v5_complete_proofs_unchanged(publisher_edition_v2):
+    from copy import deepcopy
+    for version, options in [('v2', {}), ('v3', {'official_title': '副書名 主書名３'}),
+            ('v4', {'title': '主書名', 'official_title': '主書名３ 完全巻題', 'extra': own_part_title()}),
+            ('v5', {'publisher': 'メディアファクトリー'})]:
+        cat, record, book = publisher_edition_v2(**options)
+        kadokawa_owner_context(book)
+        before = deepcopy(cat._publisher_edition_match('kadokawa', book, record, {}))
+        assert before['rule_version'] == 'publisher-ndl-edition-confirmation-' + version
+        book['official_product_form_name'] = '文庫'
+        assert cat._publisher_edition_match('kadokawa', book, record, {}) == before
