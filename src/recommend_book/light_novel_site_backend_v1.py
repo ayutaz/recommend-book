@@ -51,9 +51,45 @@ class UnifiedCatalogue:
         self.world, self.light_novels = world, light_novels
         self.db_path = world.db_path
 
-    def _world_qids(self):
+    def _world_qids(self, *, query='', genre=None, language=None, year_from=None,
+                    year_to=None, read_filter='all'):
+        """Find duplicate identities using the frozen world's search predicates.
+
+        This lookup does not project or authenticate cards; the normal world
+        search still authenticates the rows it returns.
+        """
+        if read_filter not in _STATES | {'all', 'exclude_read'}:
+            raise ValueError('invalid read filter')
+        _, rights = self.world._conditions()
+        if rights['display'] != 'allowed':
+            return set()
+        clauses, parameters = ['w.display_allowed=1'], []
+        if query.strip():
+            clauses.append("w.search_text LIKE ? ESCAPE '\\'")
+            literal = query.strip().casefold().replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+            parameters.append('%' + literal + '%')
+        if genre:
+            genre = str(genre).removeprefix('wd:')
+            if not _QID.fullmatch(genre):
+                raise ValueError('invalid genre')
+            clauses.append('EXISTS(SELECT 1 FROM work_genres g WHERE g.qid=w.qid AND g.genre_qid=?)')
+            parameters.append(genre)
+        if language:
+            clauses.append('w.language=?')
+            parameters.append(language)
+        for value, operator in ((year_from, '>='), (year_to, '<=')):
+            if value not in (None, ''):
+                clauses.append(f'w.year{operator}?')
+                parameters.append(int(value))
+        if read_filter == 'exclude_read':
+            clauses.append("coalesce(r.status,'unknown')!='read'")
+        elif read_filter != 'all':
+            clauses.append("coalesce(r.status,'unknown')=?")
+            parameters.append(read_filter)
         with self.world._connect() as db:
-            return {row[0] for row in db.execute('SELECT qid FROM works WHERE display_allowed=1')}
+            return {row[0] for row in db.execute(
+                'SELECT w.qid FROM works w LEFT JOIN read_status r USING(qid) WHERE '
+                + ' AND '.join(clauses), parameters)}
 
     def search_world_catalogue(self, **kwargs):
         return self.world.search_catalogue(**kwargs)
@@ -86,7 +122,7 @@ class UnifiedCatalogue:
         if family != 'world':
             args = dict(filters, entry_kind=entry_kind)
             if family == 'all':
-                args['exclude_work_qids'] = self._world_qids()
+                args['exclude_work_qids'] = self._world_qids(**filters)
             search = self.light_novels.search_catalogue
             first = search(page=1, page_size=100, **args)
             partitions.append((search, first, args))

@@ -178,7 +178,9 @@ def _annotate_recommendation_reasons(item, payload):
         elif kind == 'same_author':
             reason.update(direction='context', detail='著者が共通')
         elif kind == 'series_content_feature':
-            reason.update(direction='context', detail='基準シリーズと内容特徴が共通')
+            detail = ('基準シリーズと内容特徴が共通。関連度は未確認のため、得点には加算していません。'
+                      if reason.get('relevance_unknown') is True else '基準シリーズと内容特徴が共通')
+            reason.update(direction='context', detail=detail)
 
 
 def _preference_tokens(value, *, name, maximum=50, maximum_length=128):

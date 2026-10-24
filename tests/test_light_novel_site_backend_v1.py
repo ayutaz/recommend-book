@@ -10,11 +10,25 @@ from recommend_book.light_novel_site_backend_v1 import UnifiedCatalogue
 class Store:
     def __init__(self, path, rows, *, light=False):
         self.db_path, self.rows, self.light, self.calls = path, rows, light, []
+        self.display = 'allowed'
         with self._connect() as db:
             db.execute('CREATE TABLE read_status(' + ('entry_id' if light else 'qid') + ' TEXT PRIMARY KEY,status TEXT,updated_at TEXT)')
             if not light:
-                db.execute('CREATE TABLE works(qid TEXT PRIMARY KEY,display_allowed INTEGER NOT NULL)')
-                db.executemany('INSERT INTO works VALUES(?,?)', [(r['qid'], r.get('display_allowed', 1)) for r in rows])
+                db.execute('CREATE TABLE works(qid TEXT PRIMARY KEY,display_allowed INTEGER NOT NULL,search_text TEXT,language TEXT,year INTEGER)')
+                db.executemany('INSERT INTO works VALUES(?,?,?,?,?)', [
+                    (r['qid'], r.get('display_allowed', 1), self._search_text(r),
+                     r.get('original_language'), r.get('year')) for r in rows])
+                db.execute('CREATE TABLE work_genres(qid TEXT,genre_qid TEXT)')
+                db.executemany('INSERT INTO work_genres VALUES(?,?)', [
+                    (r['qid'], g['qid']) for r in rows for g in r.get('genres', [])])
+
+    @staticmethod
+    def _search_text(row):
+        return ' '.join([row['title'], *row.get('aliases', []),
+                         *[a.get('name', '') for a in row.get('authors', [])]]).casefold()
+
+    def _conditions(self):
+        return {}, {'display': self.display}
 
     @contextmanager
     def _connect(self):
@@ -24,6 +38,23 @@ class Store:
 
     def search_catalogue(self, *, page=1, page_size=30, exclude_work_qids=None, entry_kind=None, **kw):
         rows = [r for r in self.rows if r.get('display_allowed', 1) and (not entry_kind or r.get('entry_kind', 'work') == entry_kind)]
+        if not self.light and self.display != 'allowed':
+            rows = []
+        if kw.get('query', '').strip():
+            rows = [r for r in rows if kw['query'].strip().casefold() in self._search_text(r)]
+        if kw.get('genre'):
+            rows = [r for r in rows if kw['genre'] in {g['qid'] for g in r.get('genres', [])}]
+        if kw.get('language'):
+            rows = [r for r in rows if r.get('original_language') == kw['language']]
+        for key, operator in [('year_from', lambda a, b: a >= b), ('year_to', lambda a, b: a <= b)]:
+            if kw.get(key) not in (None, ''):
+                rows = [r for r in rows if r.get('year') is not None and operator(r['year'], int(kw[key]))]
+        with self._connect() as db:
+            statuses = dict(db.execute('SELECT ' + ('entry_id' if self.light else 'qid') + ',status FROM read_status'))
+        read_filter = kw.get('read_filter', 'all')
+        if read_filter != 'all':
+            rows = [r for r in rows if (statuses.get(r.get('entry_id', r['qid']), 'unknown') != 'read'
+                    if read_filter == 'exclude_read' else statuses.get(r.get('entry_id', r['qid']), 'unknown') == read_filter)]
         rows = [r for r in rows if not (r.get('entry_kind') == 'work' and r.get('qid') in (exclude_work_qids or set()))]
         return dict(items=rows[(page-1)*page_size:page*page_size], total=len(rows), page=page,
                     page_size=page_size, pages=(len(rows)+page_size-1)//page_size)
@@ -151,6 +182,52 @@ def test_hidden_world_row_does_not_hide_independently_admitted_light_novel(tmp_p
     light = Store(tmp_path/'light.sqlite', [
         {'entry_id': 'lnw:wd:Q20', 'qid': 'Q20', 'entry_kind': 'work', 'title': 'Admitted'}], light=True)
     result = UnifiedCatalogue(world, light).search_catalogue()
+    assert result['total'] == 1
+    assert result['items'][0]['entry_id'] == 'lnw:wd:Q20'
+
+
+@pytest.mark.parametrize('filters,world_fields,light_fields', [
+    ({'query': '日本語別題'}, {}, {'aliases': ['日本語別題']}),
+    ({'query': '100%'}, {'title': '100 percent'}, {'title': '100%'}),
+    ({'query': 'a_b'}, {'title': 'aXb'}, {'title': 'a_b'}),
+    ({'genre': 'Q1'}, {'genres': [{'qid': 'Q2'}]}, {}),
+    ({'language': 'ja'}, {'original_language': 'en'}, {}),
+    ({'year_from': 2000}, {'year': 1990}, {}),
+    ({'year_to': 2020}, {'year': 2030}, {}),
+    ({'read_filter': 'exclude_read'}, {'read_status': 'read'}, {}),
+    ({'read_filter': 'unknown'}, {'read_status': 'reading'}, {}),
+])
+def test_only_matching_world_works_suppress_light_novel_duplicates(tmp_path, filters, world_fields, light_fields):
+    base = {'qid': 'Q20', 'title': 'Shared', 'genres': [{'qid': 'Q1'}],
+            'original_language': 'ja', 'year': 2010}
+    world = Store(tmp_path/'world.sqlite', [{**base, **world_fields}])
+    light = Store(tmp_path/'light.sqlite', [
+        {**base, 'entry_id': 'lnw:wd:Q20', 'entry_kind': 'work', **light_fields}], light=True)
+    if world_fields.get('read_status'):
+        with world._connect() as db:
+            db.execute('INSERT INTO read_status VALUES(?,?,?)', ('Q20', world_fields['read_status'], '2026-10-25'))
+    combined = UnifiedCatalogue(world, light)
+    result = combined.search_catalogue(page_size=1, **filters)
+    assert result['total'] == result['pages'] == 1
+    assert [r['entry_id'] for r in result['items']] == ['lnw:wd:Q20']
+    assert combined.search_catalogue(page=2, page_size=1, **filters)['items'] == []
+
+
+def test_matching_world_work_still_suppresses_duplicate_and_honors_display_policy(tmp_path):
+    base = {'qid': 'Q20', 'title': 'Shared', 'genres': [{'qid': 'Q1'}],
+            'original_language': 'ja', 'year': 2010}
+    world = Store(tmp_path/'world.sqlite', [base])
+    light = Store(tmp_path/'light.sqlite', [
+        {**base, 'entry_id': 'lnw:wd:Q20', 'entry_kind': 'work'}], light=True)
+    combined = UnifiedCatalogue(world, light)
+    filters = dict(query='shared', genre='Q1', language='ja', year_from=2000, year_to=2020,
+                   read_filter='exclude_read')
+    result = combined.search_catalogue(**filters)
+    assert result['total'] == 1
+    assert 'entry_id' not in result['items'][0]
+    assert combined._world_qids(genre='wd:Q1') == {'Q20'}
+    world.display = 'hold'
+    result = combined.search_catalogue(**filters)
     assert result['total'] == 1
     assert result['items'][0]['entry_id'] == 'lnw:wd:Q20'
 

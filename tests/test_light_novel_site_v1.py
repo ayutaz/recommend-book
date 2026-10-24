@@ -102,6 +102,19 @@ def test_typed_preferences_keep_qids_distinct_and_reject_unsafe_identifiers(site
         assert error.value.code == 400
 
 
+def test_native_match_with_unknown_relevance_explains_zero_contribution(site, monkeypatch):
+    base, catalogue = site
+    candidate = {**catalogue.item(), 'score': 0,
+        'reasons': [{'kind': 'series_content_feature', 'label': 'Fantasy', 'relevance_unknown': True}]}
+    monkeypatch.setattr(catalogue, 'recommend_preferences', lambda **kwargs: {'items': [candidate]})
+    result = fetch(base, '/api/recommendations', {'liked_entry_ids': ['lns:wd:Q5357270'], 'family': 'light_novel'})
+    item = result['items'][0]
+    assert item['score'] == 0
+    assert '関連度は未確認' in item['reasons'][0]['detail']
+    assert '加算していません' in item['reasons'][0]['detail']
+    assert 'relevance_unknown' not in item['reasons'][0]
+
+
 def test_ndl_only_series_supports_detail_likes_and_status_without_fake_qid(site):
     base, catalogue = site
     identifier = 'lns:ndl:R100000002-I032593374'

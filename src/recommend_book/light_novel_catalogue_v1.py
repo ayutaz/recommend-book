@@ -777,7 +777,11 @@ class LightNovelCatalogue:
                     continue
                 key = (proof['provider'], proof['manifest_path'], proof['manifest_sha256'])
                 if key not in documents:
-                    documents[key] = {book['publisher_book_id']: book for book in self._publisher_books(*key)}
+                    try:
+                        documents[key] = {book['publisher_book_id']: book for book in self._publisher_books(*key)}
+                    except (OSError, ValueError, KeyError, TypeError):
+                        # A failed proof remains failed for this operation only.
+                        documents[key] = {}
                 book = documents[key].get(proof['publisher_book_id'])
                 edition = json.loads(stored[entry_id]['record_json'])
                 match = self._publisher_edition_match(proof['provider'], book, edition, cache) if book else None
@@ -947,7 +951,11 @@ class LightNovelCatalogue:
             key = (binding['manifest_path'], binding['manifest_sha256'])
             try:
                 if key not in manifests:
-                    manifests[key] = verify_feature_export(*key)
+                    try:
+                        manifests[key] = verify_feature_export(*key)
+                    except (ValueError, OSError, KeyError, TypeError):
+                        # Retry on the next operation, not for each binding.
+                        manifests[key] = {'rows': []}
                 for row in manifests[key]['rows']:
                     if row.get('entry_id', row.get('series_id')) == binding['entry_id']:
                         result[binding['entry_id']] = row
@@ -1314,10 +1322,14 @@ class LightNovelCatalogue:
                                 'reference_sources': [reference_sources[q] for q in sorted(shared) if q in reference_sources]})
             for label_id in sorted(matches):
                 label = labels[label_id]
-                score += weights.get(label['axis'], 0) * float(label.get('relevance', 1))
+                relevance = label.get('relevance')
+                if relevance is not None:
+                    score += weights.get(label['axis'], 0) * float(relevance)
                 reasons.append({'kind': 'series_content_feature' if label.get('evidence_basis') == 'content' else 'series_bibliographic_feature', 'label_id': label_id,
                                 'label': taxonomy.get(label_id, {}).get('label', label_id), 'scope': 'series',
                                 'evidence': label.get('evidence', []), 'sources': row['content_sources'], 'calibration_status': 'uncalibrated'})
+                if relevance is None:
+                    reasons[-1]['relevance_unknown'] = True
             if reasons:
                 ranked.append({**row, 'score': round(score, 6), 'score_kind': 'uncalibrated_series_similarity', 'reasons': reasons})
         ranked.sort(key=lambda r: (-r['score'], r['title'], r['entry_id']))
@@ -1335,6 +1347,16 @@ class LightNovelCatalogue:
             features = self._feature_rows({row['entry_id'] for row in chosen})
             for row in chosen:
                 self._apply_feature(row, features.get(row['entry_id']))
+        for row in chosen:
+            matched = avoided & {label['label_id'] for label in row['llm_features']}
+            unknown = avoided - matched
+            row['avoided_feature_status'] = {'matched': sorted(matched), 'unknown': sorted(unknown)}
+            unknown_axes = {taxonomy[label_id]['axis'] for label_id in unknown}
+            # A different adopted label, including on this same axis, cannot
+            # establish the absence of an unclassified requested feature.
+            row['feature_insufficiency'] = [{'axis': axis, 'status': 'unknown',
+                'reason': 'requested_avoided_feature_absence_unproved'}
+                for axis in AXES if axis in unknown_axes]
         return {'mode': 'series_preferences' if chosen else 'insufficient_evidence', 'personalized': False,
                 'items': chosen, 'liked_entry_ids': liked, 'classification_scope': 'series',
                 'explanation': 'シリーズの内容特徴と資料記載ジャンルによる未校正の類似度です。書誌のみと内容根拠付きの理由を区別しています。' if chosen else '利用できる共通特徴が不足しています。',

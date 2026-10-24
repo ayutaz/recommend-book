@@ -893,3 +893,121 @@ def test_explicit_subseries_p179_deduplicates_recommendations_without_copying_fe
     cat.set_read_status('lns:wd:Q3', 'read')
     assert cat.work_detail('lns:wd:Q1')['read_status'] == 'unknown'
     assert cat.similar_works('lns:wd:Q2')['items'] == []
+
+
+def test_failed_feature_manifest_is_verified_once_per_operation(setup_catalogue, monkeypatch, tmp_path):
+    from recommend_book import light_novel_classification_v1 as verifier
+    cat, records = setup_catalogue
+    cat.ingest(records)
+    path, sha = str(tmp_path / 'changed-native.json'), 'f' * 64
+    with cat._connect() as db:
+        db.executemany('INSERT INTO features VALUES(?,?,?)',
+            [(identity, path, sha) for identity in ('lns:wd:Q1', 'lns:wd:Q2')])
+    calls = []
+    def reject(path, sha):
+        calls.append((path, sha))
+        raise ValueError('changed protected native artifact')
+    monkeypatch.setattr(verifier, 'verify_feature_export', reject)
+    assert cat._feature_rows() == {}
+    assert calls == [(path, sha)]
+    assert cat._feature_rows() == {}
+    assert calls == [(path, sha), (path, sha)]  # A new operation retries verification.
+
+
+def test_failed_book_manifest_is_verified_once_per_operation(edition_bundle, monkeypatch, tmp_path):
+    from copy import deepcopy
+    from pathlib import Path
+    import xml.etree.ElementTree as ET
+    from recommend_book.ingestion.core import RawArtifact
+    from recommend_book.ingestion.ndl import NDLAdapter
+    cat, _, edition = edition_bundle
+    second = deepcopy(edition)
+    raw = tmp_path / 'second-edition.xml'
+    raw.write_text(Path(edition['provenance']['raw_path']).read_text(encoding='utf8')
+        .replace('R100000002-I1', 'R100000002-I2'), encoding='utf8')
+    digest = hashlib.sha256(raw.read_bytes()).hexdigest()
+    source = NDLAdapter(None)._normalize(ET.fromstring(raw.read_bytes()), RawArtifact(digest,
+        str(raw), raw.stat().st_size, edition['source_record']['retrieved_at'],
+        'https://ndlsearch.ndl.go.jp/api/sru'), 'iss-ndl-opac', locator='records[1]/recordData').model_dump(mode='json')
+    second.update(id=source['source_id'], source_url=source['source_url'], source_record=source)
+    second['provenance'].update(url=source['source_url'], raw_path=str(raw), raw_sha256=digest)
+    assert cat.ingest([edition, second])['inserted'] == 2
+    rows = cat._rows(include_features=False)
+    with cat._connect() as db:
+        stored = db.execute('SELECT * FROM entries').fetchall()
+        for entry in stored:
+            proof = {'provider': 'kadokawa', 'manifest_path': str(tmp_path / 'changed-books.json'),
+                'manifest_sha256': 'f' * 64, 'publisher_book_id': 'book1',
+                'edition_record_sha256': entry['record_sha256'], 'match': {}}
+            encoded = json.dumps(proof)
+            db.execute('INSERT INTO edition_book_confirmations VALUES(?,?,?,?)',
+                (entry['entry_id'], 'kadokawa', encoded, hashlib.sha256(encoded.encode()).hexdigest()))
+    calls = []
+    def reject(*args):
+        calls.append(args)
+        raise ValueError('changed official book artifact')
+    monkeypatch.setattr(cat, '_publisher_books', reject)
+    cat._attach_book_confirmations(rows, stored, {})
+    assert len(calls) == 1
+    assert all(not row.get('edition_bibliography_confirmed') for row in rows)
+    cat._attach_book_confirmations(rows, stored, {})
+    assert len(calls) == 2  # No failed-result cache survives the operation.
+
+
+def _avoidance_feature(label_id, axis):
+    return {'entry_id': 'lns:wd:Q2', 'scope': 'series', 'content_features_adopted': True,
+        'labels': [{'label_id': label_id, 'axis': axis, 'scope': 'series', 'decision': 'present',
+            'relevance': 1, 'evidence': [{'evidence_id': 'prose1', 'summary': '内容の直接根拠'}]}],
+        'source_attributions': [{'evidence_id': 'prose1', 'kind': 'note',
+            'rights_policy_id': 'light-novel-series-wikipedia-screened-v1', 'license': 'CC-BY-SA-4.0'}]}
+
+
+@pytest.mark.parametrize('label_id,axis', [(None, None), ('genre.fantasy', 'genre'), ('theme.family', 'theme')])
+def test_unknown_avoided_feature_warns_without_claiming_absence(setup_catalogue, monkeypatch, label_id, axis):
+    cat, records = setup_catalogue
+    cat.ingest(records)
+    features = {'lns:wd:Q2': _avoidance_feature(label_id, axis)} if label_id else {}
+    monkeypatch.setattr(cat, '_feature_rows', lambda ids=None: {key: row for key, row in features.items() if ids is None or key in ids})
+    result = cat.recommend_preferences(liked_entry_ids=['lns:wd:Q1'], avoided_features=['theme.revenge'])
+    assert [row['entry_id'] for row in result['items']] == ['lns:wd:Q2']
+    row = result['items'][0]
+    assert row['avoided_feature_status'] == {'matched': [], 'unknown': ['theme.revenge']}
+    assert row['feature_insufficiency'] == [{'axis': 'theme', 'status': 'unknown',
+        'reason': 'requested_avoided_feature_absence_unproved'}]
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    explanation = public_work(row)['feature_insufficiency']
+    assert 'テーマ' in explanation and '判断できません' in explanation
+
+
+def test_adopted_avoided_feature_still_excludes_candidate(setup_catalogue, monkeypatch):
+    cat, records = setup_catalogue
+    cat.ingest(records)
+    features = {'lns:wd:Q2': _avoidance_feature('theme.revenge', 'theme')}
+    monkeypatch.setattr(cat, '_feature_rows', lambda ids=None: {key: row for key, row in features.items() if ids is None or key in ids})
+    assert cat.recommend_preferences(liked_entry_ids=['lns:wd:Q1'], avoided_features=['theme.revenge'])['items'] == []
+
+
+@pytest.mark.parametrize('relevance,score,unknown', [(None, 0, True), (.4, .186667, False)])
+def test_nullable_relevance_preserves_match_without_inventing_score(setup_catalogue, monkeypatch, relevance, score, unknown):
+    cat, records = setup_catalogue
+    cat.ingest(records)
+    feature = _avoidance_feature('theme.family', 'theme')
+    feature['labels'][0]['relevance'] = relevance
+    monkeypatch.setattr(cat, '_feature_rows', lambda ids=None: {'lns:wd:Q2': feature} if ids is None or 'lns:wd:Q2' in ids else {})
+    result = cat.recommend_preferences(preferred_features=['theme.family'], axis_weights={'theme': .7})
+    assert [row['entry_id'] for row in result['items']] == ['lns:wd:Q2']
+    row = result['items'][0]
+    assert row['score'] == score
+    assert row['reasons'][0]['kind'] == 'series_content_feature'
+    assert row['reasons'][0]['label_id'] == 'theme.family'
+    assert row['reasons'][0].get('relevance_unknown', False) is unknown
+    assert row['llm_features'][0]['relevance'] == relevance
+
+
+def test_nullable_relevance_still_excludes_adopted_avoided_label(setup_catalogue, monkeypatch):
+    cat, records = setup_catalogue
+    cat.ingest(records)
+    feature = _avoidance_feature('theme.revenge', 'theme')
+    feature['labels'][0]['relevance'] = None
+    monkeypatch.setattr(cat, '_feature_rows', lambda ids=None: {'lns:wd:Q2': feature} if ids is None or 'lns:wd:Q2' in ids else {})
+    assert cat.recommend_preferences(liked_entry_ids=['lns:wd:Q1'], avoided_features=['theme.revenge'])['items'] == []
