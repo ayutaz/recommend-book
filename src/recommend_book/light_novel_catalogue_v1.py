@@ -1391,10 +1391,19 @@ class LightNovelCatalogue:
                 global_label_alias_asserted=False, label_history_map_asserted=False, product_sku_identity_asserted=False)
         return proof
 
-    def confirm_publisher_editions(self, provider, manifest_path, expected_sha256):
+    def confirm_publisher_editions(self, provider, manifest_path, expected_sha256, *, reference_ids=None):
         """Confirm existing NDL editions, without making a work or series."""
         from .normalization import normalize_isbn
         books = self._publisher_books(provider, manifest_path, expected_sha256)
+        if reference_ids is not None:
+            indexed = {book['publisher_book_id']: book for book in books}
+            if len(indexed) != len(books):
+                raise ValueError('duplicate publisher book reference')
+            selected = set(reference_ids)
+            if selected - indexed.keys():
+                raise ValueError('unknown publisher book reference')
+            available_count = len(books)
+            books = [book for book in books if book['publisher_book_id'] in selected]
         cache = {}
         with self._connect() as db:
             stored = {row['entry_id']: dict(row) for row in db.execute('SELECT * FROM entries WHERE kind=?', ('edition',))}
@@ -1411,6 +1420,8 @@ class LightNovelCatalogue:
         result = {'publisher_books': len(books), 'publisher_books_with_valid_isbn': sum(len(v) for v in by_isbn.values()),
                   'ndl_editions_considered': len(stored), 'ndl_candidate_editions_verified': 0,
                   'verification_scope': 'matching_isbn_candidates_only', 'confirmed': 0, 'unchanged': 0}
+        if reference_ids is not None:
+            result.update(available_publisher_books=available_count, requested_publisher_books=len(books))
         matched = set()
         with self._connect() as db:
             for entry in stored.values():
@@ -1490,7 +1501,11 @@ class LightNovelCatalogue:
 
     @staticmethod
     def _publisher_bibliography_references(provider, manifest_path, expected_sha256):
-        if provider in {'gc', 'alphapolis'}:
+        if provider == 'overlap-details':
+            from .light_novel_overlap_details_v1 import verify_overlap_product_details
+            return [{**row, 'publisher_reference_id': row['publisher_product_reference_id']}
+                    for row in verify_overlap_product_details(manifest_path, expected_sha256)]
+        if provider in {'gc', 'alphapolis', 'gagaga'}:
             from .light_novel_publisher_references_v1 import verify_publisher_references
             return verify_publisher_references(provider, manifest_path, expected_sha256)
         if provider == 'kodansha':
@@ -1504,10 +1519,22 @@ class LightNovelCatalogue:
             return verify_overlap_references(manifest_path, expected_sha256)
         raise ValueError('unknown publisher bibliographic reference provider')
 
+    def _publisher_bibliographic_match(self, provider, reference, primary_parts, cache):
+        """Authenticate the full ISBN inventory before detailed correspondence."""
+        from .light_novel_bibliographic_match_v1 import match_bibliographic_reference
+        if provider == 'overlap-details':
+            from .normalization import normalize_isbn
+            isbn = normalize_isbn(str(reference.get('isbn') or ''))
+            if not isbn:
+                return None
+            return match_bibliographic_reference(provider, reference, primary_parts,
+                same_isbn_parts=self._reference_same_isbn_parts(isbn, cache))
+        return match_bibliographic_reference(provider, reference, primary_parts)
+
     def correlate_publisher_bibliographies(self, provider, manifest_path, expected_sha256, *, reference_ids=None):
         """Connect cards to own bibliography, without an ISBN-edition assertion."""
         from .light_novel_bibliographic_match_v1 import (
-            SCOPE, candidate_title_keys, match_bibliographic_reference, reference_hold_reason,
+            SCOPE, candidate_title_keys, reference_hold_reason,
         )
         references = self._publisher_bibliography_references(provider, manifest_path, expected_sha256)
         indexed = {row['publisher_reference_id']: row for row in references}
@@ -1536,11 +1563,18 @@ class LightNovelCatalogue:
         if eligible:
             with self._connect() as db:
                 stored = db.execute('SELECT * FROM entries').fetchall()
+            if provider == 'overlap-details':
+                # Candidate title selection must not hide a contradictory
+                # same-ISBN record, including one with a changed SQL kind.
+                cache[('reference_all_stored',)] = stored
+                cache[('reference_all_records',)] = {}
             candidates = []
             for entry in stored:
                 if hashlib.sha256(entry['record_json'].encode()).hexdigest() != entry['record_sha256']:
                     raise ValueError('stored metadata SHA mismatch')
                 record = json.loads(entry['record_json'])
+                if provider == 'overlap-details':
+                    cache[('reference_all_records',)][entry['entry_id']] = record
                 # A changed SQL kind must not conceal a same-title edition.
                 if entry['kind'] != 'edition' and record.get('schema_version') not in {
                         'light-novel-edition-v1', 'light-novel-edition-bulk-v1'}:
@@ -1560,7 +1594,7 @@ class LightNovelCatalogue:
                     parts = self._edition_primary_bibliographic_parts(record, cache)
                     attempted.update(identities)
                     matches = [proof for identity in sorted(identities)
-                               if (proof := match_bibliographic_reference(provider, eligible[identity], parts))]
+                               if (proof := self._publisher_bibliographic_match(provider, eligible[identity], parts, cache))]
                     if not matches:
                         continue
                     matched.update(proof['publisher_reference_id'] for proof in matches)
@@ -1589,7 +1623,7 @@ class LightNovelCatalogue:
         return result
 
     def _attach_bibliographic_correspondences(self, rows, stored, cache):
-        from .light_novel_bibliographic_match_v1 import SCOPE, match_bibliographic_reference
+        from .light_novel_bibliographic_match_v1 import SCOPE
         with self._connect() as db:
             bindings = db.execute('SELECT * FROM publisher_bibliographic_correspondences').fetchall()
         indexed = {row['entry_id']: row for row in rows}
@@ -1618,7 +1652,7 @@ class LightNovelCatalogue:
                     continue
                 edition = json.loads(stored[identity]['record_json'])
                 parts = self._edition_primary_bibliographic_parts(edition, cache)
-                matches = [match_bibliographic_reference(proof['provider'], documents[key][reference], parts)
+                matches = [self._publisher_bibliographic_match(proof['provider'], documents[key][reference], parts, cache)
                            for reference in proof['reference_ids']]
                 if any(match is None for match in matches) or matches != proof['matches']:
                     continue

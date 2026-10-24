@@ -166,6 +166,45 @@ def test_reuses_explicit_sales_distribution_and_own_writer_literal_without_autho
     assert match_catalogue_reference('gc',reference(),own) is None
 
 
+@pytest.mark.parametrize('provider', ['gc', 'alphapolis'])
+@pytest.mark.parametrize('serial', ['あ1-11', 'あ-1-11', '123'])
+def test_serial_prefix_accepts_attached_hyphenated_or_numeric_only_without_rewriting_imprint(provider, serial):
+    imprint = ('GCN文庫' if provider == 'gc' else 'アルファポリス') + ' ; ' + serial
+    ref, own = reference(provider), parts(provider, imprint=imprint)
+    before = deepcopy((ref, own))
+    proof = match_catalogue_reference(provider, ref, own)
+    assert proof is not None
+    assert proof['own_imprint'] == proof['imprint_match']['source_value'] == imprint
+    assert proof['light_novel_status'] == 'unknown'
+    assert proof['title_match']['volume'] == '3'
+    assert proof['publisher_match']['publisher_agent']['name'] == own['source']['publisher']
+    assert proof['authors'][0]['authority_ids'] == ['http://id.ndl.go.jp/auth/entity/01234567']
+    assert (ref, own) == before
+
+
+@pytest.mark.parametrize('provider', ['gc', 'alphapolis'])
+@pytest.mark.parametrize('suffix', ['あ', 'あ-', 'あ1-11 (新装版)', 'あ1-11 ; 別文庫'])
+def test_serial_prefix_does_not_hide_a_second_imprint_annotation_or_missing_number(provider, suffix):
+    imprint = ('GCN文庫' if provider == 'gc' else 'アルファポリス') + ' ; ' + suffix
+    assert match_catalogue_reference(provider, reference(provider), parts(provider, imprint=imprint)) is None
+
+
+@pytest.mark.parametrize('provider', ['gc', 'alphapolis'])
+def test_serial_prefix_extension_preserves_complete_old_valid_catalogue_proof_dicts(provider, monkeypatch):
+    import re
+    from recommend_book import light_novel_catalogue_reference_match_v1 as matcher
+    pairs = []
+    for serial in ('123', 'あ-01-01', 'ab-1.2'):
+        imprint = ('GCN文庫' if provider == 'gc' else 'アルファポリス') + ' ; ' + serial
+        ref, own = reference(provider), parts(provider, imprint=imprint)
+        proof = match_catalogue_reference(provider, ref, own)
+        assert proof is not None
+        pairs.append((ref, own, proof))
+    monkeypatch.setattr(matcher, '_SERIAL', re.compile(r'(?:[ぁ-ゖァ-ヺA-Za-z]{1,4}-)?[0-9]+(?:[-.][0-9]+)*'))
+    for ref, own, proof in pairs:
+        assert match_catalogue_reference(provider, ref, own) == proof
+
+
 def test_shared_parallel_title_fallback_and_purity(monkeypatch):
     own=parts()
     own['titles']=[{'value':'完全題 = Complete title : 副題. 3','locator':OWN+DCT+'title[1]'},

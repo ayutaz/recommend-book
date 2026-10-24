@@ -30,6 +30,12 @@ _NDL = re.compile(r'R100000002-[A-Za-z0-9._-]+')
 
 def reference_hold_reason(provider, reference):
     """Report only a reference gate; it does not authenticate source artifacts."""
+    if provider == 'overlap-details':
+        from .light_novel_overlap_details_match_v1 import reference_hold_reason as overlap_details_hold
+        return overlap_details_hold(reference)
+    if provider == 'gagaga':
+        from .light_novel_gagaga_bibliographic_match_v1 import reference_hold_reason as gagaga_hold
+        return gagaga_hold(reference)
     if provider in {'gc', 'alphapolis'}:
         from .light_novel_catalogue_reference_match_v1 import reference_hold_reason as catalogue_hold
         return catalogue_hold(provider, reference)
@@ -191,8 +197,14 @@ def _match(provider, reference, parts):
         'global_author_alias_asserted': False, 'global_author_identity_asserted': False}
 
 
-def match_bibliographic_reference(provider, reference, primary_parts):
+def match_bibliographic_reference(provider, reference, primary_parts, *, same_isbn_parts=None):
     """Return a bounded bibliographic proof, or hold incomplete/conflicting facts."""
+    if provider == 'overlap-details':
+        from .light_novel_overlap_details_match_v1 import match_overlap_details
+        return match_overlap_details(reference, primary_parts, same_isbn_parts=same_isbn_parts)
+    if provider == 'gagaga':
+        from .light_novel_gagaga_bibliographic_match_v1 import match_gagaga_reference
+        return match_gagaga_reference(reference, primary_parts)
     if provider in {'gc', 'alphapolis'}:
         from .light_novel_catalogue_reference_match_v1 import match_catalogue_reference
         return match_catalogue_reference(provider, reference, primary_parts)

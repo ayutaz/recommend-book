@@ -24,7 +24,7 @@ _SPECS = {
 _SHA = re.compile(r'[0-9a-f]{64}')
 _NDL = re.compile(r'R100000002-[A-Za-z0-9._-]+')
 _ALPHA_LABELS = {'アルファポリス', 'レジーナブックス'}
-_SERIAL = re.compile(r'(?:[ぁ-ゖァ-ヺA-Za-z]{1,4}-)?[0-9]+(?:[-.][0-9]+)*')
+_SERIAL = re.compile(r'(?:[ぁ-ゖァ-ヺA-Za-z]{1,4}-?)?[0-9]+(?:[-.][0-9]+)*')
 
 
 def reference_hold_reason(provider, reference):

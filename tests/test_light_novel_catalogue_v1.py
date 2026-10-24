@@ -1365,6 +1365,60 @@ def publisher_confirmation_pair(publisher_edition_v2, tmp_path):
     return build
 
 
+def test_book_confirmation_reference_scope_excludes_unselected_raw(publisher_confirmation_pair, monkeypatch, tmp_path):
+    cat, _, book, paths = publisher_confirmation_pair()
+    other = {**book, 'publisher_book_id': 'kadokawa:unselected', 'isbn': '9784041173701'}
+    paths[1].write_bytes(b'unselected raw must not be opened')
+    monkeypatch.setattr(cat, '_publisher_books', lambda *args: [book, other])
+    result = cat.confirm_publisher_editions('kadokawa', tmp_path / 'fixed.json', 'f' * 64,
+        reference_ids={book['publisher_book_id']})
+    assert result['confirmed'] == result['ndl_candidate_editions_verified'] == 1
+    assert result['available_publisher_books'] == 2
+    assert result['publisher_books'] == result['requested_publisher_books'] == 1
+    assert result['unmatched_publisher_books'] == 0
+    with cat._connect() as db:
+        assert db.execute('SELECT edition_id FROM edition_book_confirmations').fetchone()[0] == 'lne:ndl:R100000002-I1'
+
+
+@pytest.mark.parametrize('scope', [set(), {'missing'}])
+def test_book_confirmation_empty_or_unknown_scope_never_opens_raw(publisher_confirmation_pair, monkeypatch, tmp_path, scope):
+    cat, _, book, paths = publisher_confirmation_pair()
+    for path in paths:
+        path.write_bytes(b'raw must not be opened')
+    monkeypatch.setattr(cat, '_publisher_books', lambda *args: [book])
+    if scope:
+        with pytest.raises(ValueError, match='unknown publisher book reference'):
+            cat.confirm_publisher_editions('kadokawa', tmp_path / 'fixed.json', 'f' * 64, reference_ids=scope)
+    else:
+        result = cat.confirm_publisher_editions('kadokawa', tmp_path / 'fixed.json', 'f' * 64, reference_ids=scope)
+        assert result['confirmed'] == result['ndl_candidate_editions_verified'] == result['publisher_books'] == 0
+    with cat._connect() as db:
+        assert db.execute('SELECT COUNT(*) FROM edition_book_confirmations').fetchone()[0] == 0
+
+
+def test_book_confirmation_duplicate_source_ids_are_rejected_before_scope(publisher_confirmation_pair, monkeypatch, tmp_path):
+    cat, _, book, paths = publisher_confirmation_pair()
+    for path in paths:
+        path.write_bytes(b'raw must not be opened')
+    monkeypatch.setattr(cat, '_publisher_books', lambda *args: [book, {**book, 'isbn': '9784041173701'}])
+    with pytest.raises(ValueError, match='duplicate publisher book reference'):
+        cat.confirm_publisher_editions('kadokawa', tmp_path / 'fixed.json', 'f' * 64,
+            reference_ids={book['publisher_book_id']})
+
+
+def test_book_confirmation_scoped_and_default_proofs_are_identical(publisher_confirmation_pair, monkeypatch, tmp_path):
+    cat, _, book, _ = publisher_confirmation_pair()
+    monkeypatch.setattr(cat, '_publisher_books', lambda *args: [book])
+    cat.confirm_publisher_editions('kadokawa', tmp_path / 'fixed.json', 'f' * 64,
+        reference_ids={book['publisher_book_id']})
+    with cat._connect() as db:
+        before = tuple(db.execute('SELECT * FROM edition_book_confirmations').fetchone())
+    result = cat.confirm_publisher_editions('kadokawa', tmp_path / 'fixed.json', 'f' * 64)
+    assert result['unchanged'] == 1 and 'requested_publisher_books' not in result
+    with cat._connect() as db:
+        assert tuple(db.execute('SELECT * FROM edition_book_confirmations').fetchone()) == before
+
+
 def test_book_confirmation_opens_only_requested_isbn_candidates(publisher_confirmation_pair, monkeypatch, tmp_path):
     cat, _, book, paths = publisher_confirmation_pair()
     paths[1].write_bytes(b'unrelated raw is unavailable')
@@ -2766,3 +2820,263 @@ def test_kadokawa_paper_form_one_addition_leaves_form_three_v2_to_v5_complete_pr
         assert before['rule_version'] == 'publisher-ndl-edition-confirmation-' + version
         book['official_product_form_name'] = '文庫'
         assert cat._publisher_edition_match('kadokawa', book, record, {}) == before
+
+
+@pytest.fixture
+def gagaga_catalogue_integration(publisher_edition_v2, monkeypatch, tmp_path):
+    import recommend_book.light_novel_publisher_references_v1 as source
+
+    def build(*, release=False, authority=True):
+        cat, record, _ = publisher_edition_v2(publisher='小学館', imprint='ガガガ文庫', authority=authority)
+        assert cat.import_editions([record])['inserted'] == 1
+        url = 'https://gagagabunko.jp/' + ('release/index.html#01' if release else 'lineup/202609.html#01')
+        raw_sha = 'a' * 64
+        identity = ('publisher-lineup-snapshot:' + hashlib.sha256((url + '\n' + raw_sha).encode()).hexdigest()[:24]
+                    if release else 'publisher-lineup:' + hashlib.sha256(url.encode()).hexdigest()[:24])
+        ref = {'publisher_reference_id': identity, 'source_unit': 'publisher_lineup_item_reference',
+            'source_url': url, 'title': '主書名３ 副書名', 'isbn': '9784094533040' if release else None,
+            'credits': [{'role': '著', 'name': '著者'}, {'role': 'イラスト', 'name': '絵担当'}],
+            'publisher': '小学館', 'label': None, 'label_literals': [], 'form': None,
+            'official_lightnovel_tag': None, 'story_series_asserted': False,
+            'metadata_conflict': False, 'bibliographic_variants': [],
+            'source_evidence': [{'source_url': 'https://gagagabunko.jp/' + ('release/index.html' if release else 'lineup/index.html'),
+                'raw_sha256': raw_sha, 'locator': 'section#01 div#title h3/span.textsize14/ISBN'
+                    if release else 'li[1] a/p and explicit credit roles'}]}
+        manifest = tmp_path / 'gagaga-catalogue-synthetic.json'
+        sha = write(manifest, {'synthetic_source_scope': 'gagaga'})
+        def verify(provider, path, expected):
+            from pathlib import Path
+            assert provider == 'gagaga' and Path(path).resolve() == manifest.resolve() and expected == sha
+            if hashlib.sha256(manifest.read_bytes()).hexdigest() != expected:
+                raise ValueError('synthetic Gagaga source manifest changed')
+            return [ref]
+        monkeypatch.setattr(source, 'verify_publisher_references', verify)
+        return cat, record, ref, manifest, sha
+    return build
+
+
+@pytest.mark.parametrize('release,authority', [(False, True), (True, False)])
+def test_gagaga_catalogue_integration_saves_only_bibliography_and_keeps_classification_unknown(
+        gagaga_catalogue_integration, release, authority):
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    cat, record, ref, manifest, sha = gagaga_catalogue_integration(release=release, authority=authority)
+    identity = 'lne:ndl:' + record['id']
+    result = cat.correlate_publisher_bibliographies('gagaga', manifest, sha)
+    assert result['new_correspondences'] == result['candidate_editions_verified'] == 1
+    assert result['matched_publisher_references'] == 1
+    with cat._connect() as db:
+        binding = dict(db.execute('SELECT * FROM publisher_bibliographic_correspondences').fetchone())
+        assert db.execute('SELECT count(*) FROM edition_book_confirmations').fetchone()[0] == 0
+    assert binding['provider'] == 'gagaga'
+    assert hashlib.sha256(binding['proof_json'].encode()).hexdigest() == binding['proof_sha256']
+    proof = json.loads(binding['proof_json'])
+    match, = proof['matches']
+    assert match['rule_version'] == 'gagaga-lineup-ndl-bibliographic-correspondence-v1'
+    assert match['light_novel_status'] == 'unknown' and match['official_lightnovel_tag'] is None
+    assert match['official_publisher'] is None and match['official_publisher_asserted'] is False
+    assert match['catalogue_owner_context']['literal'] == '小学館'
+    assert match['official_label'] is None and match['official_individual_imprint_asserted'] is False
+    assert match['authors'][0]['authority_status'] == ('known' if authority else 'unknown')
+    assert match['official_isbn'] == ref['isbn'] and match['isbn_identity_asserted'] is False
+    assert match['same_edition_identity_asserted'] is False and match['product_sku_identity_asserted'] is False
+    assert match['original_work_identity_asserted'] is False and match['story_series_identity_asserted'] is False
+    assert cat.correlate_publisher_bibliographies('gagaga', manifest, sha)['unchanged_correspondences'] == 1
+    row = cat.work_detail(identity)
+    assert row['publisher_bibliography_matched'] is True and row['light_novel_confirmed'] is False
+    assert row['admission_status'] == 'publisher_bibliographic_record_verified'
+    assert not row.get('edition_bibliography_confirmed') and 'edition_identity_basis' not in row
+    assert row['bibliography_source_url'] == ref['source_url'] and row['source_url'] == record['source_url']
+    assert row['original_language'] is None and row['members'] == [] and row['llm_features'] == []
+    public = public_work(row)
+    assert public['publisher_bibliography_matched'] is True and public['light_novel_confirmed'] is False
+    assert public['bibliography_source_url'] == ref['source_url']
+    assert not public.get('edition_bibliography_confirmed')
+    encoded = json.dumps(public, ensure_ascii=False)
+    assert 'raw_path' not in encoded and 'records[1]' not in encoded
+    assert 'bibliographic_correspondence_evidence' not in public
+
+
+@pytest.mark.parametrize('change', ['own_raw', 'rehashed_projection'])
+def test_gagaga_catalogue_integration_rejects_changed_own_raw_and_projection(
+        gagaga_catalogue_integration, change):
+    from pathlib import Path
+    cat, record, _, manifest, sha = gagaga_catalogue_integration()
+    if change == 'own_raw':
+        Path(record['provenance']['raw_path']).write_text('changed original NDL raw', encoding='utf-8')
+    else:
+        record['source_record']['publisher'] = record['publisher'] = '原資料にない出版社'
+        encoded = json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+        with cat._connect() as db:
+            db.execute('UPDATE entries SET record_json=?,record_sha256=?',
+                       (encoded, hashlib.sha256(encoded.encode()).hexdigest()))
+    with pytest.raises(ValueError):
+        cat.correlate_publisher_bibliographies('gagaga', manifest, sha)
+    with cat._connect() as db:
+        assert db.execute('SELECT count(*) FROM publisher_bibliographic_correspondences').fetchone()[0] == 0
+
+
+@pytest.mark.parametrize('change', ['literal_role', 'source_id', 'source_classification'])
+def test_gagaga_catalogue_integration_drops_confirmation_on_changed_source_fields(
+        gagaga_catalogue_integration, change):
+    cat, record, ref, manifest, sha = gagaga_catalogue_integration()
+    assert cat.correlate_publisher_bibliographies('gagaga', manifest, sha)['new_correspondences'] == 1
+    if change == 'literal_role':
+        ref['credits'][0]['role'] = 'author'
+    elif change == 'source_id':
+        ref['publisher_reference_id'] += '0'
+    else:
+        ref['official_lightnovel_tag'] = True
+    result = cat.correlate_publisher_bibliographies('gagaga', manifest, sha)
+    assert result['new_correspondences'] == result['matched_publisher_references'] == 0
+    row = cat.work_detail('lne:ndl:' + record['id'])
+    assert not row.get('publisher_bibliography_matched') and row['light_novel_confirmed'] is False
+    assert not row.get('edition_bibliography_confirmed')
+
+
+@pytest.fixture
+def overlap_details_integration(publisher_edition_v2, bulk_bundle, monkeypatch, tmp_path):
+    from pathlib import Path
+    import recommend_book.light_novel_overlap_details_v1 as verifier
+
+    cat, template, _ = publisher_edition_v2(publisher='オーバーラップ', imprint='オーバーラップノベルス')
+    bulk_cat, _, receipt_template, _, _ = bulk_bundle
+    assert bulk_cat is cat
+    receipt_body = json.loads(receipt_template.read_text(encoding='utf-8'))
+
+    def import_national(xml, identity, stem):
+        raw = tmp_path / (stem + '.xml')
+        raw.write_text(xml, encoding='utf-8')
+        receipt = {**receipt_body, 'raw_path': str(raw), 'raw_sha256': hashlib.sha256(raw.read_bytes()).hexdigest(),
+                   'bytes': raw.stat().st_size}
+        path = tmp_path / (stem + '-receipt.json')
+        assert cat.import_ndl_bulk(path, write(path, receipt))['inserted'] == 1
+        with cat._connect() as db:
+            record = json.loads(db.execute('SELECT record_json FROM entries WHERE entry_id=?',
+                                ('lne:ndl:' + identity,)).fetchone()[0])
+        return record, raw
+
+    xml = Path(template['provenance']['raw_path']).read_text(encoding='utf-8')
+    url = template['source_url']
+    admin = ('<n:BibAdminResource rdf:about="' + url + '"><n:bibRecordCategory>R100000002</n:bibRecordCategory>'
+             '<n:record rdf:resource="' + url + '#material"/></n:BibAdminResource>')
+    xml = xml.replace('<n:BibResource', admin + '<n:BibResource', 1)
+    first, _ = import_national(xml, template['id'], 'overlap-first-national')
+
+    def reference(isbn='9784798613161'):
+        url = 'https://over-lap.co.jp/complete-title/product/0/' + isbn + '/?cat=NVL&swrd='
+        locator = '(.sidebar-buy__spec-row)[1] .sidebar-buy__spec-label / .sidebar-buy__spec-value'
+        return {'publisher_product_reference_id': 'overlap-nvl-product:' + isbn,
+            'source_unit': 'publisher_product_detail_bibliographic_reference_not_confirmed_edition',
+            'source_url': url, 'title': '主書名３ 副書名', 'owncard_title_literal': '主書名３ 副書名',
+            'isbn': isbn, 'isbn_source_literal': isbn, 'isbn_source_basis': 'explicit_ISBN_label_value_not_URL',
+            'credits': [{'role': 'unknown', 'name': '著者', 'role_literal': None,
+                'role_basis': 'unmarked_creator_name_retained_unknown_not_inferred_from_position_or_css'},
+                {'role': 'illustrator', 'name': '絵担当', 'role_literal': 'イラスト', 'role_marker_literal': 'イラスト／',
+                 'role_basis': 'explicit_role_marker_in_own_creator_field'}],
+            'creator_field_literal': '著者\u2003イラスト／絵担当', 'label': 'オーバーラップノベルス',
+            'label_source_scope': 'own_card_label_only_detail_own_label_not_observed', 'detail_label': None,
+            'publisher': None, 'form': 'B6判', 'bibliographic_field_literals': [
+                {'field_key': 'ISBN', 'label_literal': 'ISBN', 'value_literal': isbn, 'locator': locator}],
+            'source_evidence': [{'source_url': url, 'raw_sha256': 'a' * 64, 'locator': value} for value in (
+                '.goods-explanation__body h1.goods-explanation__title',
+                '.goods-explanation__body p.goods-explanation__author', locator)],
+            'owncard_source_evidence': {'source_url': 'https://over-lap.co.jp/Form/Product/ProductList.aspx?cat=NVL',
+                'raw_sha256': 'c' * 64, 'selector': '.product-cards > .product-card[1] a / .product-card__title / .badge'},
+            'edition_identity_asserted': False, 'original_work_identity_asserted': False, 'story_series_identity_asserted': False}
+
+    references = [reference()]
+    manifest = tmp_path / 'overlap-details-synthetic.json'
+    sha = write(manifest, {'synthetic': 'source verifier output'})
+    def verify(path, expected):
+        assert Path(path).resolve() == manifest.resolve() and expected == sha
+        assert hashlib.sha256(manifest.read_bytes()).hexdigest() == expected
+        return references
+    monkeypatch.setattr(verifier, 'verify_overlap_product_details', verify)
+
+    def add_peer(*, isbn='9784798613161', conflicting_title=False, include_reference=False):
+        xml = Path(first['provenance']['raw_path']).read_text(encoding='utf-8')
+        xml = xml.replace(first['id'], 'R100000002-I2').replace('9784798613161', isbn)
+        if conflicting_title:
+            xml = xml.replace('主書名', '矛盾する別書名')
+        other, raw = import_national(xml, 'R100000002-I2', 'overlap-peer-national')
+        if include_reference:
+            added = reference(isbn)
+            if conflicting_title:
+                added['title'] = added['owncard_title_literal'] = '矛盾する別書名３ 副書名'
+            references.append(added)
+        return other, raw
+    return cat, first, references, manifest, sha, add_peer
+
+
+def test_overlap_details_integration_idempotent_correspondence_keeps_source_role_and_ln_unknown(overlap_details_integration):
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    cat, first, refs, manifest, sha, _ = overlap_details_integration
+    result = cat.correlate_publisher_bibliographies('overlap-details', manifest, sha)
+    assert result['new_correspondences'] == 1, result
+    with cat._connect() as db:
+        saved = dict(db.execute('SELECT * FROM publisher_bibliographic_correspondences').fetchone())
+        assert db.execute('SELECT count(*) FROM edition_book_confirmations').fetchone()[0] == 0
+    assert saved['provider'] == 'overlap-details'
+    assert hashlib.sha256(saved['proof_json'].encode()).hexdigest() == saved['proof_sha256']
+    match, = json.loads(saved['proof_json'])['matches']
+    assert match['publisher_reference_id'] == refs[0]['publisher_product_reference_id']
+    assert match['source_author_role_status'] == 'unknown' and match['source_writer_role_asserted'] is False
+    assert match['light_novel_status'] == 'unknown' and match['official_lightnovel_tag'] is None
+    assert match['author_identity_asserted'] is False and match['same_edition_identity_asserted'] is False
+    assert match['candidate_raw_sha256s'] == [first['provenance']['raw_sha256']]
+    assert cat.correlate_publisher_bibliographies('overlap-details', manifest, sha)['unchanged_correspondences'] == 1
+    row = cat.work_detail('lne:ndl:' + first['id'])
+    assert row['publisher_bibliography_matched'] is True and row['light_novel_confirmed'] is False
+    assert not row.get('edition_bibliography_confirmed') and row['members'] == []
+    public = public_work(row)
+    assert public['publisher_bibliography_matched'] is True and public['light_novel_confirmed'] is False
+    assert public['bibliography_source_url'] == refs[0]['source_url']
+    assert 'raw_path' not in json.dumps(public) and 'same_isbn_candidates' not in json.dumps(public)
+    assert refs[0].get('publisher_reference_id') is None  # Loader adaptation must not mutate formal source rows.
+
+
+@pytest.mark.parametrize('conflict', ['title', 'kind', 'raw'])
+def test_overlap_details_integration_narrow_detail_authenticates_same_isbn_outside_title_scope(overlap_details_integration, conflict):
+    cat, first, _, manifest, sha, add_peer = overlap_details_integration
+    assert cat.correlate_publisher_bibliographies('overlap-details', manifest, sha)['new_correspondences'] == 1
+    peer, raw = add_peer(conflicting_title=True)
+    if conflict == 'kind':
+        with cat._connect() as db:
+            db.execute('UPDATE entries SET kind=? WHERE entry_id=?', ('work', 'lne:ndl:' + peer['id']))
+    elif conflict == 'raw':
+        raw.write_bytes(b'changed same-ISBN original raw')
+    row = cat.work_detail('lne:ndl:' + first['id'])
+    assert not row.get('publisher_bibliography_matched') and row['light_novel_confirmed'] is False
+    if conflict == 'title':
+        assert cat.correlate_publisher_bibliographies('overlap-details', manifest, sha)['matched_publisher_references'] == 0
+    else:
+        with pytest.raises(ValueError, match='typed identity|SHA'):
+            cat.correlate_publisher_bibliographies('overlap-details', manifest, sha)
+
+
+def test_overlap_details_integration_second_raw_failure_rolls_back_an_earlier_candidate_write(overlap_details_integration):
+    cat, _, _, manifest, sha, add_peer = overlap_details_integration
+    # Separate complete titles ensure candidate one can be saved before the
+    # second candidate's raw fails; no shared title triggers its ISBN early.
+    _, raw = add_peer(isbn='9784758047678', conflicting_title=True, include_reference=True)
+    raw.write_bytes(b'second ISBN original raw changed')
+    with pytest.raises(ValueError, match='SHA'):
+        cat.correlate_publisher_bibliographies('overlap-details', manifest, sha)
+    with cat._connect() as db:
+        assert db.execute('SELECT count(*) FROM publisher_bibliographic_correspondences').fetchone()[0] == 0
+
+
+def test_overlap_details_integration_same_isbn_context_never_opens_an_unrelated_raw(overlap_details_integration):
+    cat, first, _, manifest, sha, add_peer = overlap_details_integration
+    _, raw = add_peer(isbn='9784758047678', conflicting_title=True)
+    raw.write_bytes(b'unrelated ISBN raw is deliberately unavailable')
+    assert cat.correlate_publisher_bibliographies('overlap-details', manifest, sha)['new_correspondences'] == 1
+    assert cat.work_detail('lne:ndl:' + first['id'])['publisher_bibliography_matched'] is True
+
+
+def test_overlap_details_integration_leaves_legacy_overlap_source_dispatch_unchanged(overlap_details_integration, monkeypatch):
+    from recommend_book import light_novel_overlap_references_v1 as legacy
+    cat, _, _, manifest, sha, _ = overlap_details_integration
+    original_rows = [{'publisher_reference_id': 'legacy-overlap-only', 'credits': [{'role': 'unknown', 'name': '人物'}]}]
+    monkeypatch.setattr(legacy, 'verify_overlap_references', lambda path, expected: original_rows)
+    assert cat._publisher_bibliography_references('overlap', manifest, sha) is original_rows
