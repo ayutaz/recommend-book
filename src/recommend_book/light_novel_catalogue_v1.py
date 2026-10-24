@@ -669,7 +669,10 @@ class LightNovelCatalogue:
     def _publisher_edition_match(self, provider, publisher, edition, cache):
         # Keep every previously accepted v1 proof byte-for-byte reproducible.
         match = self._publisher_edition_match_v1(provider, publisher, edition, cache)
-        return match if match is not None else self._publisher_edition_match_v2(provider, publisher, edition, cache)
+        if match is not None:
+            return match
+        match = self._publisher_edition_match_v2(provider, publisher, edition, cache)
+        return match if match is not None else self._publisher_edition_match_iris_neo(provider, publisher, edition, cache)
 
     def _publisher_edition_match_v1(self, provider, publisher, edition, cache):
         from .normalization import normalize_isbn
@@ -718,6 +721,56 @@ class LightNovelCatalogue:
                 'ndl_publisher': source['publisher'], 'original_work_identity_asserted': False,
                 'story_series_identity_asserted': False,
                 'sources': [source['source_url'], publisher['source_url']]}
+
+    def _publisher_edition_match_iris_neo(self, provider, publisher, edition, cache):
+        """An edition-bound label witness, never a series alias or identity."""
+        from .normalization import normalize_isbn
+        from .light_novel_ndl_series_v1 import person_key
+        if (provider != 'ichijinsha-iris' or publisher.get('label') != 'アイリスNEO'
+                or publisher.get('publisher') != '一迅社'):
+            return None
+        parts = self._edition_primary_bibliographic_parts(edition, cache)
+        if parts is None:
+            return None
+        source = parts['source']
+        imprint = unicodedata.normalize('NFKC', source.get('series') or '').split(';')[0].strip()
+        if (source.get('publisher') != '一迅社' or imprint != 'IRIS NEO'
+                or source['language'] not in {'ja', 'jpn'}
+                or not any(code.startswith('913') for code in source['extra']['ndc_codes'])):
+            return None
+        isbn = normalize_isbn(str(publisher.get('isbn') or ''))
+        if not isbn or isbn not in {normalize_isbn(value['value']) for value in source['identifiers'] if value['source'] == 'isbn'}:
+            return None
+        def title_key(value):
+            return ''.join(c for c in normalize_search(value) if not unicodedata.category(c).startswith('P'))
+        # dcterms:title is the own complete display title, including its volume.
+        # Do not substitute the dc:title main field, contents or omitted words.
+        title = next((row for row in parts['titles']
+            if '/{http://purl.org/dc/terms/}title[' in row['locator']
+            and title_key(row['value']) == title_key(publisher['title'])), None)
+        if title is None:
+            return None
+        writers = [credit['name'] for credit in publisher.get('credits', [])
+            if credit.get('role') in {'author', '著', '著者', '著者・イラスト', '著・イラスト'}]
+        if not writers:
+            return None
+        authors = []
+        for name in writers:
+            authorities = sorted({identifier['value'] for author in source['contributors']
+                if author['role'] == 'author' and person_key(author['name']) == person_key(name)
+                for identifier in author['identifiers'] if identifier['source'] == 'ndl-authority'
+                and re.fullmatch(r'https?://id\.ndl\.go\.jp/auth/(?:entity|ndlna)/[0-9]{6,12}', identifier['value'])})
+            if not authorities:
+                return None
+            authors.append({'official_credit': name, 'ndl_authorities': authorities})
+        return {'rule_version': 'publisher-ndl-edition-confirmation-iris-neo-v1', 'scope': 'edition_only',
+            'isbn13': isbn, 'matched_ndl_title': title['value'], 'primary_title_locator': title['locator'],
+            'source_raw_sha256': parts['source_raw_sha256'], 'authors': authors,
+            'ndl_imprint': imprint, 'official_label': publisher['label'], 'ndl_publisher': source['publisher'],
+            'imprint_match': {'rule': 'same_edition_ichijinsha_iris_neo_pair', 'official_label': publisher['label'],
+                'ndl_imprint': imprint, 'scope': 'this_isbn_edition_only'},
+            'original_work_identity_asserted': False, 'story_series_identity_asserted': False,
+            'sources': [source['source_url'], publisher['source_url']]}
 
     def _edition_primary_bibliographic_parts(self, edition, cache):
         """Read direct fields of this edition's sole own title-bearing resource.
@@ -801,6 +854,7 @@ class LightNovelCatalogue:
 
         volume = parts['volume']['value'] if parts['volume'] else None
         candidates = []
+        reverse_candidates = []
         for title in parts['titles']:
             raw_title = title['value']
             candidates.append((raw_title, {'rule': 'direct_primary_title', 'source_value': raw_title,
@@ -819,6 +873,13 @@ class LightNovelCatalogue:
                              main + '~' + subtitle + '~' + (volume or '')]
             candidates.extend((variant, {'rule': 'primary_isbd_title_and_explicit_volume', 'source_value': raw_title,
                 'main': main, 'subtitle': subtitle, 'volume': volume, 'locators': locators}) for variant in variants)
+            if subtitle:
+                reverse_candidates.extend((variant, {
+                    'rule': 'primary_isbd_reverse_title_and_explicit_volume_v1', 'source_value': raw_title,
+                    'main': main, 'subtitle': subtitle, 'volume': volume, 'locators': locators})
+                    for variant in (subtitle + main + (volume or ''), subtitle + (volume or '') + main))
+        # Append after ALL old candidates so every v2 success selects its old proof.
+        candidates.extend(reverse_candidates)
         title_match = next((proof for value, proof in candidates if title_key(value) == title_key(publisher['title'])), None)
         if title_match is None:
             return None
@@ -851,7 +912,8 @@ class LightNovelCatalogue:
             if literal:
                 author_match.update(ndl_literal_credit=literal['literal'], locator=literal['locator'])
             matched_authors.append(author_match)
-        return {'rule_version': 'publisher-ndl-edition-confirmation-v2', 'scope': 'edition_only',
+        version = 'v3' if title_match['rule'] == 'primary_isbd_reverse_title_and_explicit_volume_v1' else 'v2'
+        return {'rule_version': 'publisher-ndl-edition-confirmation-' + version, 'scope': 'edition_only',
                 'isbn13': isbn, 'matched_ndl_title': title_match['source_value'], 'title_match': title_match,
                 'authors': matched_authors, 'ndl_imprint': imprint, 'official_label': publisher['label'],
                 'imprint_match': imprint_match, 'ndl_publisher': source['publisher'],
@@ -865,7 +927,6 @@ class LightNovelCatalogue:
         from .normalization import normalize_isbn
         books = self._publisher_books(provider, manifest_path, expected_sha256)
         cache = {}
-        rows = self._rows(include_features=False, _cache=cache)
         with self._connect() as db:
             stored = {row['entry_id']: dict(row) for row in db.execute('SELECT * FROM entries WHERE kind=?', ('edition',))}
         by_isbn = {}
@@ -874,7 +935,8 @@ class LightNovelCatalogue:
             if isbn:
                 by_isbn.setdefault(isbn, {})[book['publisher_book_id']] = book
         result = {'publisher_books': len(books), 'publisher_books_with_valid_isbn': sum(len(v) for v in by_isbn.values()),
-                  'ndl_editions_considered': len(stored), 'confirmed': 0, 'unchanged': 0}
+                  'ndl_editions_considered': len(stored), 'ndl_candidate_editions_verified': 0,
+                  'verification_scope': 'matching_isbn_candidates_only', 'confirmed': 0, 'unchanged': 0}
         matched = set()
         with self._connect() as db:
             for entry in stored.values():
@@ -883,6 +945,16 @@ class LightNovelCatalogue:
                 for identifier in edition['source_record']['identifiers']:
                     if identifier['source'] == 'isbn':
                         candidates.update(by_isbn.get(normalize_isbn(identifier['value']), {}))
+                if not candidates:
+                    continue
+                if hashlib.sha256(entry['record_json'].encode()).hexdigest() != entry['record_sha256']:
+                    raise ValueError('stored metadata SHA mismatch')
+                # Always validate EACH candidate, including a second record in
+                # an already cached raw response. Cached nodes are not a record proof.
+                projected = self._project_edition(edition, cache)
+                if projected['entry_id'] != entry['entry_id'] or projected['entry_kind'] != entry['kind']:
+                    raise ValueError('stored typed identity differs')
+                result['ndl_candidate_editions_verified'] += 1
                 accepted = [(book, match) for book in candidates.values()
                             if (match := self._publisher_edition_match(provider, book, edition, cache))]
                 if not accepted:

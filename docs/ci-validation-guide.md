@@ -1,6 +1,12 @@
 # CI 検証ガイド
 
-## 作業ブランチの検証状況（2026-10-24）
+## ライトノベル実装の試験証拠（2026-10-25）
+
+最新の実装と収録状況は[ライトノベル対応の進捗](light-novels-progress-v1.md)を参照する。`c6d105b`の[run 40113726963](https://github.com/ayutaz/recommend-book/actions/runs/40113726963)は両OSの結論がsuccessだが、Windowsのログはセットアップのみで、step情報もセットアップ中のままになっている。Ubuntuの2,868 passed・7 skippedはログで確認したが、Windowsのfixture実行は未証明として扱う。
+
+次の確定実装からpytestのJUnit XMLを生成し、OSと対象commit SHAを名前に含むartifactとして7日間保存する。結果ファイルがなければ保存stepを失敗させる。CIの成功表示だけで完了とせず、各OSの結果ファイルと対象SHA、試験数、失敗・error・skipを確認する。保存対象は合成fixtureの試験結果だけで、実DB・原資料・読書履歴を含めない。全件再分類・実データ監査の代わりにはしない。
+
+## 前段階：世界小説2万分類版の検証状況（2026-10-24）
 
 最終実装`b4464aac32a4d56e89c120c99ad926c9b176c824`の[run 40093412432](https://github.com/ayutaz/recommend-book/actions/runs/40093412432)はUbuntu・WindowsのPython 3.14で成功した。lock確認・依存導入・fixture試験を両OSで通過し、2026-10-24 22:47 JSTに終了した。
 
@@ -121,7 +127,7 @@ push、pull request、手動の workflow dispatch が対象。各 OS で次の�
 ```console
 uv lock --check
 uv sync --locked --dev
-uv run --locked pytest tests -ra
+uv run --locked pytest tests -ra --junitxml=test-results.xml
 ```
 
 `uv lock --check` はプロジェクトの宣言と lockfile の整合性を確認する。`--locked` は不整合時に lockfile を更新せず失敗させる。`--dev` により既存の pytest dependency group を含める。[uv の lock / sync 仕様](https://docs.astral.sh/uv/concepts/projects/sync/)

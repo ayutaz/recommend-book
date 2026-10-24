@@ -765,7 +765,7 @@ def publisher_edition_v2(edition_bundle):
 
     def build(*, title='主書名 : 副書名', volume='3', official_title='主書名３ 副書名',
               imprint='角川スニーカー文庫', label='角川スニーカー文庫', label_id=339,
-              publisher='KADOKAWA', authority=True, literal='著者 著', extra=''):
+              publisher='KADOKAWA', authority=True, literal='著者 著', extra='', ndc='913.6'):
         record = json.loads(json.dumps(template))
         raw = Path(record['provenance']['raw_path'])
         url = record['source_url']
@@ -780,7 +780,7 @@ def publisher_edition_v2(edition_bundle):
           {('<c:creator>' + escape(literal) + '</c:creator>') if literal else ''}
           <d:publisher>{escape(publisher)}</d:publisher><d:language>jpn</d:language>
           <n:seriesTitle>{escape(imprint)}</n:seriesTitle><d:identifier rdf:datatype="ISBN">9784798613161</d:identifier>
-          <d:subject rdf:resource="http://id.ndl.go.jp/class/ndc10/913.6"/>{extra}</n:BibResource></rdf:RDF>'''
+          <d:subject rdf:resource="http://id.ndl.go.jp/class/ndc10/{ndc}"/>{extra}</n:BibResource></rdf:RDF>'''
         raw.write_text(xml, encoding='utf-8')
         digest = hashlib.sha256(raw.read_bytes()).hexdigest()
         source = NDLAdapter(None)._normalize(ET.fromstring(xml), RawArtifact(digest, str(raw), len(raw.read_bytes()),
@@ -789,7 +789,7 @@ def publisher_edition_v2(edition_bundle):
             authors=[a['name'] for a in source['contributors'] if a['role'] == 'author'],
             publisher=source['publisher'], date=source['publication_year'],
             isbn=[i['value'] for i in source['identifiers'] if i['source'] == 'isbn'],
-            label=source['series'], ndc=['913.6'], label_evidence=[{'query_term': imprint}])
+            label=source['series'], ndc=[ndc], label_evidence=[{'query_term': imprint}])
         record['provenance']['raw_sha256'] = digest
         book = {'publisher_book_id': 'kadokawa:123456789012', 'source_url': 'https://www.kadokawa.co.jp/product/123456789012/',
             'isbn': '9784798613161', 'title': official_title, 'credits': [{'role': '著者', 'name': '著者'}],
@@ -875,6 +875,173 @@ def test_publisher_edition_v2_unknown_authority_cannot_replace_publisher_identit
     cat, record, book = publisher_edition_v2(title='主書名', volume=None, official_title='主書名',
         authority=False, publisher='別出版社')
     assert cat._publisher_edition_match('kadokawa', book, record, {}) is None
+
+
+def test_existing_v2_proof_shape_values_and_selection_remain_stable(publisher_edition_v2):
+    cat, record, book = publisher_edition_v2()
+    base = 'records[1]/recordData/dcndl:BibResource[@rdf:about=' + record['source_url'] + '#material]'
+    title_locator = base + '/{http://purl.org/dc/terms/}title[1]'
+    volume_locator = base + '/{http://ndl.go.jp/dcndl/terms/}volume[3]'
+    assert cat._publisher_edition_match('kadokawa', book, record, {}) == {
+        'rule_version': 'publisher-ndl-edition-confirmation-v2', 'scope': 'edition_only',
+        'isbn13': '9784798613161', 'matched_ndl_title': '主書名 : 副書名. 3',
+        'title_match': {'rule': 'primary_isbd_title_and_explicit_volume', 'source_value': '主書名 : 副書名. 3',
+            'main': '主書名', 'subtitle': '副書名', 'volume': '3', 'locators': [title_locator, volume_locator]},
+        'authors': [{'official_credit': '著者', 'ndl_authorities': ['http://id.ndl.go.jp/auth/entity/01234567'],
+            'authority_status': 'known', 'ndl_literal_credit': '著者 著',
+            'locator': base + '/{http://purl.org/dc/elements/1.1/}creator[5]'}],
+        'ndl_imprint': '角川スニーカー文庫', 'official_label': '角川スニーカー文庫',
+        'imprint_match': {'rule': 'exact_label', 'ndl_imprint': '角川スニーカー文庫', 'official_label': '角川スニーカー文庫'},
+        'ndl_publisher': 'KADOKAWA', 'official_product_form_id': 3,
+        'source_raw_sha256': record['provenance']['raw_sha256'],
+        'original_work_identity_asserted': False, 'story_series_identity_asserted': False,
+        'sources': [record['source_url'], book['source_url']]}
+
+
+@pytest.mark.parametrize('title', ['副書名 主書名３', '副書名３ 主書名'])
+def test_publisher_edition_v3_reverse_preserves_every_title_part_and_volume(publisher_edition_v2, title):
+    cat, record, book = publisher_edition_v2(official_title=title)
+    proof = cat._publisher_edition_match('kadokawa', book, record, {})
+    assert proof['rule_version'] == 'publisher-ndl-edition-confirmation-v3'
+    assert proof['title_match']['rule'] == 'primary_isbd_reverse_title_and_explicit_volume_v1'
+    assert proof['title_match']['main'] == '主書名' and proof['title_match']['subtitle'] == '副書名'
+    assert proof['title_match']['volume'] == '3' and len(proof['title_match']['locators']) == 2
+    for false_title in (title.replace('３', '２'), title.replace('副書名', ''), title.replace('主書名', '別書名')):
+        book['title'] = false_title
+        assert cat._publisher_edition_match('kadokawa', book, record, {}) is None
+
+
+def test_publisher_edition_v3_contents_and_unapproved_writer_roles_remain_held(publisher_edition_v2):
+    cat, record, book = publisher_edition_v2(title='正式主書名 : 正式副書名', official_title='副書名 主書名３',
+        extra='<d:tableOfContents><rdf:Description><d:title>主書名 : 副書名. 3</d:title></rdf:Description></d:tableOfContents>')
+    assert cat._publisher_edition_match('kadokawa', book, record, {}) is None
+    cat, record, book = publisher_edition_v2(official_title='副書名 主書名３')
+    for role in ('Author', '編者', 'イラスト'):
+        book['credits'][0]['role'] = role
+        assert cat._publisher_edition_match('kadokawa', book, record, {}) is None
+
+
+@pytest.fixture
+def publisher_confirmation_pair(publisher_edition_v2, tmp_path):
+    from pathlib import Path
+    import xml.etree.ElementTree as ET
+    from recommend_book.ingestion.ndl import NDLAdapter, SRU
+    from recommend_book.ingestion.core import RawArtifact
+
+    def build(*, shared_raw=False, second_isbn='9784041173701'):
+        cat, first, book = publisher_edition_v2(title='主書名', volume=None, official_title='主書名')
+        first_xml = Path(first['provenance']['raw_path']).read_text(encoding='utf-8')
+        second_xml = first_xml.replace('R100000002-I1', 'R100000002-I2').replace('9784798613161', second_isbn)
+        if shared_raw:
+            combined = ET.Element(f'{{{SRU}}}searchRetrieveResponse')
+            for xml in (first_xml, second_xml):
+                data = ET.SubElement(combined, f'{{{SRU}}}recordData')
+                data.append(ET.fromstring(xml))
+            shared_path = tmp_path / 'two-editions.xml'
+            shared_path.write_bytes(ET.tostring(combined, encoding='utf-8'))
+        records, paths = [], []
+        for index, xml in enumerate((first_xml, second_xml), 1):
+            record = json.loads(json.dumps(first))
+            raw = shared_path if shared_raw else tmp_path / f'one-edition-{index}.xml'
+            if not shared_raw:
+                raw.write_text(xml, encoding='utf-8')
+            digest = hashlib.sha256(raw.read_bytes()).hexdigest()
+            source = NDLAdapter(None)._normalize(ET.fromstring(xml), RawArtifact(digest, str(raw), len(raw.read_bytes()),
+                '2026-10-24T00:00:00Z', 'https://ndlsearch.ndl.go.jp/api/sru'), 'iss-ndl-opac',
+                locator=f'records[{index if shared_raw else 1}]/recordData').model_dump(mode='json')
+            record.update(id=source['source_id'], source_url=source['source_url'], source_record=source,
+                isbn=[i['value'] for i in source['identifiers'] if i['source'] == 'isbn'])
+            record['provenance'].update(url=source['source_url'], raw_path=str(raw), raw_sha256=digest)
+            records.append(record)
+            paths.append(raw)
+        assert cat.import_editions(records)['inserted'] == 2
+        return cat, records, book, paths
+    return build
+
+
+def test_book_confirmation_opens_only_requested_isbn_candidates(publisher_confirmation_pair, monkeypatch, tmp_path):
+    cat, _, book, paths = publisher_confirmation_pair()
+    paths[1].write_bytes(b'unrelated raw is unavailable')
+    monkeypatch.setattr(cat, '_publisher_books', lambda *args: [book])
+    result = cat.confirm_publisher_editions('kadokawa', tmp_path / 'fixed.json', 'f' * 64)
+    assert result['confirmed'] == 1
+    with cat._connect() as db:
+        assert db.execute('SELECT edition_id FROM edition_book_confirmations').fetchone()[0] == 'lne:ndl:R100000002-I1'
+
+
+@pytest.mark.parametrize('tamper', ['sha', 'typed_id', 'rehashed_projection'])
+def test_book_confirmation_rejects_target_projection_tampering(publisher_confirmation_pair, monkeypatch, tmp_path, tamper):
+    cat, records, book, _ = publisher_confirmation_pair()
+    monkeypatch.setattr(cat, '_publisher_books', lambda *args: [book])
+    with cat._connect() as db:
+        if tamper == 'sha':
+            db.execute('UPDATE entries SET record_sha256=? WHERE entry_id=?', ('f' * 64, 'lne:ndl:R100000002-I1'))
+        elif tamper == 'typed_id':
+            db.execute('UPDATE entries SET entry_id=? WHERE entry_id=?', ('lne:ndl:R100000002-Ifake', 'lne:ndl:R100000002-I1'))
+        else:
+            records[0]['publisher'] = '偽出版社'
+            encoded = json.dumps(records[0], ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+            db.execute('UPDATE entries SET record_json=?,record_sha256=? WHERE entry_id=?',
+                (encoded, hashlib.sha256(encoded.encode()).hexdigest(), 'lne:ndl:R100000002-I1'))
+    with pytest.raises(ValueError):
+        cat.confirm_publisher_editions('kadokawa', tmp_path / 'fixed.json', 'f' * 64)
+
+
+def test_book_confirmation_revalidates_second_record_even_when_raw_is_cached(publisher_confirmation_pair, monkeypatch, tmp_path):
+    cat, records, book, _ = publisher_confirmation_pair(shared_raw=True, second_isbn='9784798613161')
+    monkeypatch.setattr(cat, '_publisher_books', lambda *args: [book])
+    records[1]['publisher'] = '偽出版社'
+    encoded = json.dumps(records[1], ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+    with cat._connect() as db:
+        db.execute('UPDATE entries SET record_json=?,record_sha256=? WHERE entry_id=?',
+            (encoded, hashlib.sha256(encoded.encode()).hexdigest(), 'lne:ndl:R100000002-I2'))
+    with pytest.raises(ValueError, match='fields differ'):
+        cat.confirm_publisher_editions('kadokawa', tmp_path / 'fixed.json', 'f' * 64)
+    with cat._connect() as db:
+        assert db.execute('SELECT count(*) FROM edition_book_confirmations').fetchone()[0] == 0
+
+
+@pytest.fixture
+def iris_neo_edition(publisher_edition_v2):
+    def build(**changes):
+        options = dict(title='四竜帝の大陸', volume=None, official_title='四竜帝の大陸',
+            imprint='IRIS NEO', publisher='一迅社', label='アイリスNEO')
+        options.update(changes)
+        cat, record, book = publisher_edition_v2(**options)
+        book['publisher'] = '一迅社'
+        return cat, record, book
+    return build
+
+
+def test_iris_neo_bridge_is_same_isbn_edition_only_with_known_authority(iris_neo_edition):
+    cat, record, book = iris_neo_edition()
+    proof = cat._publisher_edition_match('ichijinsha-iris', book, record, {})
+    assert proof['rule_version'] == 'publisher-ndl-edition-confirmation-iris-neo-v1'
+    assert proof['scope'] == 'edition_only' and proof['isbn13'] == '9784798613161'
+    assert proof['imprint_match'] == {'rule': 'same_edition_ichijinsha_iris_neo_pair',
+        'official_label': 'アイリスNEO', 'ndl_imprint': 'IRIS NEO', 'scope': 'this_isbn_edition_only'}
+    assert proof['authors'][0]['ndl_authorities'] == ['http://id.ndl.go.jp/auth/entity/01234567']
+    assert proof['primary_title_locator'] and not proof['original_work_identity_asserted']
+    assert not proof['story_series_identity_asserted']
+
+
+@pytest.mark.parametrize('change', [{'publisher': '別出版社'}, {'label': '一迅社文庫アイリス'},
+    {'imprint': 'IRIS NEOアンソロジー'}, {'authority': False}, {'ndc': '726.5'},
+    {'title': '四竜帝の大陸 : 省略不可の副題'},
+    {'title': '別の正式題', 'extra': '<d:tableOfContents><rdf:Description><d:title>四竜帝の大陸</d:title></rdf:Description></d:tableOfContents>'}])
+def test_iris_neo_bridge_rejects_different_scope_or_incomplete_evidence(iris_neo_edition, change):
+    cat, record, book = iris_neo_edition(**change)
+    assert cat._publisher_edition_match('ichijinsha-iris', book, record, {}) is None
+
+
+def test_iris_neo_bridge_rejects_wrong_isbn_provider_or_editor(iris_neo_edition):
+    cat, record, book = iris_neo_edition()
+    book['isbn'] = '9784041173701'
+    assert cat._publisher_edition_match('ichijinsha-iris', book, record, {}) is None
+    book['isbn'] = '9784798613161'
+    assert cat._publisher_edition_match('shueisha-dx', book, record, {}) is None
+    book['credits'][0]['role'] = '編者'
+    assert cat._publisher_edition_match('ichijinsha-iris', book, record, {}) is None
 
 
 @pytest.fixture
