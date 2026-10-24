@@ -19,7 +19,7 @@
 
 資料のジャンルによる類似候補と、読書履歴に基づく個人推薦は区別します。独立した正解データによる分類精度、確信度の校正、本人向け推薦の改善は未評価です。翻訳・版の対応や独立した名寄せ精度も未検証です。
 
-日本のライトノベル用に、シリーズ・各巻・版を分けた検索と推薦を追加しました。「魔法科高校の劣等生」はシリーズとして検索し、好きな作品に指定できます。1,000シリーズを超えて拡張し、内容特徴の分類も継続しています。出版社・レーベル別の不足を補っており、ほぼ網羅できた段階ではありません。件数と確認時点は[追加状況と残作業](docs/light-novels-progress-v1.md)にまとめています。
+日本のライトノベル用に、シリーズ・各巻・版を分けた検索と推薦を追加しました。「魔法科高校の劣等生」はシリーズとして検索し、好きな作品に指定できます。シリーズ数と内容特徴の分類は初期目標を満たし、現在は出版社・レーベル別の収録漏れと対応書誌を補っています。ほぼ網羅できた段階ではありません。件数と確認時点は[追加状況と残作業](docs/light-novels-progress-v1.md)にまとめています。
 
 詳細分類では、テーマ・物語構造・主人公・雰囲気などの根拠付き特徴を使います。根拠がない項目は不明とし、原作本文の裏付けがない文体は推定しません。
 
@@ -42,7 +42,7 @@ uv run --locked python scripts/serve_scale_catalogue_v1.py --database data/auton
 
 ## ここから進めること
 
-最新の計画は[v22：日本のライトノベル対応](docs/autonomous-next-phase-plan-v22.md)、現在地は[ライトノベル対応の進捗](docs/light-novels-progress-v1.md)にまとめています。[2万分類の到達状況](docs/scale-classification-v4.md)は前段階の記録です。新たな不具合や変更がなければ同じ分類・監査・画面確認を繰り返しません。
+最新の計画は[v23：日本のライトノベルの収録漏れを補う](docs/autonomous-next-phase-plan-v23.md)、現在地は[ライトノベル対応の進捗](docs/light-novels-progress-v1.md)にまとめています。[2万分類の到達状況](docs/scale-classification-v4.md)は前段階の記録です。新たな不具合や変更がなければ同じ分類・監査・画面確認を繰り返しません。
 
 1. 出版社のシリーズ一覧とNDL作成の書誌を照合し、未収録のシリーズを補います。
 2. 固定20シリーズの照合と、内容特徴あり500シリーズ以上への拡張を進めます。
@@ -54,7 +54,7 @@ uv run --locked python scripts/serve_scale_catalogue_v1.py --database data/auton
 
 データ購入・外部委託・有料APIへの切替は行わず、無料公開資料と既存のCodex CLIを使います。データのAI入力・表示・再配布・商用利用条件は資料と用途ごとに管理します。
 
-- [次の実行計画：日本のライトノベルを検索・推薦の必須対象にする](docs/autonomous-next-phase-plan-v22.md)
+- [次の実行計画：日本のライトノベルを必須対象にする追加計画](docs/autonomous-next-phase-plan-v23.md)
 - [詳細分類2万作品への実行状況と残作業](docs/scale-classification-v4.md)
 - [品質評価仕様](docs/quality-evaluation-protocol-v1.md)
 - [初期設計](docs/world-novel-dataset-plan.md)
