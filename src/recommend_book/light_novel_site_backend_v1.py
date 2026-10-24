@@ -53,7 +53,7 @@ class UnifiedCatalogue:
 
     def _world_qids(self):
         with self.world._connect() as db:
-            return {row[0] for row in db.execute('SELECT qid FROM works')}
+            return {row[0] for row in db.execute('SELECT qid FROM works WHERE display_allowed=1')}
 
     def search_world_catalogue(self, **kwargs):
         return self.world.search_catalogue(**kwargs)

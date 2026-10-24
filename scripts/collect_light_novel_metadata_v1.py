@@ -17,6 +17,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import time
 from urllib.parse import urlsplit
 
 from recommend_book.ingestion.core import HTTPFetcher, RawStore
@@ -93,6 +94,13 @@ class CheckpointFetcher:
             self.fetcher.gate_path=gate
         result=self.fetcher.get(url,source=source,params=params,headers=headers)
         receipt.update(status=result.status,completed_at=now(),error=result.error,status_code=result.status_code)
+        if result.status_code == 429 and isinstance(self.fetcher, HTTPFetcher):
+            # A server backpressure response without Retry-After still requires
+            # a pause before any *different* input. This does not retry input.
+            not_before = time.time() + 120
+            with sqlite3.connect(self.fetcher.gate_path, timeout=120) as db:
+                db.execute('INSERT INTO cooldowns VALUES (?,?) ON CONFLICT(host) DO UPDATE SET not_before=MAX(not_before,excluded.not_before)', (urlsplit(url).hostname, not_before))
+            receipt['backpressure_cooldown_until_epoch'] = not_before
         if result.artifact:receipt.update(raw_path=result.artifact.path,raw_sha256=result.artifact.sha256)
         save(path,receipt)
         return (result.content,receipt) if result.status=='success' else None
@@ -142,7 +150,7 @@ def normalize_entity(entity,linked,provenance,conditions_path):
 
 def make_fetcher(root):
     return CheckpointFetcher(root,HTTPFetcher(RawStore(root/'raw'),max_attempts=1,min_interval=1.1,
-      host_intervals={'qlever.dev':10,'ndlsearch.ndl.go.jp':2},user_agent='recommend-book/0.1 (https://github.com/ayutaz/recommend-book) light-novel-metadata-v1'))
+      host_intervals={'qlever.dev':10,'ndlsearch.ndl.go.jp':20},user_agent='recommend-book/0.1 (https://github.com/ayutaz/recommend-book) light-novel-metadata-v1'))
 
 
 def conditions(root,fetcher):
@@ -272,10 +280,21 @@ def collect_ndl(root=ROOT, *, roster=Path('data/light-novels-v1/coverage/label-r
         query=ndl_label_query(term,partition,search_index=search_index)
         params={'operation':'searchRetrieve','version':'1.2','recordSchema':'dcndl','recordPacking':'xml','query':query,'maximumRecords':500,'startRecord':1}
         query_sha=sha(json.dumps(params,sort_keys=True,ensure_ascii=False).encode())
-        if query_sha in querymap and querymap[query_sha].get('parser_version')==2:return querymap[query_sha]
+        if query_sha in querymap and querymap[query_sha].get('parser_version')==2 and querymap[query_sha].get('status') == 'success':return querymap[query_sha]
         out={'query_sha256':query_sha,'query_term':term,'partition':partition,'expected_total':expected,'requested_position':1,'returned_record_ids':[],'complete':False,'query':query,'provider':'iss-ndl-opac'}
         result=fetcher.get(SRU_URL,source='ndl',params=params)
-        if result is None:out['status']='held_request';return out
+        if result is None:
+            out.update(status='held_request', error='request failed or prior incomplete request held; source total remains unknown')
+            request_spec = {'url': SRU_URL, 'params': params, 'headers': {}, 'source': 'ndl'}
+            request_key = sha(json.dumps(request_spec, sort_keys=True, separators=(',', ':')).encode())
+            request_path = root / 'requests' / f'{request_key}.json'
+            if request_path.exists():
+                failure = load(request_path)
+                out['request_receipt_path'] = str(request_path)
+                out['error'] = failure.get('error') or f"prior request status {failure.get('status')}; source total remains unknown"
+            querymap[query_sha] = out
+            jsonl(query_path, querymap.values())
+            return out
         raw,receipt=result;out['receipt']=receipt
         try:
             xml=ET.fromstring(raw)
@@ -301,7 +320,7 @@ def collect_ndl(root=ROOT, *, roster=Path('data/light-novels-v1/coverage/label-r
         for term in label.get('query_terms',[label['label']]):
             if entry['terms'].get(term,{}).get('complete'):continue
             allpage=page(term,None);termstate={'query_term':term,'root':allpage,'partitions':[],'complete':allpage['complete']}
-            if allpage.get('expected_total',0)>500:
+            if (allpage.get('expected_total') or 0)>500:
                 parts=ndl_year_partitions(allpage['expected_total'],allpage.get('year_facets',{}))
                 if parts is None:termstate['hold']='year_facets_do_not_cover_root_total'
                 else:

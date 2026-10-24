@@ -13,8 +13,8 @@ class Store:
         with self._connect() as db:
             db.execute('CREATE TABLE read_status(' + ('entry_id' if light else 'qid') + ' TEXT PRIMARY KEY,status TEXT,updated_at TEXT)')
             if not light:
-                db.execute('CREATE TABLE works(qid TEXT PRIMARY KEY)')
-                db.executemany('INSERT INTO works VALUES(?)', [(r['qid'],) for r in rows])
+                db.execute('CREATE TABLE works(qid TEXT PRIMARY KEY,display_allowed INTEGER NOT NULL)')
+                db.executemany('INSERT INTO works VALUES(?,?)', [(r['qid'], r.get('display_allowed', 1)) for r in rows])
 
     @contextmanager
     def _connect(self):
@@ -23,7 +23,7 @@ class Store:
             yield db
 
     def search_catalogue(self, *, page=1, page_size=30, exclude_work_qids=None, entry_kind=None, **kw):
-        rows = [r for r in self.rows if not entry_kind or r.get('entry_kind', 'work') == entry_kind]
+        rows = [r for r in self.rows if r.get('display_allowed', 1) and (not entry_kind or r.get('entry_kind', 'work') == entry_kind)]
         rows = [r for r in rows if not (r.get('entry_kind') == 'work' and r.get('qid') in (exclude_work_qids or set()))]
         return dict(items=rows[(page-1)*page_size:page*page_size], total=len(rows), page=page,
                     page_size=page_size, pages=(len(rows)+page_size-1)//page_size)
@@ -91,6 +91,15 @@ def test_large_page_boundary_has_no_skipped_or_repeated_rows(tmp_path):
     light = Store(tmp_path/'light.sqlite', [], light=True)
     combined = UnifiedCatalogue(world, light)
     assert [r['qid'] for r in combined.search_catalogue(page=4, page_size=30)['items']] == [f'Q{i+1}' for i in range(90, 120)]
+
+
+def test_hidden_world_row_does_not_hide_independently_admitted_light_novel(tmp_path):
+    world = Store(tmp_path/'world.sqlite', [{'qid': 'Q20', 'title': 'Held', 'display_allowed': 0}])
+    light = Store(tmp_path/'light.sqlite', [
+        {'entry_id': 'lnw:wd:Q20', 'qid': 'Q20', 'entry_kind': 'work', 'title': 'Admitted'}], light=True)
+    result = UnifiedCatalogue(world, light).search_catalogue()
+    assert result['total'] == 1
+    assert result['items'][0]['entry_id'] == 'lnw:wd:Q20'
 
 
 def test_typed_routes_do_not_enter_legacy_qid_contract(stores):

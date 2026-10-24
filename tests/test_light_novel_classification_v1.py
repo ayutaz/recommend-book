@@ -318,3 +318,48 @@ def test_finite_runtime_snapshot_and_archived_verifier_detect_source_mutation(tm
     target.write_bytes(target.read_bytes() + b"\n# changed\n")
     with pytest.raises(ValueError, match="bytes changed"):
         verify_feature_export(manifest_path, expected)
+
+
+def test_stopped_window_continues_only_never_started_inputs_and_first_reviews(tmp_path, monkeypatch):
+    """Control-flow fixture; full source-rights reproduction has separate tests."""
+    import recommend_book.light_novel_classification_v1 as module
+    template = build_verified_export_fixture(tmp_path / "template", monkeypatch)
+    template_dir = Path(template["manifest_path"]).parent
+    series = SeriesInput.model_validate(json.loads((template_dir / "inputs.json").read_bytes())[0])
+    child = tmp_path / "template/fake_cli.py"
+    code = child.read_text(encoding="utf-8")
+    code = code.replace('text = json.dumps(value)', 'if value.get("series_id") == "lns:wd:Q21": value["input_hash"] = "invalid-native-identity"\ntext = json.dumps(value)')
+    child.write_text(code, encoding="utf-8")
+    inputs = [series.model_copy(update={"series_id": "lns:wd:Q" + str(index)}) for index in range(1, 31)]
+    monkeypatch.setattr(module, "validate_source_admission", lambda *args, **kwargs: {"allowed": True})
+    actual_attempt = module._attempt
+    def legacy_stop(*args, **kwargs):
+        binding = actual_attempt(*args, **kwargs)
+        if kwargs["kind"] == "classification" and binding["value"].get("series_id") == "lns:wd:Q21":
+            raise ValueError("Legacy stop on the one invalid native identity")
+        return binding
+    monkeypatch.setattr(module, "_attempt", legacy_stop)
+    source = tmp_path / "template/source-manifest.json"
+    first = run_window(inputs, tmp_path / "stopped", source_manifest=source, source_sha256=sha(source),
+        reservations=tmp_path / "reserved", concurrency=4)
+    parent = json.loads(Path(first["manifest_path"]).read_bytes())
+    assert len(parent["failures"]) == 1 and not parent["review_attempts"]
+    assert parent["gate"]["actual_unstarted_series"] > 0
+    monkeypatch.setattr(module, "_attempt", actual_attempt)
+    continued = run_window(inputs, tmp_path / "continued", source_manifest=source, source_sha256=sha(source),
+        reservations=tmp_path / "reserved", concurrency=4,
+        continuation_manifest=first["manifest_path"], continuation_sha256=first["manifest_sha256"])
+    verified = verify_feature_export(continued["manifest_path"], continued["manifest_sha256"])
+    assert verified["gate"]["passed"] and verified["gate"]["actual_attempted_series"] == 30
+    assert verified["gate"]["failed"] == 1 and verified["gate"]["pending"] == 0
+    assert len(verified["rows"]) == 29
+    assert verified["first_classification_calls_in_continuation"] == parent["gate"]["actual_unstarted_series"]
+    hashes = [json.loads(path.read_bytes())["input_hashes"][0] for root in (tmp_path / "stopped", tmp_path / "continued")
+        for path in root.glob("classification/*/request.json")]
+    assert len(hashes) == len(set(hashes)) == 30
+
+
+def test_failure_rate_uses_actual_calls_instead_of_all_planned_inputs():
+    value = check_gate(selected=100, failed=1, pending=90, adopted=0, attempted=10)
+    assert value["failure_rate"] == .1 and value["actual_unstarted_series"] == 90
+    assert "failure_rate_above_5_percent" in value["reasons"]

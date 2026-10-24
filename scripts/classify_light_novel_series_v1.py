@@ -19,6 +19,8 @@ def main():
     parser.add_argument("--concurrency", type=int, choices=(4, 8), default=4)
     parser.add_argument("--timeout", type=int, default=900)
     parser.add_argument("--executable")
+    parser.add_argument("--continuation-manifest", type=Path)
+    parser.add_argument("--continuation-sha256")
     parser.add_argument("--frozen", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if not args.frozen:
@@ -30,13 +32,16 @@ def main():
             "--reservations", str(args.reservations.resolve()), "--concurrency", str(args.concurrency), "--timeout", str(args.timeout)]
         if args.executable:
             argv.extend(("--executable", args.executable))
+        if args.continuation_manifest:
+            argv.extend(("--continuation-manifest", str(args.continuation_manifest.resolve()), "--continuation-sha256", args.continuation_sha256))
         env = dict(os.environ, PYTHONPATH=str(runtime / "src"), PYTHONDONTWRITEBYTECODE="1")
         with subprocess.Popen(argv, env=env, cwd=runtime, shell=False) as child:
             raise SystemExit(child.wait())
     inputs = [SeriesInput.model_validate_json(line) for line in args.inputs.read_bytes().splitlines() if line.strip()]
     print(json.dumps(run_window(inputs, args.output, source_manifest=args.source_manifest,
         source_sha256=args.source_sha256, reservations=args.reservations,
-        concurrency=args.concurrency, timeout=args.timeout, executable=args.executable), ensure_ascii=False))
+        concurrency=args.concurrency, timeout=args.timeout, executable=args.executable,
+        continuation_manifest=args.continuation_manifest, continuation_sha256=args.continuation_sha256), ensure_ascii=False))
 
 
 if __name__ == "__main__":

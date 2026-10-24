@@ -73,7 +73,7 @@ def input_hash(series):
     return digest(series.model_dump(mode="json"))
 
 
-def result_schema():
+def result_schema(series=None, cli_version=None):
     """Version the existing closed-taxonomy transport without changing it."""
     schema = json.loads((ROOT / "schemas/classification-provenance-v4.schema.json").read_bytes())
     schema.pop("$comment", None)
@@ -89,6 +89,12 @@ def result_schema():
     del label["properties"]["expression_id"]
     label["required"].remove("expression_id")
     label["properties"]["scope"] = {"const": "series"}
+    if series is not None:
+        props["series_id"] = {"const": series.series_id}
+        props["input_hash"] = {"const": input_hash(series)}
+        props["taxonomy_version"] = {"const": load_taxonomy()["version"]}
+    if cli_version is not None:
+        props["cli_version"] = {"const": cli_version}
     return schema
 
 
@@ -249,20 +255,25 @@ def project_reviewed_result(series, result, review):
     return output
 
 
-def check_gate(*, selected, failed, pending, adopted):
+def check_gate(*, selected, failed, pending, adopted, attempted=None):
     if any(type(number) is not int or number < 0 for number in (selected, failed, pending, adopted)) or not 1 <= selected <= 100:
         raise ValueError("Gate needs bounded actual series counts")
     if failed + pending > selected or adopted > selected - failed - pending:
         raise ValueError("Gate counts exceed actual selected series")
+    attempted = selected - pending if attempted is None else attempted
+    if type(attempted) is not int or not 0 <= attempted <= selected:
+        raise ValueError("Actual attempted series count differs")
+    failure_rate = failed / attempted if attempted else (0.0 if not failed else None)
     reasons = []
-    if failed / selected > .05:
+    if failure_rate is None or failure_rate > .05:
         reasons.append("failure_rate_above_5_percent")
     if adopted / selected < .70:
         reasons.append("display_adoption_below_70_percent")
     if pending:
         reasons.append("pending_series")
     return {"passed": not reasons, "selected": selected, "failed": failed, "pending": pending,
-        "actual_feature_adopted_series": adopted, "failure_rate": failed / selected,
+        "actual_feature_adopted_series": adopted, "actual_attempted_series": attempted,
+        "actual_unstarted_series": selected - attempted, "failure_rate": failure_rate,
         "display_feature_adoption_rate": adopted / selected, "reasons": reasons, "human_quality_verified": False}
 
 
@@ -642,7 +653,7 @@ per exact series. This is provisional internal AI review, not human gold or qual
 
 
 def run_window(inputs, output, *, source_manifest, source_sha256, reservations,
-               concurrency=4, timeout=900, executable=None):
+               concurrency=4, timeout=900, executable=None, continuation_manifest=None, continuation_sha256=None):
     """One bounded window: classification one/CLI, complete review <=five/CLI."""
     if concurrency not in (4, 8) or type(timeout) is not int or not 1 <= timeout <= 900:
         raise ValueError("Series route requires four/eight slots and timeout <=900s")
@@ -653,7 +664,28 @@ def run_window(inputs, output, *, source_manifest, source_sha256, reservations,
     output.mkdir(parents=True, exist_ok=False)
     save(output / "admission.json", admission)
     save(output / "inputs.json", [series.model_dump(mode="json") for series in inputs])
-    reserve_inputs(inputs, reservations, output.name)
+    prior, inherited, excluded = None, [], set()
+    if continuation_manifest is None:
+        reserve_inputs(inputs, reservations, output.name)
+    else:
+        prior = verify_feature_export(continuation_manifest, continuation_sha256)
+        old_inputs = json.loads((Path(continuation_manifest).parent / "inputs.json").read_bytes())
+        if old_inputs != [series.model_dump(mode="json") for series in inputs] or prior["source_manifest_sha256"] != source_sha256:
+            raise ValueError("Continuation must preserve exact original ordered inputs/source")
+        if prior["review_attempts"] or prior["rows"]:
+            raise ValueError("Continuation accepts a pre-review stopped window only")
+        inherited = prior["classification_attempts"]
+        excluded = {row["series_id"] for row in prior["failures"]}
+        if any(row["phase"] != "classification" for row in prior["failures"]):
+            raise ValueError("Continuation cannot replay failed reviews")
+        for index, series in enumerate(inputs):
+            ledger = Path(reservations) / (input_hash(series) + ".json")
+            if not ledger.is_file() or json.loads(ledger.read_bytes()).get("series_id") != series.series_id:
+                raise ValueError("Original series reservation must remain authentic")
+            if series.series_id not in excluded | {row["series_id"] for row in inherited}:
+                old_directory = Path(continuation_manifest).parent / "classification" / f"{index:03}"
+                if old_directory.exists():
+                    raise ValueError("Unstarted continuation input has prior attempt artifacts")
     command = resolve_executable(executable)
     version, observation = observe_cli_version(command)
     save(output / "cli-version.json", observation)
@@ -662,6 +694,15 @@ def run_window(inputs, output, *, source_manifest, source_sha256, reservations,
     taxonomy = load_taxonomy()
     started = time.monotonic()
     successes, failures, review_attempts, rows = {}, [], [], []
+    if prior:
+        by_id = {series.series_id: series for series in inputs}
+        failures.extend(prior["failures"])
+        for attempt in inherited:
+            series = by_id[attempt["series_id"]]
+            directory = Path(attempt["path"])
+            value = json.loads((directory / "final.json").read_bytes())
+            validate_result(value, series)
+            successes[series.series_id] = (series, value, directory)
     lock, stop = threading.Lock(), threading.Event()
     total_usage = {}
 
@@ -673,13 +714,16 @@ def run_window(inputs, output, *, source_manifest, source_sha256, reservations,
         index, series = pair
         if stop.is_set():
             return
+        phase = "source_admission"
         try:
             # Recheck pinned rights and source bytes immediately before sending.
             validate_source_admission([series], source_manifest, source_sha256)
             directory = output / "classification" / f"{index:03}"
+            phase = "native_protocol"
             binding = _attempt(command, build_prompt(series, cli_version=version, taxonomy=taxonomy),
-                result_schema(), directory, timeout=timeout, version=version,
+                result_schema(series, version), directory, timeout=timeout, version=version,
                 executable_hashes=snapshot.hashes, input_hashes=[input_hash(series)], kind="classification")
+            phase = "result_validation"
             validate_result(binding["value"], series, taxonomy, cli_version=version)
             with lock:
                 snapshot.check_receipt(command, snapshot.hashes)
@@ -688,12 +732,15 @@ def run_window(inputs, output, *, source_manifest, source_sha256, reservations,
         except Exception as exc:
             with lock:
                 failures.append({"series_id": series.series_id, "phase": "classification", "reason": str(exc)})
-                # A failed transport is never automatically resubmitted; stop
-                # new calls after any transport/validation failure for inspection.
-                stop.set()
+                # Invalid output is held once. Continue OTHER targets while the
+                # actual attempts' failure rate stays within five percent.
+                actual = len(successes) + len(failures)
+                if phase != "result_validation" or len(failures) / actual > .05:
+                    stop.set()
 
     with ThreadPoolExecutor(max_workers=concurrency) as pool:
-        list(pool.map(classify, enumerate(inputs)))
+        list(pool.map(classify, [(index, series) for index, series in enumerate(inputs)
+            if series.series_id not in successes and series.series_id not in excluded]))
     ordered = [successes[series.series_id] for series in inputs if series.series_id in successes]
     if not stop.is_set():
         groups = [ordered[index:index + 5] for index in range(0, len(ordered), 5)]
@@ -730,14 +777,18 @@ def run_window(inputs, output, *, source_manifest, source_sha256, reservations,
     # Pins must still match after BOTH external model passes before publication.
     validate_source_admission(inputs, source_manifest, source_sha256)
     pending = len(inputs) - len(rows) - len({row["series_id"] for row in failures})
-    gate = check_gate(selected=len(inputs), failed=len({row["series_id"] for row in failures}),
-        pending=pending, adopted=sum(bool(row["admitted_labels"]) for row in rows))
     rows.sort(key=lambda row: row["series_id"])
     protected = {str(path.resolve()): sha(path) for path in output.rglob("*") if path.is_file()}
+    if prior:
+        protected.update(prior["artifact_sha256"])
+        protected[str(Path(continuation_manifest).resolve())] = continuation_sha256
     protected.update({str(Path(source_manifest).resolve()): source_sha256,
         str(Path(__file__).resolve()): sha(__file__),
         str((ROOT / "schemas/classification-provenance-v4.schema.json").resolve()): sha(ROOT / "schemas/classification-provenance-v4.schema.json"),
         str((ROOT / "config/taxonomy.json").resolve()): sha(ROOT / "config/taxonomy.json")})
+    actual_ids = observed_classification_ids(protected, inputs)
+    gate = check_gate(selected=len(inputs), failed=len({row["series_id"] for row in failures}),
+        pending=pending, adopted=sum(bool(row["admitted_labels"]) for row in rows), attempted=len(actual_ids))
     export = {"version": "light-novel-series-feature-export-v1", "rows": rows, "gate": gate,
         "source_manifest": str(Path(source_manifest).resolve()), "source_manifest_sha256": source_sha256,
         "classification_attempts": [{"series_id": series.series_id, "path": str(directory)} for series, _, directory in ordered],
@@ -752,6 +803,11 @@ def run_window(inputs, output, *, source_manifest, source_sha256, reservations,
     runtime_manifest = ROOT / "light-novel-runtime-snapshot.json"
     if runtime_manifest.is_file():
         export.update(runtime_root=str(ROOT), runtime_manifest_sha256=sha(runtime_manifest))
+    if prior:
+        export.update(continuation_manifest=str(Path(continuation_manifest).resolve()), continuation_sha256=continuation_sha256,
+            inherited_classification_attempts=inherited, previously_failed_inputs_resent=0,
+            first_classification_calls_in_continuation=sum(1 for p in output.glob("classification/*/process-start.json")),
+            first_review_calls_in_continuation=len(review_attempts))
     save(output / "manifest.json", export)
     verify_feature_export(output / "manifest.json", sha(output / "manifest.json"))
     return {"manifest_path": str(output / "manifest.json"), "manifest_sha256": sha(output / "manifest.json"),
@@ -784,6 +840,30 @@ def _verified_attempt(path, kind, expected_inputs, expected_prompt, schema, vers
     if binding["events"]["tool_calls"] or binding["events"]["event_errors"]:
         raise ValueError("Native series output has tool/error events")
     return binding["value"]
+
+
+def observed_classification_ids(pins, inputs):
+    by_hash = {input_hash(series): series.series_id for series in inputs}
+    seen = set()
+    for raw_path in pins:
+        path = Path(raw_path)
+        if path.name != "process-start.json" or path.parent.parent.name != "classification":
+            continue
+        request_path, exit_path = path.with_name("request.json"), path.with_name("process-exit.json")
+        if str(request_path.resolve()) not in pins or str(exit_path.resolve()) not in pins:
+            raise ValueError("Actual native process needs pinned request and terminal witness")
+        request = json.loads(request_path.read_bytes())
+        start, end = json.loads(path.read_bytes()), json.loads(exit_path.read_bytes())
+        hashes = request.get("input_hashes", [])
+        if request.get("kind") != "classification" or len(hashes) != 1 or hashes[0] not in by_hash:
+            raise ValueError("Actual native process input identity differs")
+        if end.get("process_exit_observed") is not True or start.get("pid") != end.get("pid"):
+            raise ValueError("Actual native process has not reached observed terminal exit")
+        key = by_hash[hashes[0]]
+        if key in seen:
+            raise ValueError("Series had more than one native classification call")
+        seen.add(key)
+    return seen
 
 
 def verify_feature_export(manifest_path, expected_sha256):
@@ -853,10 +933,24 @@ print(json.dumps(verified,ensure_ascii=True))
     validate_source_admission(inputs, export["source_manifest"], export["source_manifest_sha256"])
     by_id = {series.series_id: series for series in inputs}
     native = {}
+    inherited, parent = [], None
+    if export.get("continuation_manifest"):
+        parent = verify_feature_export(export["continuation_manifest"], export["continuation_sha256"])
+        inherited = export["inherited_classification_attempts"]
+        if parent["classification_attempts"] != inherited or parent["rows"] or parent["review_attempts"]:
+            raise ValueError("Continuation inherited native authority differs")
+        prior_inputs = json.loads((Path(export["continuation_manifest"]).parent / "inputs.json").read_bytes())
+        if prior_inputs != [series.model_dump(mode="json") for series in inputs]:
+            raise ValueError("Continuation complete ordered input identities differ")
+        if export["failures"][:len(parent["failures"])] != parent["failures"]:
+            raise ValueError("Continuation must retain every original failure without retry")
     for attempt in export["classification_attempts"]:
         series = by_id[attempt["series_id"]]
-        value = _verified_attempt(attempt["path"], "classification", [input_hash(series)],
-            build_prompt(series, cli_version=export["cli_version"]), result_schema(), export["cli_version"], pins)
+        if attempt in inherited:
+            value = json.loads((Path(attempt["path"]) / "final.json").read_bytes())
+        else:
+            value = _verified_attempt(attempt["path"], "classification", [input_hash(series)],
+                build_prompt(series, cli_version=export["cli_version"]), result_schema(series, export["cli_version"]), export["cli_version"], pins)
         validate_result(value, series, cli_version=export["cli_version"])
         if series.series_id in native:
             raise ValueError("Repeated native series classification")
@@ -882,7 +976,7 @@ print(json.dumps(verified,ensure_ascii=True))
     if not failures <= by_id.keys() or failures & seen:
         raise ValueError("Series failure identity counts differ")
     gate = check_gate(selected=len(inputs), failed=len(failures), pending=len(inputs) - len(seen) - len(failures),
-        adopted=sum(bool(row["admitted_labels"]) for row in projected))
+        adopted=sum(bool(row["admitted_labels"]) for row in projected), attempted=len(observed_classification_ids(pins, inputs)))
     if gate != export["gate"] or export["content_features_adopted_series"] != sum(row["content_features_adopted"] for row in projected):
         raise ValueError("Series export adoption gate differs from actual projected labels")
     return {**export, "rows": [{**row, "artifacts": {str(path): expected_sha256}} for row in projected]}

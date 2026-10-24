@@ -3,6 +3,7 @@ import importlib.util
 import json
 from pathlib import Path
 from types import SimpleNamespace
+import pytest
 
 SPEC = importlib.util.spec_from_file_location('lncollect', Path(__file__).parents[1] / 'scripts/collect_light_novel_metadata_v1.py')
 M = importlib.util.module_from_spec(SPEC)
@@ -119,3 +120,55 @@ def test_ndl_namespaced_facets_partition_and_cache_are_auditable(tmp_path, monke
     assert term['root']['year_facets'] == {'2020': 250, '2021': 251}
     assert len(term['partitions']) == 2
     assert all(p['receipt']['raw_sha256'] for p in term['partitions'])
+
+
+@pytest.mark.parametrize('failure_mode', ['transport', 'diagnostic'])
+def test_ndl_failed_root_stays_unknown_and_continues_next_label(tmp_path, monkeypatch, failure_mode):
+    class Fetcher:
+        calls = 0
+        def get(self, url, **kwargs):
+            self.calls += 1
+            if failure_mode == 'transport':
+                return None
+            raw = b'<searchRetrieveResponse xmlns="http://www.loc.gov/zing/srw/"><diagnostics><diagnostic><message>Record does not exist</message></diagnostic></diagnostics></searchRetrieveResponse>'
+            path = tmp_path / f'diagnostic-{self.calls}.xml'
+            path.write_bytes(raw)
+            return raw, {'raw_path': str(path), 'raw_sha256': M.sha(raw), 'completed_at': '2026-01-01T00:00:00+00:00', 'url': url}
+    fetcher = Fetcher()
+    monkeypatch.setattr(M, 'make_fetcher', lambda root: fetcher)
+    condition_path = tmp_path / 'conditions.json'
+    condition_path.write_text('{}')
+    monkeypatch.setattr(M, 'conditions', lambda root, fetcher: condition_path)
+    roster = tmp_path / 'roster.json'
+    roster.write_text(json.dumps([{'id': f'label:{i}', 'label': f'Fixture{i}', 'scope': 'core'} for i in range(2)]))
+    report = M.collect_ndl(tmp_path / 'acquisition', roster=roster)
+    assert report['labels'] == 2
+    assert report['complete'] is False
+    assert fetcher.calls == 2
+    index = M.load(tmp_path / 'acquisition' / 'ndl' / 'index.json')
+    for label in index['labels'].values():
+        root = next(iter(label['terms'].values()))['root']
+        assert root['expected_total'] is None
+        assert root['complete'] is False
+        assert root['status'] == ('held_request' if failure_mode == 'transport' else 'held_parse')
+        assert root['error']
+
+
+def test_ndl_429_persists_cooldown_without_retry(tmp_path):
+    import httpx
+    import sqlite3
+    import time
+    calls = []
+    def respond(request):
+        calls.append(request)
+        return httpx.Response(429, content=b'rate limited')
+    inner = M.HTTPFetcher(M.RawStore(tmp_path / 'raw'), client=httpx.Client(transport=httpx.MockTransport(respond)), min_interval=0, max_attempts=1)
+    fetcher = M.CheckpointFetcher(tmp_path, inner)
+    started = time.time()
+    assert fetcher.get('https://ndlsearch.ndl.go.jp/api/sru', source='ndl', params={'q': 'fixture'}) is None
+    assert len(calls) == 1
+    with sqlite3.connect(inner.gate_path) as db:
+        row = db.execute('SELECT not_before FROM cooldowns WHERE host=?', ('ndlsearch.ndl.go.jp',)).fetchone()
+    assert row is not None and row[0] >= started + 119
+    assert fetcher.get('https://ndlsearch.ndl.go.jp/api/sru', source='ndl', params={'q': 'fixture'}) is None
+    assert len(calls) == 1
