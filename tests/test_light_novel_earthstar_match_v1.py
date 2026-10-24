@@ -1,5 +1,6 @@
 from copy import deepcopy
 import hashlib
+import json
 
 import pytest
 
@@ -98,7 +99,7 @@ def test_accepts_only_explicit_distribution_in_addition_to_unique_publisher():
     assert match_earthstar_member(assertion(), own) is not None
     agent['description_values'] = []
     assert match_earthstar_member(assertion(), own) is None
-    agent['description_values'] = ['発売']
+    agent['description_values'] = ['販売']
     assert match_earthstar_member(assertion(), own) is None
 
 
@@ -222,3 +223,195 @@ def test_own_ndl_provider_is_required_and_must_be_reviewed(provider):
     else:
         own['source']['provider_id'] = provider
     assert match_earthstar_member(assertion(), own) is None
+
+
+def extended_parts(title, dc_title, volume='2'):
+    own = parts(title=title, volume=volume)
+    own['titles'].append({'value': dc_title,
+        'locator': BASE + '/{http://purl.org/dc/elements/1.1/}title[9]'})
+    if volume:
+        own['volume']['locator'] = BASE + '/{http://ndl.go.jp/dcndl/terms/}volume[10]'
+    return own
+
+
+def sale_agent(own):
+    own['source']['publisher'] += '; 泰文堂'
+    locator = BASE + '/{http://purl.org/dc/terms/}publisher[16]'
+    row = {'name': '泰文堂', 'locator': locator, 'structured_agent': True,
+        'description_values': ['発売'], 'description_locators': [locator
+            + '/{http://xmlns.com/foaf/0.1/}Agent[1]/{http://purl.org/dc/terms/}description[3]']}
+    own['publisher_agents'].append(row)
+    return row
+
+
+def test_explicit_taibundo_sale_is_separate_from_the_unique_publisher():
+    own = parts()
+    sale = sale_agent(own)
+    proof = match_earthstar_member(assertion(), own)
+    assert proof['rule_version'] == 'earthstar-explicit-workgroup-member-match-v3'
+    policy = proof['ndl_publisher_policy']
+    assert policy['publisher_agent']['name'] == 'アース・スターエンターテイメント'
+    assert policy['sales_agents'] == [{'name': '泰文堂', 'description': '発売',
+        'locator': sale['locator'], 'description_locator': sale['description_locators'][0]}]
+    assert not proof['official_publisher_asserted']
+
+
+@pytest.mark.parametrize('change', ['unknown_role', 'mixed_role', 'other_seller', 'unstructured',
+    'missing_description_locator', 'foreign_description', 'other_description_namespace',
+    'two_actual_publishers', 'duplicate_seller'])
+def test_sale_expansion_requires_the_explicit_same_own_agent_role(change):
+    own = parts()
+    sale = sale_agent(own)
+    if change == 'unknown_role': sale['description_values'] = []
+    elif change == 'mixed_role': sale['description_values'] = ['発売', '出版']
+    elif change == 'other_seller': sale['name'] = '別社'
+    elif change == 'unstructured': sale['structured_agent'] = False
+    elif change == 'missing_description_locator': sale['description_locators'] = []
+    elif change == 'foreign_description':
+        sale['description_locators'][0] = BASE + '/contents[4]/{http://purl.org/dc/terms/}description[3]'
+    elif change == 'other_description_namespace':
+        sale['description_locators'][0] = sale['description_locators'][0].replace(
+            'http://purl.org/dc/terms/', 'https://example.com/fake/')
+    elif change == 'two_actual_publishers':
+        own['publisher_agents'].append({**deepcopy(own['publisher_agents'][0]), 'name': '別出版社'})
+        own['source']['publisher'] += '; 別出版社'
+    else: own['publisher_agents'].append(deepcopy(sale))
+    assert match_earthstar_member(assertion(), own) is None
+
+
+@pytest.mark.parametrize('raw,dc,member,kind', [
+    ('明示親作品 = The complete title. 2', '明示親作品', '明示親作品２', 'explicit_parallel_title'),
+    ('明示親作品 = The complete title. : 完全副題. 2', '明示親作品 : 完全副題',
+        '明示親作品２～完全副題～', 'explicit_parallel_title'),
+    ('明示親作品!? 2', '明示親作品!?', '明示親作品!?２', 'explicit_repeated_volume'),
+    ('明示親作品 : 完全副題? 2', '明示親作品 : 完全副題?',
+        '明示親作品２～完全副題?～', 'explicit_repeated_volume'),
+])
+def test_fallback_retains_complete_own_dc_dct_parallel_subtitle_and_explicit_volume(raw, dc, member, kind):
+    official, own = assertion(member=member), extended_parts(raw, dc)
+    before = deepcopy((official, own))
+    proof = match_earthstar_member(official, own)
+    assert proof['rule_version'] == 'earthstar-explicit-workgroup-member-match-v3'
+    title = proof['title_match']
+    assert title['source_value'] == raw
+    assert title['own_dc_title_evidence'] == [own['titles'][1]]
+    assert title['own_dct_title_evidence'] == [own['titles'][0]]
+    assert title['fallback_kind'] == kind
+    assert title['volume'] == '2'
+    assert title['locators'] == [TITLE, own['titles'][1]['locator'], own['volume']['locator']]
+    assert title['parallel_translation_identity'] == 'unknown'
+    assert not proof['original_work_identity_asserted']
+    assert not proof['story_series_identity_asserted']
+    assert (official, own) == before
+
+
+@pytest.mark.parametrize('change', ['dc_missing', 'dc_wrong_main', 'dc_missing_subtitle',
+    'dct_extra_subtitle', 'dc_other_namespace', 'dct_other_namespace', 'nested_dc', 'nested_dct',
+    'foreign_volume', 'wrong_volume_namespace', 'missing_volume', 'wrong_volume', 'year_suffix',
+    'second_conflicting_dc', 'second_conflicting_dct', 'empty_parallel', 'japanese_parallel',
+    'ambiguous_parallel', 'ambiguous_parallel_subtitle', 'official_missing_subtitle', 'official_other_volume'])
+def test_parallel_fallback_holds_missing_ambiguous_or_unbound_parts(change):
+    own = extended_parts('明示親作品 = The complete title. : 完全副題. 2', '明示親作品 : 完全副題')
+    official = assertion(member='明示親作品２～完全副題～')
+    if change == 'dc_missing': own['titles'].pop()
+    elif change == 'dc_wrong_main': own['titles'][1]['value'] = '別作品 : 完全副題'
+    elif change == 'dc_missing_subtitle': own['titles'][1]['value'] = '明示親作品'
+    elif change == 'dct_extra_subtitle': own['titles'][0]['value'] = '明示親作品 = English : 完全副題追加. 2'
+    elif change == 'dc_other_namespace': own['titles'][1]['locator'] = BASE + '/{https://example.com/}title[9]'
+    elif change == 'dct_other_namespace': own['titles'][0]['locator'] = BASE + '/{https://example.com/}title[8]'
+    elif change == 'nested_dc': own['titles'][1]['locator'] = BASE + '/contents[4]/' + own['titles'][1]['locator'][len(BASE)+1:]
+    elif change == 'nested_dct': own['titles'][0]['locator'] = BASE + '/contents[4]/' + TITLE[len(BASE)+1:]
+    elif change == 'foreign_volume': own['volume']['locator'] = BASE + '/contents[4]/volume[10]'
+    elif change == 'wrong_volume_namespace': own['volume']['locator'] = BASE + '/{https://example.com/}volume[10]'
+    elif change == 'missing_volume': own['volume'] = None
+    elif change == 'wrong_volume': own['volume']['value'] = '3'
+    elif change == 'year_suffix': own['titles'][0]['value'] = '明示親作品 = English : 完全副題 2022'
+    elif change == 'second_conflicting_dc': own['titles'].append({**own['titles'][1], 'value': '明示親作品 : 別副題'})
+    elif change == 'second_conflicting_dct': own['titles'].append({**own['titles'][0], 'value': '明示親作品 = English : 別副題. 2'})
+    elif change == 'empty_parallel': own['titles'][0]['value'] = '明示親作品 =  : 完全副題. 2'
+    elif change == 'japanese_parallel': own['titles'][0]['value'] = '明示親作品 = 別の日本語題 : 完全副題. 2'
+    elif change == 'ambiguous_parallel': own['titles'][0]['value'] = '明示親作品 = English = Other : 完全副題. 2'
+    elif change == 'ambiguous_parallel_subtitle': own['titles'][0]['value'] = '明示親作品 = English:unparsed subtitle : 完全副題. 2'
+    elif change == 'official_missing_subtitle': official['books'][0]['title'] = '明示親作品２'
+    else: official['books'][0]['title'] = '明示親作品３～完全副題～'
+    assert match_earthstar_member(official, own) is None
+
+
+@pytest.mark.parametrize('dc,volume,raw', [
+    ('明示親作品!?', '3', '明示親作品!? 2'),
+    ('明示親作品', '2', '明示親作品!? 2'),
+    ('明示親作品!?', '2', '明示親作品!? 2022'),
+    ('明示親作品!?', '上', '明示親作品!? 上'),
+])
+def test_repeated_volume_is_not_an_arbitrary_numeric_or_word_removal(dc, volume, raw):
+    assert match_earthstar_member(assertion(member='明示親作品!?２'), extended_parts(raw, dc, volume)) is None
+
+
+def test_old_exact_unnumbered_title_path_does_not_infer_a_volume():
+    proof = match_earthstar_member(assertion(member='明示親作品!?２'),
+        extended_parts('明示親作品!? 2', '明示親作品!?', None))
+    assert proof['rule_version'] == 'earthstar-explicit-workgroup-member-match-v1'
+    assert proof['volume'] is None and proof['volume_number'] is None
+
+
+def test_new_parallel_and_sale_formats_compose_without_inference_or_io(monkeypatch):
+    own = extended_parts('明示親作品 = English : 完全副題. 2', '明示親作品 : 完全副題')
+    sale_agent(own)
+    before = deepcopy(own)
+    monkeypatch.setattr('builtins.open', lambda *args, **kwargs: pytest.fail('unexpected I/O'))
+    proof = match_earthstar_member(assertion(member='明示親作品２～完全副題～'), own)
+    assert proof['rule_version'] == 'earthstar-explicit-workgroup-member-match-v3'
+    assert proof['title_match']['explicit_parallel_forms'][0]['value'] == 'English'
+    assert proof['ndl_publisher_policy']['sales_agents'][0]['description'] == '発売'
+    assert proof['official_workgroup']['publisher'] is None
+    assert proof['official_workgroup']['label'] is None
+    assert own == before
+
+
+def test_strict_complete_title_match_precedes_any_new_title_fallback(monkeypatch):
+    monkeypatch.setattr('recommend_book.light_novel_earthstar_match_v1._fallback_titles',
+        lambda *args: pytest.fail('fallback must not replace a strict proof'))
+    assert match_earthstar_member(assertion(), parts())['rule_version'].endswith('-v1')
+
+
+def test_fallback_can_only_compose_the_entire_explicit_group_prefix():
+    own = extended_parts('別の完全題 = Another complete title. 2', '別の完全題')
+    proof = match_earthstar_member(assertion(member='明示親作品 別の完全題２'), own)
+    assert proof['title_match']['official_workgroup_prefix'] == '明示親作品'
+    assert proof['title_match']['fallback_kind'] == 'explicit_parallel_title'
+    assert proof['rule_version'].endswith('-v3')
+    assert match_earthstar_member(assertion(member='明示親作品外伝 別の完全題２'), own) is None
+
+
+@pytest.mark.parametrize('form,expected', [
+    ('direct', '309cc5208c1edb1da13b676e15f620c8d364df794216dbc42ac73fdde617a5e3'),
+    ('dated', 'c8f8c6268853a87ee71bbfdd7b25ed43ae701ea279d401e7dd679efee2c1e217'),
+    ('distribution', '1e0db1aacf1c52ef6f7b51678671f3ecf74db8e88579e2b78728478518f3fa59'),
+])
+def test_existing_successful_proofs_are_byte_identical(form, expected):
+    own = parts()
+    if form == 'dated':
+        own['source']['contributors'][0]['name'] = '架空, 著者, 1965-'
+        own['literal_authors'] = [{'name': '架空著者', 'literal': '架空著者 著',
+            'locator': BASE + '/{http://purl.org/dc/elements/1.1/}creator[4]'}]
+    elif form == 'distribution':
+        own['source']['publisher'] += '; 泰文堂'
+        own['publisher_agents'].append({'name': '泰文堂', 'locator': BASE + '/publisher[4]',
+            'structured_agent': True, 'description_values': ['頒布'],
+            'description_locators': [BASE + '/publisher[4]/description[1]']})
+    proof = match_earthstar_member(assertion(), own)
+    assert hashlib.sha256(json.dumps(proof, sort_keys=True, ensure_ascii=False,
+        separators=(',', ':')).encode()).hexdigest() == expected
+
+
+@pytest.mark.parametrize('raw,dc,member', [
+    ('明示親作品 = English. 2', '明示親作品', '明示親作品２'),
+    ('明示親作品 = English : 完全副題. 2', '明示親作品 : 完全副題', '明示親作品２～完全副題～'),
+    ('明示親作品!? 2', '明示親作品!?', '明示親作品!?２'),
+])
+def test_existing_candidate_keys_include_new_positive_formats(raw, dc, member):
+    from recommend_book.light_novel_explicit_series_match_v1 import candidate_ndl_title_keys, candidate_title_keys
+    own, official = extended_parts(raw, dc), assertion(member=member)
+    own['source']['titles'] = [{'value': raw}, {'value': dc}]
+    own['source']['volume'] = '2'
+    assert candidate_ndl_title_keys(own['source']) & candidate_title_keys(official)

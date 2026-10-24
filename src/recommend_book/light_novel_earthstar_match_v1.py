@@ -84,7 +84,7 @@ def _official_scope(assertion):
     return authors
 
 
-def _publisher(parts):
+def _strict_publisher(parts):
     agents = parts['publisher_agents']
     publishers = [a for a in agents if a['description_values'] == []]
     distribution = [a for a in agents if a['description_values'] == ['頒布']]
@@ -103,6 +103,101 @@ def _publisher(parts):
         'distribution_agents': [{'name': a['name'], 'description': '頒布', 'locator': a['locator'],
             'description_locator': a['description_locators'][0]} for a in distribution],
         'official_product_publisher_inferred': False}
+
+
+def _publisher(parts):
+    strict = _strict_publisher(parts)
+    if strict is not None:
+        return strict
+    agents = parts['publisher_agents']
+    publishers = [a for a in agents if a['description_values'] == []]
+    distribution = [a for a in agents if a['description_values'] == ['頒布']]
+    sales = [a for a in agents if a['description_values'] == ['発売'] and a['name'] == '泰文堂']
+    if (len(publishers) != 1 or len(sales) != 1
+            or _key(publishers[0]['name']) != _key('アース・スターエンターテイメント')
+            or len(publishers) + len(distribution) + len(sales) != len(agents)
+            or any(not a['name'] or not a['locator'] or not a['structured_agent'] for a in agents)
+            or len({_parent(a['locator']) for a in agents}) != 1
+            or parts['source']['publisher'] != '; '.join(dict.fromkeys(a['name'] for a in agents))):
+        return None
+    for agent in distribution + sales:
+        if (len(agent['description_locators']) != 1
+                or not re.fullmatch(re.escape(agent['locator'])
+                    + r'/\{http://xmlns\.com/foaf/0\.1/\}Agent\[[1-9][0-9]*\]'
+                    + r'/\{http://purl\.org/dc/terms/\}description\[[1-9][0-9]*\]',
+                    agent['description_locators'][0])):
+            return None
+    def role_rows(rows):
+        return [{'name': a['name'], 'description': a['description_values'][0], 'locator': a['locator'],
+            'description_locator': a['description_locators'][0]} for a in rows]
+    return {'rule': 'unique_earthstar_publisher_with_explicit_distribution_and_taibundo_sale',
+        'publisher_agent': {'name': publishers[0]['name'], 'locator': publishers[0]['locator']},
+        'distribution_agents': role_rows(distribution), 'sales_agents': role_rows(sales),
+        'official_product_publisher_inferred': False}
+
+
+def _fallback_titles(parts, target, own):
+    """Bind observed ISBD forms to an independent, complete own dc:title."""
+    volume = parts['volume']
+    if (not volume or not re.fullmatch(r'[0-9]+', unicodedata.normalize('NFKC', volume['value']))
+            or not re.fullmatch(re.escape(own)
+                + r'/\{http://ndl\.go\.jp/dcndl/terms/\}volume\[[1-9][0-9]*\]', volume['locator'])):
+        return None
+    dct, dc = [], []
+    for row in parts['titles']:
+        if not row['value']:
+            return None
+        if re.fullmatch(re.escape(own) + r'/\{http://purl\.org/dc/terms/\}title\[[1-9][0-9]*\]', row['locator']):
+            dct.append(row)
+        elif re.fullmatch(re.escape(own) + r'/\{http://purl\.org/dc/elements/1\.1/\}title\[[1-9][0-9]*\]', row['locator']):
+            dc.append(row)
+        else:
+            return None
+    if not dc or not dct:
+        return None
+    composed, parallel_forms, kinds = [], [], set()
+    for row in dct:
+        raw = row['value']
+        if ' = ' in raw:
+            if not raw.endswith('. ' + volume['value']):
+                return None
+            complete = raw[:-len('. ' + volume['value'])]
+            pieces = complete.split(' : ')
+            if len(pieces) > 2 or any(not p for p in pieces):
+                return None
+            main_parallel = pieces[0].split(' = ')
+            if len(main_parallel) != 2:
+                return None
+            main, parallel = main_parallel
+            # Only the explicit Latin parallel main title is separated. The
+            # common subtitle after ':' remains part of the Japanese title.
+            if (not main or not re.search(r'[A-Za-z]', parallel)
+                    or any(ord(c) > 127 for c in parallel) or '=' in parallel or ':' in parallel
+                    or not re.search(r'[\u3040-\u30ff\u3400-\u9fff]', main)):
+                return None
+            japanese = main + (' : ' + pieces[1] if len(pieces) == 2 else '')
+            parallel_forms.append({'value': parallel, 'locator': row['locator']})
+            kinds.add('explicit_parallel_title')
+        else:
+            # The suffix is never inferred from a trailing number alone: both
+            # an own dc:title without it and an exact own numeric volume bind it.
+            if (not raw.endswith(' ' + volume['value']) or raw.endswith('. ' + volume['value'])):
+                return None
+            japanese = raw[:-len(' ' + volume['value'])]
+            kinds.add('explicit_repeated_volume')
+        if not japanese or any(_key(r['value']) != _key(japanese) for r in dc):
+            return None
+        composed.append({'value': japanese + '. ' + volume['value'], 'locator': row['locator']})
+    if len(kinds) != 1:
+        return None
+    title = _titles({**parts, 'titles': composed}, target, own)
+    if title is None:
+        return None
+    return {**title, 'rule': 'own_complete_dc_dct_title_and_explicit_volume_v3',
+        'source_value': dct[0]['value'], 'fallback_kind': next(iter(kinds)),
+        'own_dct_title_evidence': deepcopy(dct), 'own_dc_title_evidence': deepcopy(dc),
+        'explicit_parallel_forms': parallel_forms, 'parallel_translation_identity': 'unknown',
+        'locators': [r['locator'] for r in dct + dc] + [volume['locator']]}
 
 
 def _imprint(parts, own):
@@ -172,27 +267,36 @@ def _match(assertion, parts):
     if bound is None:
         return None
     authors, dated_used = bound
+    # Complete strict matches across all children take precedence. Fallbacks
+    # cannot replace an existing proof or resolve an old ambiguous match.
     matches = []
-    for book in assertion['books']:
-        child_names = {_person_key(c['name']) for c in book['credits'] if c['role'] == 'author'}
-        if child_names != {_person_key(n) for n in names}:
-            continue
-        title = _titles(parts, book['title'], own)
-        if title is None:
-            suffix = _suffix(book['title'], assertion['title'])
-            title = _titles(parts, suffix, own) if suffix else None
+    fallback_used = False
+    for matcher in (_titles, _fallback_titles):
+        for book in assertion['books']:
+            child_names = {_person_key(c['name']) for c in book['credits'] if c['role'] == 'author'}
+            if child_names != {_person_key(n) for n in names}:
+                continue
+            title = matcher(parts, book['title'], own)
+            if title is None:
+                suffix = _suffix(book['title'], assertion['title'])
+                title = matcher(parts, suffix, own) if suffix else None
+                if title:
+                    title = {**title, 'rule': 'explicit_workgroup_prefix_plus_complete_ndl_title',
+                        'official_workgroup_prefix': assertion['title']}
             if title:
-                title = {**title, 'rule': 'explicit_workgroup_prefix_plus_complete_ndl_title',
-                    'official_workgroup_prefix': assertion['title']}
-        if title:
-            matches.append((book, title))
+                matches.append((book, title))
+        if matches:
+            fallback_used = matcher is _fallback_titles
+            break
     if len(matches) != 1:
         return None
     book, title = matches[0]
     volume = parts['volume']['value'] if parts['volume'] else None
     numeric = unicodedata.normalize('NFKC', volume) if volume else ''
     authorities = sorted({uri for _, rows in authors for a in rows for uri in a['authority_ids']})
-    return {'rule_version': 'earthstar-explicit-workgroup-member-match-v2' if dated_used
+    expanded = fallback_used or 'sales_agents' in publisher
+    return {'rule_version': 'earthstar-explicit-workgroup-member-match-v3' if expanded
+            else 'earthstar-explicit-workgroup-member-match-v2' if dated_used
             else 'earthstar-explicit-workgroup-member-match-v1',
         'scope': 'own_ndl_bibliographic_member_in_explicit_publisher_workgroup',
         'title': assertion['title'], 'title_origin': {'kind': 'publisher_explicit_workgroup_h1_title',
