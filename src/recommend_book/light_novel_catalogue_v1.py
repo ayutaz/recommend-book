@@ -728,9 +728,24 @@ class LightNovelCatalogue:
         if provider == 'ichijinsha-iris':
             from .light_novel_ichijinsha_books_v1 import verify_ichijinsha_books
             return verify_ichijinsha_books(manifest_path, expected_sha256)
+        if provider == 'tobooks':
+            from .light_novel_publisher_references_v1 import verify_publisher_references
+            return [{**row, 'publisher_book_id': row['publisher_reference_id']}
+                    for row in verify_publisher_references(provider, manifest_path, expected_sha256)]
         raise ValueError('unknown bibliographic publisher provider')
 
     def _publisher_edition_match(self, provider, publisher, edition, cache):
+        if provider == 'tobooks':
+            from .normalization import normalize_isbn
+            from .light_novel_reference_match_v1 import match_tobooks_edition
+            isbn = normalize_isbn(str(publisher.get('isbn') or ''))
+            if not isbn:
+                return None
+            parts = self._edition_primary_bibliographic_parts(edition, cache)
+            if parts is None:
+                return None
+            return match_tobooks_edition(publisher, parts,
+                same_isbn_parts=self._reference_same_isbn_parts(isbn, cache))
         # Keep every previously accepted v1 proof byte-for-byte reproducible.
         match = self._publisher_edition_match_v1(provider, publisher, edition, cache)
         if match is not None:
@@ -740,6 +755,52 @@ class LightNovelCatalogue:
             return match
         match = self._publisher_edition_match_iris_neo(provider, publisher, edition, cache)
         return match if match is not None else self._publisher_edition_match_iris_neo(provider, publisher, edition, cache, _extended=True)
+
+    def _reference_same_isbn_parts(self, isbn, cache):
+        """Authenticate every same-ISBN own record, including outside a search.
+
+        Metadata only selects candidates. Each selected stored record must still
+        reproduce its own raw fields and typed identity within this operation.
+        """
+        from .normalization import normalize_isbn
+        index_key = ('reference_edition_isbn_index',)
+        if index_key not in cache:
+            stored = cache.get(('reference_all_stored',))
+            if stored is None:
+                with self._connect() as db:
+                    stored = db.execute('SELECT * FROM entries').fetchall()
+            parsed = cache.get(('reference_all_records',), {})
+            index = {}
+            for entry in stored:
+                record = parsed.get(entry['entry_id'])
+                if record is None:
+                    record = json.loads(entry['record_json'])
+                if (entry['kind'] != 'edition' and record.get('schema_version') not in {
+                        'light-novel-edition-v1', 'light-novel-edition-bulk-v1'}):
+                    continue
+                for identifier in record['source_record']['identifiers']:
+                    value = normalize_isbn(identifier['value']) if identifier['source'] == 'isbn' else None
+                    if value:
+                        index.setdefault(value, {})[entry['entry_id']] = (entry, record)
+            cache[index_key] = index
+        parts_key = ('reference_same_isbn_parts', isbn)
+        if parts_key not in cache:
+            parts = []
+            for entry, record in cache[index_key].get(isbn, {}).values():
+                if hashlib.sha256(entry['record_json'].encode()).hexdigest() != entry['record_sha256']:
+                    raise ValueError('stored metadata SHA mismatch')
+                projected = self._project_edition(record, cache)
+                if projected['entry_id'] != entry['entry_id'] or projected['entry_kind'] != entry['kind']:
+                    raise ValueError('stored typed identity differs')
+                primary = self._edition_primary_bibliographic_parts(record, cache)
+                if primary is None:
+                    # An ambiguous same-ISBN record invalidates confirmation;
+                    # do not silently omit it from the candidate population.
+                    parts.append(None)
+                else:
+                    parts.append(primary)
+            cache[parts_key] = parts
+        return cache[parts_key]
 
     def _publisher_edition_match_v1(self, provider, publisher, edition, cache):
         from .normalization import normalize_isbn
@@ -903,6 +964,7 @@ class LightNovelCatalogue:
         primary = resources[0]
         base = source['extra']['raw_locator'] + '/dcndl:BibResource[@rdf:about=' + primary.get(f'{{{RDF}}}about') + ']'
         titles, volumes, literal_authors, contributors = [], [], [], []
+        edition_statements = []
         identifiers, publishers, languages, imprints, ndc = [], [], [], [], []
         publisher_agents = []
         for position, child in enumerate(primary):
@@ -912,6 +974,8 @@ class LightNovelCatalogue:
                 titles.append({'value': value, 'locator': locator})
             elif child.tag == f'{{{DCNDL}}}volume' and value:
                 volumes.append({'value': value, 'locator': locator})
+            elif child.tag == f'{{{DCNDL}}}edition' and value:
+                edition_statements.append({'value': value, 'locator': locator})
             elif child.tag in {f'{{{DC}}}creator', f'{{{DCTERMS}}}creator'} and value:
                 # A default creator role is insufficient when no authority exists.
                 marked = re.fullmatch(r'(.+?)\s*[\[（(]?\s*(著者|著|原作|作)\s*[\]）)]?', value)
@@ -950,6 +1014,7 @@ class LightNovelCatalogue:
             'extra': {**source['extra'], 'ndc_codes': ndc}}
         return {'source': direct_source, 'titles': titles, 'volume': volumes[0] if volumes else None,
                 'literal_authors': literal_authors, 'publisher_agents': publisher_agents,
+                'edition_statements': edition_statements,
                 'source_raw_sha256': provenance['raw_sha256']}
 
     def _publisher_edition_match_v2(self, provider, publisher, edition, cache):
@@ -1052,6 +1117,11 @@ class LightNovelCatalogue:
         cache = {}
         with self._connect() as db:
             stored = {row['entry_id']: dict(row) for row in db.execute('SELECT * FROM entries WHERE kind=?', ('edition',))}
+        if provider == 'tobooks':
+            # The stored kind is itself a claim to verify; it must not hide
+            # a same-ISBN edition record from this provider's integrity scope.
+            with self._connect() as db:
+                cache[('reference_all_stored',)] = db.execute('SELECT * FROM entries').fetchall()
         by_isbn = {}
         for book in books:
             isbn = normalize_isbn(str(book.get('isbn') or ''))
@@ -1415,6 +1485,8 @@ class LightNovelCatalogue:
             if hashlib.sha256(entry['record_json'].encode()).hexdigest() != entry['record_sha256']:
                 raise ValueError('stored metadata SHA mismatch')
             records[entry['entry_id']] = json.loads(entry['record_json'])
+        cache[('reference_all_stored',)] = stored
+        cache[('reference_all_records',)] = records
         candidate_ids = self._candidate_ids(records, query=candidate_query, entry_id=detail_entry_id)
         if candidate_ids is not None:
             stored = [entry for entry in stored if entry['entry_id'] in candidate_ids]

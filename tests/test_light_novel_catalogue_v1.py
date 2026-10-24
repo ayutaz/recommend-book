@@ -1116,6 +1116,96 @@ def test_iris_neo_distribution_and_complete_title_extensions_work_together(iris_
     assert proof['publisher_match']['distribution_agents'] and proof['title_match']['volume'] == '3'
 
 
+@pytest.fixture
+def tobooks_edition(publisher_edition_v2, monkeypatch):
+    cat, record, _ = publisher_edition_v2(publisher='TOブックス', imprint='TOブックス',
+        title='主書名 : 副書名', official_title='主書名３ 副書名')
+    reference = {'publisher_reference_id': 'tobooks-product:1', 'source_unit': 'publisher_product_reference',
+        'source_url': 'https://www.tobooks.jp/contents/1', 'title': '主書名３ 副書名',
+        'isbn': '9784798613161', 'publisher': 'TOブックス', 'label': None, 'label_literals': [], 'form': 'B6判',
+        'credits': [{'role': 'unknown', 'name': '人物名'}], 'official_lightnovel_tag': True,
+        'story_series_asserted': False, 'metadata_conflict': False, 'bibliographic_variants': [],
+        'source_evidence': [{'source_url': 'https://www.tobooks.jp/contents', 'raw_sha256': 'a' * 64,
+                             'locator': 'ul#search_ul .search_ul_a[1]'}]}
+    import recommend_book.light_novel_publisher_references_v1 as source
+    monkeypatch.setattr(source, 'verify_publisher_references', lambda provider, path, sha: [reference])
+    assert cat.import_editions([record])['inserted'] == 1
+    return cat, record, reference
+
+
+def test_tobooks_reference_dispatch_confirmation_and_detail_preserve_unknown_role(tobooks_edition):
+    cat, record, reference = tobooks_edition
+    book = cat._publisher_books('tobooks', 'fixture-manifest', 'a' * 64)[0]
+    assert book['publisher_book_id'] == reference['publisher_reference_id']
+    result = cat.confirm_publisher_editions('tobooks', 'fixture-manifest', 'a' * 64)
+    assert result['confirmed'] == 1 and result['ndl_candidate_editions_verified'] == 1
+    detail = cat.work_detail('lne:ndl:' + record['id'])
+    assert detail['edition_bibliography_confirmed'] is True
+    proof = detail['edition_confirmation_evidence']
+    assert proof['official_credits'][0]['role'] == 'unknown'
+    assert proof['product_sku_identity_asserted'] is False
+    assert proof['author_identity_asserted'] is False and proof['story_series_identity_asserted'] is False
+
+
+@pytest.mark.parametrize('conflict', ['title', 'edition_statement', 'kind'])
+def test_tobooks_same_isbn_conflict_outside_detail_title_scope_invalidates_confirmation(tobooks_edition, tmp_path, conflict):
+    import xml.etree.ElementTree as ET
+    from pathlib import Path
+    from recommend_book.ingestion.ndl import NDLAdapter
+    from recommend_book.ingestion.core import RawArtifact
+    cat, record, _ = tobooks_edition
+    assert cat.confirm_publisher_editions('tobooks', 'fixture-manifest', 'a' * 64)['confirmed'] == 1
+    other = json.loads(json.dumps(record))
+    xml = Path(record['provenance']['raw_path']).read_text(encoding='utf-8')
+    xml = xml.replace(record['id'], 'R100000002-I2')
+    if conflict in {'title', 'kind'}:
+        xml = xml.replace('主書名', '矛盾する別書名')
+    else:
+        xml = xml.replace('</n:BibResource>', '<n:edition>改訂版</n:edition></n:BibResource>')
+    raw = tmp_path / 'conflicting-isbn.xml'; raw.write_text(xml, encoding='utf-8')
+    digest = hashlib.sha256(raw.read_bytes()).hexdigest()
+    source = NDLAdapter(None)._normalize(ET.fromstring(xml), RawArtifact(digest, str(raw), raw.stat().st_size,
+        record['source_record']['retrieved_at'], 'https://ndlsearch.ndl.go.jp/api/sru'), 'iss-ndl-opac',
+        locator='records[1]/recordData').model_dump(mode='json')
+    other.update(id=source['source_id'], source_url=source['source_url'], title=source['titles'][0]['value'], source_record=source)
+    other['provenance'].update(url=source['source_url'], raw_path=str(raw), raw_sha256=digest)
+    assert cat.import_editions([other])['inserted'] == 1
+    if conflict == 'kind':
+        with cat._connect() as db:
+            db.execute('UPDATE entries SET kind=? WHERE entry_id=?', ('work', 'lne:ndl:' + other['id']))
+    # A detail request selects the first title, but must still authenticate the
+    # contradictory same-ISBN record that lies outside that search selection.
+    detail = cat.work_detail('lne:ndl:' + record['id'])
+    assert not detail.get('edition_bibliography_confirmed')
+    if conflict == 'kind':
+        with pytest.raises(ValueError, match='typed identity'):
+            cat.confirm_publisher_editions('tobooks', 'fixture-manifest', 'a' * 64)
+    else:
+        assert cat.confirm_publisher_editions('tobooks', 'fixture-manifest', 'a' * 64)['confirmed'] == 0
+
+
+def test_tobooks_reference_context_never_opens_an_unrelated_isbn(tobooks_edition, tmp_path):
+    import xml.etree.ElementTree as ET
+    from pathlib import Path
+    from recommend_book.ingestion.ndl import NDLAdapter
+    from recommend_book.ingestion.core import RawArtifact
+    cat, record, _ = tobooks_edition
+    other = json.loads(json.dumps(record))
+    xml = Path(record['provenance']['raw_path']).read_text(encoding='utf-8')
+    xml = xml.replace(record['id'], 'R100000002-I2').replace('9784798613161', '9784758047678')
+    raw = tmp_path / 'unrelated-isbn.xml'; raw.write_text(xml, encoding='utf-8')
+    digest = hashlib.sha256(raw.read_bytes()).hexdigest()
+    source = NDLAdapter(None)._normalize(ET.fromstring(xml), RawArtifact(digest, str(raw), raw.stat().st_size,
+        record['source_record']['retrieved_at'], 'https://ndlsearch.ndl.go.jp/api/sru'), 'iss-ndl-opac',
+        locator='records[1]/recordData').model_dump(mode='json')
+    other.update(id=source['source_id'], source_url=source['source_url'], source_record=source, isbn=['9784758047678'])
+    other['provenance'].update(url=source['source_url'], raw_path=str(raw), raw_sha256=digest)
+    assert cat.import_editions([other])['inserted'] == 1
+    raw.write_bytes(b'unrelated raw is unavailable')
+    assert cat.confirm_publisher_editions('tobooks', 'fixture-manifest', 'a' * 64)['confirmed'] == 1
+    assert cat.work_detail('lne:ndl:' + record['id'])['edition_bibliography_confirmed'] is True
+
+
 def test_series_delta_scope_avoids_unrelated_raw_and_reuses_same_cache(publisher_ndl_bundle, tmp_path, monkeypatch):
     from pathlib import Path
     import xml.etree.ElementTree as ET
