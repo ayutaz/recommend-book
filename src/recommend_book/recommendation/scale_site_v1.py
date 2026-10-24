@@ -536,6 +536,7 @@ async function showDetail(identifier){
   sourceCredits(body,row.content_sources||[]);
   if(row.members?.length){const members=section(body,'収録巻・関連する版');members.append(node('p','出典で対応関係を確認できた巻・版です。各項目の読書状態はシリーズとは別に保存します。','muted'));for(const member of row.members){const div=node('div',undefined,'similar-row'),button=node('button',member.title||'書名不明');button.addEventListener('click',()=>showDetail(entryKey(member)));div.append(button,node('p',entryLabel(member),'muted'),statusControl(member));members.append(div);}}
   const similar=section(body,'この作品に近い候補');similar.append(node('p','内容特徴と資料記載のジャンル・書誌特徴を区別して表示します。個人の読書履歴に基づく推薦ではありません。','muted'));
+  if(row.entry_kind==='edition'&&!row.recommendable){similar.append(node('p','この版は推薦に使える特徴が未収録です。'));return;}
   const data=await api(entryPath(identifier)+'/similar?exclude_read='+($('exclude-read').checked?'1':'0'));
   if(!data.items.length)similar.append(node('p','根拠のある類似候補はまだありません。'));
   for(const item of data.items){const div=node('div',undefined,'similar-row'),button=node('button',item.title);button.addEventListener('click',()=>showDetail(entryKey(item)));div.append(button,node('p',entryLabel(item)+' / '+describe(item),'muted'));
@@ -661,7 +662,10 @@ def create_server(database=None, *, catalogue=None, light_novels_database=None, 
                     if row is None:
                         self._send(404, {'error': '作品が見つかりません。'})
                     elif similar:
-                        data = catalogue.similar_works(qid, limit=8, exclude_read=value('exclude_read', '1') == '1')
+                        if path.startswith('/api/entries/') and row.get('entry_kind') == 'edition' and not row.get('recommendable'):
+                            data = {'mode': 'insufficient_evidence', 'items': []}
+                        else:
+                            data = catalogue.similar_works(qid, limit=8, exclude_read=value('exclude_read', '1') == '1')
                         self._send(200, {'mode': data.get('mode'), 'personalized': False, 'items': [public_work(v) for v in data['items']]})
                     else:
                         self._send(200, public_work(row))

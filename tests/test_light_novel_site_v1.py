@@ -89,6 +89,50 @@ def test_typed_search_detail_similarity_status_and_world_compatibility(site):
     assert fetch(base, '/api/history/export')['records'][0]['entry_id'] == 'lns:wd:Q5357270'
 
 
+@pytest.mark.parametrize(('path', 'kind', 'recommendable', 'expected_calls'), [
+    ('/api/entries/lne%3Andl%3A000001/similar', 'edition', False, 0),
+    ('/api/entries/lne%3Andl%3A000001/similar', 'edition', True, 1),
+    ('/api/entries/lns%3Awd%3AQ5357270/similar', 'series', False, 1),
+    ('/api/entries/lnw%3Awd%3AQ3/similar', 'work', False, 1),
+    ('/api/works/Q2/similar', 'edition', False, 1),
+])
+def test_similarity_skips_only_featureless_typed_editions(site, monkeypatch, path, kind, recommendable, expected_calls):
+    base, catalogue = site
+    detail_calls, similar_calls = [], []
+    def detail(identifier):
+        detail_calls.append(identifier)
+        return dict(catalogue.item(identifier), entry_kind=kind, recommendable=recommendable)
+    def similar(identifier, **kwargs):
+        similar_calls.append(identifier)
+        if not expected_calls:
+            raise AssertionError('featureless edition must not read the entire catalogue')
+        return {'mode': 'source_similarity', 'items': [catalogue.item()]}
+    monkeypatch.setattr(catalogue, 'work_detail', detail)
+    monkeypatch.setattr(catalogue, 'similar_works', similar)
+    data = fetch(base, path)
+    assert len(detail_calls) == 1
+    assert len(similar_calls) == expected_calls
+    assert bool(data['items']) is bool(expected_calls)
+    assert data['personalized'] is False
+
+
+def test_similarity_shortcut_does_not_hide_absent_or_invalid_entries(site, monkeypatch):
+    base, catalogue = site
+    detail_calls = []
+    def detail(identifier):
+        detail_calls.append(identifier)
+        return None
+    def forbidden_similar(*args, **kwargs):
+        raise AssertionError('no backend similarity call for an absent or invalid entry')
+    monkeypatch.setattr(catalogue, 'work_detail', detail)
+    monkeypatch.setattr(catalogue, 'similar_works', forbidden_similar)
+    for path in ['/api/entries/lne%3Andl%3Amissing/similar', '/api/entries/lne%3Andl%3A..%2Fprivate/similar']:
+        with pytest.raises(HTTPError) as error:
+            fetch(base, path)
+        assert error.value.code == 404
+    assert detail_calls == ['lne:ndl:missing']
+
+
 def test_typed_preferences_keep_qids_distinct_and_reject_unsafe_identifiers(site):
     base, catalogue = site
     result = fetch(base, '/api/recommendations', {'liked_qids': ['Q2'],

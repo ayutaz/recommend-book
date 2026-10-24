@@ -765,12 +765,13 @@ def publisher_edition_v2(edition_bundle):
 
     def build(*, title='主書名 : 副書名', volume='3', official_title='主書名３ 副書名',
               imprint='角川スニーカー文庫', label='角川スニーカー文庫', label_id=339,
-              publisher='KADOKAWA', authority=True, literal='著者 著', extra='', ndc='913.6'):
+              publisher='KADOKAWA', authority=True, literal='著者 著', extra='', ndc='913.6', publisher_agent=False):
         record = json.loads(json.dumps(template))
         raw = Path(record['provenance']['raw_path'])
         url = record['source_url']
         creator = ('<d:creator><rdf:Description rdf:about="http://id.ndl.go.jp/auth/entity/01234567">'
                    '<f:name>著者</f:name></rdf:Description></d:creator>') if authority else ''
+        publisher_xml = ('<d:publisher><f:Agent><f:name>' + escape(publisher) + '</f:name></f:Agent></d:publisher>') if publisher_agent else '<d:publisher>' + escape(publisher) + '</d:publisher>'
         xml = f'''<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
           xmlns:d="http://purl.org/dc/terms/" xmlns:c="http://purl.org/dc/elements/1.1/"
           xmlns:n="http://ndl.go.jp/dcndl/terms/" xmlns:f="http://xmlns.com/foaf/0.1/">
@@ -778,7 +779,7 @@ def publisher_edition_v2(edition_bundle):
           <c:title><rdf:Description><rdf:value>{escape(title)}</rdf:value></rdf:Description></c:title>
           {('<n:volume>' + escape(volume) + '</n:volume>') if volume else ''}{creator}
           {('<c:creator>' + escape(literal) + '</c:creator>') if literal else ''}
-          <d:publisher>{escape(publisher)}</d:publisher><d:language>jpn</d:language>
+          {publisher_xml}<d:language>jpn</d:language>
           <n:seriesTitle>{escape(imprint)}</n:seriesTitle><d:identifier rdf:datatype="ISBN">9784798613161</d:identifier>
           <d:subject rdf:resource="http://id.ndl.go.jp/class/ndc10/{ndc}"/>{extra}</n:BibResource></rdf:RDF>'''
         raw.write_text(xml, encoding='utf-8')
@@ -1042,6 +1043,77 @@ def test_iris_neo_bridge_rejects_wrong_isbn_provider_or_editor(iris_neo_edition)
     assert cat._publisher_edition_match('shueisha-dx', book, record, {}) is None
     book['credits'][0]['role'] = '編者'
     assert cat._publisher_edition_match('ichijinsha-iris', book, record, {}) is None
+
+
+def test_iris_neo_original_bridge_proof_remains_unchanged(iris_neo_edition):
+    cat, record, book = iris_neo_edition()
+    locator = 'records[1]/recordData/dcndl:BibResource[@rdf:about=' + record['source_url'] + '#material]/{http://purl.org/dc/terms/}title[1]'
+    assert cat._publisher_edition_match('ichijinsha-iris', book, record, {}) == {
+        'rule_version': 'publisher-ndl-edition-confirmation-iris-neo-v1', 'scope': 'edition_only',
+        'isbn13': '9784798613161', 'matched_ndl_title': '四竜帝の大陸', 'primary_title_locator': locator,
+        'source_raw_sha256': record['provenance']['raw_sha256'],
+        'authors': [{'official_credit': '著者', 'ndl_authorities': ['http://id.ndl.go.jp/auth/entity/01234567']}],
+        'ndl_imprint': 'IRIS NEO', 'official_label': 'アイリスNEO', 'ndl_publisher': '一迅社',
+        'imprint_match': {'rule': 'same_edition_ichijinsha_iris_neo_pair', 'official_label': 'アイリスNEO',
+            'ndl_imprint': 'IRIS NEO', 'scope': 'this_isbn_edition_only'},
+        'original_work_identity_asserted': False, 'story_series_identity_asserted': False,
+        'sources': [record['source_url'], book['source_url']]}
+
+
+def test_iris_neo_explicit_distribution_role_preserves_original_publisher_values(iris_neo_edition):
+    extra = '<d:publisher><f:Agent><f:name>講談社</f:name><d:description>頒布</d:description></f:Agent></d:publisher>'
+    cat, record, book = iris_neo_edition(publisher_agent=True, extra=extra)
+    proof = cat._publisher_edition_match('ichijinsha-iris', book, record, {})
+    assert proof['rule_version'] == 'publisher-ndl-edition-confirmation-iris-neo-v2'
+    assert proof['ndl_publisher'] == record['source_record']['publisher'] == '一迅社; 講談社'
+    assert proof['publisher_match']['rule'] == 'unique_publisher_and_explicit_distribution_agents'
+    assert proof['publisher_match']['distribution_agents'][0]['name'] == '講談社'
+    assert proof['publisher_match']['distribution_agents'][0]['description'] == '頒布'
+    assert proof['publisher_match']['distribution_agents'][0]['description_locator']
+
+
+@pytest.mark.parametrize('extra', [
+    '<d:publisher><f:Agent><f:name>講談社</f:name></f:Agent></d:publisher>',
+    '<d:publisher><f:Agent><f:name>講談社</f:name><d:description>出版</d:description></f:Agent></d:publisher>',
+    '<d:publisher>講談社</d:publisher>',
+    '<d:publisher><f:Agent><f:name>一迅社</f:name></f:Agent></d:publisher><d:publisher><f:Agent><f:name>講談社</f:name><d:description>頒布</d:description></f:Agent></d:publisher>'])
+def test_iris_neo_unknown_or_multiple_actual_publishers_remain_held(iris_neo_edition, extra):
+    cat, record, book = iris_neo_edition(publisher_agent=True, extra=extra)
+    assert cat._publisher_edition_match('ichijinsha-iris', book, record, {}) is None
+
+
+@pytest.mark.parametrize('official_title,volume', [('主書名３ 副書名', '3'), ('主書名 副書名３', '3'),
+    ('主書名～副書名～', None)])
+def test_iris_neo_complete_title_variants_keep_every_part(iris_neo_edition, official_title, volume):
+    cat, record, book = iris_neo_edition(title='主書名 : 副書名', official_title=official_title, volume=volume)
+    proof = cat._publisher_edition_match('ichijinsha-iris', book, record, {})
+    if volume == '3' and official_title == '主書名 副書名３':
+        assert proof['rule_version'] == 'publisher-ndl-edition-confirmation-iris-neo-v1'
+    else:
+        assert proof['rule_version'] == 'publisher-ndl-edition-confirmation-iris-neo-v2'
+        assert proof['title_match']['main'] == '主書名' and proof['title_match']['subtitle'] == '副書名'
+        assert proof['title_match']['volume'] == volume
+    for false_title in ('主書名', '副書名', '主書名２ 副書名'):
+        book['title'] = false_title
+        assert cat._publisher_edition_match('ichijinsha-iris', book, record, {}) is None
+
+
+def test_iris_neo_explicit_volume_subtitle_and_unknown_publisher_are_not_dropped(iris_neo_edition):
+    cat, record, book = iris_neo_edition(title='主書名', volume='[2] (巻副題)', official_title='主書名2')
+    assert cat._publisher_edition_match('ichijinsha-iris', book, record, {}) is None
+    book['title'] = '主書名 巻副題'
+    assert cat._publisher_edition_match('ichijinsha-iris', book, record, {}) is None
+    cat, record, book = iris_neo_edition(title='主書名 : 副書名', volume='3', official_title='主書名３ 副書名',
+        publisher_agent=True, extra='<d:publisher><f:Agent/></d:publisher>')
+    assert cat._publisher_edition_match('ichijinsha-iris', book, record, {}) is None
+
+
+def test_iris_neo_distribution_and_complete_title_extensions_work_together(iris_neo_edition):
+    cat, record, book = iris_neo_edition(title='主書名 : 副書名', volume='3', official_title='主書名３～副書名～',
+        publisher_agent=True, extra='<d:publisher><f:Agent><f:name>講談社</f:name><d:description>頒布</d:description></f:Agent></d:publisher>')
+    proof = cat._publisher_edition_match('ichijinsha-iris', book, record, {})
+    assert proof['rule_version'] == 'publisher-ndl-edition-confirmation-iris-neo-v2'
+    assert proof['publisher_match']['distribution_agents'] and proof['title_match']['volume'] == '3'
 
 
 @pytest.fixture

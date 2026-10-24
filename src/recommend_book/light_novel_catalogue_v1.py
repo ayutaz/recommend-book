@@ -672,7 +672,10 @@ class LightNovelCatalogue:
         if match is not None:
             return match
         match = self._publisher_edition_match_v2(provider, publisher, edition, cache)
-        return match if match is not None else self._publisher_edition_match_iris_neo(provider, publisher, edition, cache)
+        if match is not None:
+            return match
+        match = self._publisher_edition_match_iris_neo(provider, publisher, edition, cache)
+        return match if match is not None else self._publisher_edition_match_iris_neo(provider, publisher, edition, cache, _extended=True)
 
     def _publisher_edition_match_v1(self, provider, publisher, edition, cache):
         from .normalization import normalize_isbn
@@ -722,7 +725,7 @@ class LightNovelCatalogue:
                 'story_series_identity_asserted': False,
                 'sources': [source['source_url'], publisher['source_url']]}
 
-    def _publisher_edition_match_iris_neo(self, provider, publisher, edition, cache):
+    def _publisher_edition_match_iris_neo(self, provider, publisher, edition, cache, *, _extended=False):
         """An edition-bound label witness, never a series alias or identity."""
         from .normalization import normalize_isbn
         from .light_novel_ndl_series_v1 import person_key
@@ -734,8 +737,24 @@ class LightNovelCatalogue:
             return None
         source = parts['source']
         imprint = unicodedata.normalize('NFKC', source.get('series') or '').split(';')[0].strip()
-        if (source.get('publisher') != '一迅社' or imprint != 'IRIS NEO'
-                or source['language'] not in {'ja', 'jpn'}
+        publisher_match = {'rule': 'single_exact_publisher', 'publisher': '一迅社'}
+        agents = parts['publisher_agents']
+        if (source.get('publisher') != '一迅社' or _extended and
+                (len(agents) != 1 or any(row['description_values'] for row in agents))):
+            if not _extended:
+                return None
+            if not agents or not all(row['structured_agent'] and row['name'] for row in agents):
+                return None
+            publishers = [row for row in agents if row['description_values'] == []]
+            distributors = [row for row in agents if row['description_values'] == ['頒布']]
+            if (len(publishers) != 1 or publishers[0]['name'] != '一迅社'
+                    or len(publishers) + len(distributors) != len(agents) or not distributors):
+                return None
+            publisher_match = {'rule': 'unique_publisher_and_explicit_distribution_agents',
+                'publisher_agent': {'name': publishers[0]['name'], 'locator': publishers[0]['locator']},
+                'distribution_agents': [{'name': row['name'], 'description': '頒布', 'locator': row['locator'],
+                    'description_locator': row['description_locators'][0]} for row in distributors]}
+        if (imprint != 'IRIS NEO' or source['language'] not in {'ja', 'jpn'}
                 or not any(code.startswith('913') for code in source['extra']['ndc_codes'])):
             return None
         isbn = normalize_isbn(str(publisher.get('isbn') or ''))
@@ -748,6 +767,31 @@ class LightNovelCatalogue:
         title = next((row for row in parts['titles']
             if '/{http://purl.org/dc/terms/}title[' in row['locator']
             and title_key(row['value']) == title_key(publisher['title'])), None)
+        title_match = {'rule': 'direct_own_complete_title'}
+        if title is None and _extended:
+            volume = parts['volume']['value'] if parts['volume'] else None
+            def extended_key(value):
+                return ''.join(c for c in normalize_search(value).replace('〜', '~')
+                               if not unicodedata.category(c).startswith('P'))
+            for row in parts['titles']:
+                if '/{http://purl.org/dc/terms/}title[' not in row['locator']:
+                    continue
+                value = row['value']
+                if volume and value.endswith('. ' + volume):
+                    value = value[:-len('. ' + volume)]
+                split = value.split(' : ', 1)
+                main, subtitle = split[0], split[1] if len(split) == 2 else None
+                if not main or subtitle == '':
+                    continue
+                variants = [main + (volume or '') + (subtitle or ''), main + (subtitle or '') + (volume or '')]
+                if subtitle:
+                    variants += [main + (volume or '') + '~' + subtitle + '~', main + '~' + subtitle + '~' + (volume or '')]
+                if any(extended_key(candidate) == extended_key(publisher['title']) for candidate in variants):
+                    title = row
+                    title_match = {'rule': 'own_complete_title_all_parts_v1', 'source_value': row['value'],
+                        'main': main, 'subtitle': subtitle, 'volume': volume,
+                        'locators': [row['locator']] + ([parts['volume']['locator']] if volume else [])}
+                    break
         if title is None:
             return None
         writers = [credit['name'] for credit in publisher.get('credits', [])
@@ -763,7 +807,7 @@ class LightNovelCatalogue:
             if not authorities:
                 return None
             authors.append({'official_credit': name, 'ndl_authorities': authorities})
-        return {'rule_version': 'publisher-ndl-edition-confirmation-iris-neo-v1', 'scope': 'edition_only',
+        proof = {'rule_version': 'publisher-ndl-edition-confirmation-iris-neo-v1', 'scope': 'edition_only',
             'isbn13': isbn, 'matched_ndl_title': title['value'], 'primary_title_locator': title['locator'],
             'source_raw_sha256': parts['source_raw_sha256'], 'authors': authors,
             'ndl_imprint': imprint, 'official_label': publisher['label'], 'ndl_publisher': source['publisher'],
@@ -771,6 +815,10 @@ class LightNovelCatalogue:
                 'ndl_imprint': imprint, 'scope': 'this_isbn_edition_only'},
             'original_work_identity_asserted': False, 'story_series_identity_asserted': False,
             'sources': [source['source_url'], publisher['source_url']]}
+        if _extended:
+            proof.update(rule_version='publisher-ndl-edition-confirmation-iris-neo-v2',
+                         publisher_match=publisher_match, title_match=title_match)
+        return proof
 
     def _edition_primary_bibliographic_parts(self, edition, cache):
         """Read direct fields of this edition's sole own title-bearing resource.
@@ -779,7 +827,7 @@ class LightNovelCatalogue:
         Contents, related records, readings and holding resources supply no
         title variants or literal writer assertions here.
         """
-        from .ingestion.ndl import DC, DCTERMS, DCNDL, RDF, _value_text, _contributor
+        from .ingestion.ndl import DC, DCTERMS, DCNDL, RDF, FOAF, _value_text, _contributor
         source = self._source_with_title_parts(edition, cache)
         provenance = edition['provenance']
         node, _ = cache[('ndl_nodes', provenance['raw_path'], provenance['raw_sha256'])][source['source_id']]
@@ -792,6 +840,7 @@ class LightNovelCatalogue:
         base = source['extra']['raw_locator'] + '/dcndl:BibResource[@rdf:about=' + primary.get(f'{{{RDF}}}about') + ']'
         titles, volumes, literal_authors, contributors = [], [], [], []
         identifiers, publishers, languages, imprints, ndc = [], [], [], [], []
+        publisher_agents = []
         for position, child in enumerate(primary):
             locator = base + '/' + child.tag + f'[{position + 1}]'
             value = _value_text(child)
@@ -809,8 +858,17 @@ class LightNovelCatalogue:
                     literal_authors.append({'name': contributor.name, 'literal': value, 'locator': locator})
             elif child.tag == f'{{{DCTERMS}}}identifier' and child.get(f'{{{RDF}}}datatype', '').rsplit('/', 1)[-1] == 'ISBN':
                 identifiers.append({'source': 'isbn', 'value': value})
-            elif child.tag == f'{{{DCTERMS}}}publisher' and value:
-                publishers.append(value)
+            elif child.tag == f'{{{DCTERMS}}}publisher':
+                if value:
+                    publishers.append(value)
+                agents = child.findall(f'{{{FOAF}}}Agent')
+                descriptions = [(index, element) for index, element in enumerate(agents[0], 1)
+                    if element.tag == f'{{{DCTERMS}}}description'] if len(agents) == 1 else []
+                publisher_agents.append({'name': value, 'locator': locator,
+                    'structured_agent': len(agents) == 1 and len(child) == 1,
+                    'description_values': [_value_text(element) for _, element in descriptions],
+                    'description_locators': [locator + f'/{{{FOAF}}}Agent[1]/{{{DCTERMS}}}description[{index}]'
+                        for index, _ in descriptions]})
             elif child.tag == f'{{{DCTERMS}}}language' and value:
                 languages.append(value)
             elif child.tag == f'{{{DCNDL}}}seriesTitle' and value:
@@ -827,7 +885,8 @@ class LightNovelCatalogue:
             'series': '; '.join(dict.fromkeys(imprints)) or None,
             'extra': {**source['extra'], 'ndc_codes': ndc}}
         return {'source': direct_source, 'titles': titles, 'volume': volumes[0] if volumes else None,
-                'literal_authors': literal_authors, 'source_raw_sha256': provenance['raw_sha256']}
+                'literal_authors': literal_authors, 'publisher_agents': publisher_agents,
+                'source_raw_sha256': provenance['raw_sha256']}
 
     def _publisher_edition_match_v2(self, provider, publisher, edition, cache):
         from .normalization import normalize_isbn
