@@ -42,10 +42,10 @@ uv run --locked python scripts/serve_scale_catalogue_v1.py --database data/auton
 
 ## ここから進めること
 
-最新の計画は[v24：日本のライトノベルを広く収録する](docs/autonomous-next-phase-plan-v25.md)、現在地は[ライトノベル対応の進捗](docs/light-novels-progress-v1.md)にまとめています。[2万分類の到達状況](docs/scale-classification-v4.md)は前段階の記録です。新たな不具合や変更がなければ同じ分類・監査・画面確認を繰り返しません。
+最新の計画は[v25：日本のライトノベルを広く収録する](docs/autonomous-next-phase-plan-v25.md)、現在地は[ライトノベル対応の進捗](docs/light-novels-progress-v1.md)にまとめています。[2万分類の到達状況](docs/scale-classification-v4.md)は前段階の記録です。新たな不具合や変更がなければ同じ分類・監査・画面確認を繰り返しません。
 
 1. 出版社のシリーズ一覧とNDL作成の書誌を照合し、未収録のシリーズを補います。
-2. 固定20シリーズの照合と、内容特徴あり500シリーズ以上への拡張を進めます。
+2. 確認済み20シリーズと内容特徴504シリーズを保持し、追加書誌をシリーズ検索・推薦へ接続します。旧作・女性向け・電子専売の不足も補います。
 3. レーベル・年代ごとの収録と未解決の不足を報告し、日本のライトノベルの利用を保ちながら世界小説の3万・5万・10万作品への拡張へ進みます。
 
 ライトノベル対応は[PR #31](https://github.com/ayutaz/recommend-book/pull/31)で進めています。現在はdraftです。一般公開・商用提供は用途条件と公開構成が成立した段階で扱います。
