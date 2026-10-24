@@ -71,10 +71,37 @@ def test_preflight_selects_exact_current_sitelink_without_network(tmp_path, monk
     assert document["http_policy"]["max_attempts"] == 1
 
 
-def test_preflight_rejects_stale_rights_before_any_selection(tmp_path):
+def test_preflight_rejects_stale_rights_before_any_selection(tmp_path, monkeypatch):
+    # Keep this guard independent from the ignored production registry and
+    # receipts.  The fixture contains every required policy/URL, with only
+    # the verification timestamp deliberately outside the seven-day window.
+    registry = tmp_path / "registry.json"
+    registry.write_text(json.dumps({"rights_policies": [
+        {"policy_id": "wikidata-cc0", "usages": {purpose: "allowed" for purpose in ("acquire", "local_storage", "external_llm")}},
+        {"policy_id": "wikipedia-screened-prose", "usages": {purpose: "allowed" for purpose in ("acquire", "local_storage", "external_llm")}},
+    ]}), encoding="utf-8")
+    receipts = {}
+    for policy_id, urls in {
+        "wikidata-cc0": ["https://www.wikidata.org/wiki/Wikidata:Licensing"],
+        "wikipedia-screened-prose": [
+            "https://foundation.wikimedia.org/wiki/Policy:Terms_of_Use",
+            "https://creativecommons.org/licenses/by-sa/4.0/",
+        ],
+    }.items():
+        rows = []
+        for index, url in enumerate(urls):
+            raw = tmp_path / f"{policy_id}-{index}.html"
+            raw.write_bytes(f"fixture:{policy_id}:{index}".encode())
+            rows.append({"source_url": url, "final_url": url,
+                         "raw_path": str(raw),
+                         "raw_sha256": hashlib.sha256(raw.read_bytes()).hexdigest(),
+                         "verified_at": "2026-10-01T00:00:00+00:00",
+                         "status_code": 200})
+        receipts[policy_id] = rows
     conditions = tmp_path / "conditions.json"
-    conditions.write_text(json.dumps({"wikipedia-screened-prose": [{"verified_at": "2026-10-01T00:00:00+00:00"}]}), encoding="utf-8")
-    with pytest.raises(ValueError, match="missing official rights receipts"):
+    conditions.write_text(json.dumps(receipts), encoding="utf-8")
+    monkeypatch.setattr(collector, "REGISTRY", registry)
+    with pytest.raises(ValueError, match="rights receipt is stale"):
         collector._rights_gate(conditions, datetime(2026, 10, 22, tzinfo=timezone.utc))
 
 

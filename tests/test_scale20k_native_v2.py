@@ -189,6 +189,66 @@ def test_unknown_genre_import_and_existing_control_constructor_connect_end_to_en
     state.RUNTIME = tmp_path / 'runtime'
     state.DATABASE = catalogue(tmp_path)
     state.writer_lock = lambda **kwargs: nullcontext()
+    # The operational driver is intentionally Git-excluded in production.
+    # Build a small local copy of its control-constructor boundary so this
+    # end-to-end test exercises the real adapter without requiring that
+    # private checkout artifact on CI.
+    synthetic_root = tmp_path / 'synthetic-repo'
+    operational = synthetic_root / 'data' / 'autonomous-next-v3' / 'scale-30000-v1' / 'content-operational-driver-v2.py'
+    operational.parent.mkdir(parents=True)
+    operational.write_text('''
+import hashlib
+import json
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[3]
+BASE = ROOT / 'data/autonomous-next-v3/scale-30000-v1'
+DATABASE = ROOT / 'data/autonomous-next-v3/scale-v1/catalogue.sqlite'
+LOCK = ROOT / 'data/autonomous-next-v3/catalogue-writer.lock'
+
+def sha(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+def save(path, document):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open('x', encoding='utf-8') as stream:
+        json.dump(document, stream, ensure_ascii=True, indent=2, allow_nan=False)
+        stream.write('\\n')
+
+def observed_import(path, expected_sha):
+    raise AssertionError('controller must replace the existing import boundary')
+
+def finalize(export, expected_sha):
+    from recommend_book.scale_content_control_v4 import actual_gate, display_counts
+    eligibility_sql = ' AND w.display_allowed=1 AND w.recommendable=1'
+    export = Path(export).resolve(strict=True)
+    if sha(export) != expected_sha:
+        raise ValueError('Exact export pin required')
+    document = json.loads(export.read_bytes())
+    report_path, imported = observed_import(export, expected_sha)
+    run_path = Path(document['run_manifest'])
+    run = json.loads(run_path.read_bytes())
+    rows = document['verified_projection']['rows']
+    counts = display_counts(rows)
+    gate = actual_gate(run['selected'], len(rows), counts['actual_display_feature_works'],
+                       counts['actual_content_non_genre_feature_works'],
+                       stopped=bool(run.get('stopped') or run.get('stop_reasons')))
+    paths = {'export': export, 'run': run_path, 'import_report': report_path}
+    for name in ('request.json', 'process-start.json', 'process-exit.json', 'stdout.json', 'stderr.txt'):
+        paths['import:' + name] = Path(report_path).parent / name
+    receipt = {'version': 'scale-content-window-control-v4',
+               'display_projection': counts, 'window_index': document['window_index'],
+               'run_id': run['run_id'], 'coordinator_sha256': document['coordinator_sha256'],
+               'actual_display_labels_by_axis': {}, 'gate': gate, 'control_artifacts': {
+                   name: {'path': str(path.resolve()), 'sha256': sha(path)}
+                   for name, path in paths.items()}}
+    control = BASE / 'window-controls' / (export.parent.name + '.json')
+    save(control, receipt)
+    return receipt
+''', encoding='utf-8')
+    state.ROOT = synthetic_root
+    state.OPERATION_SHA = hashlib.sha256(operational.read_bytes()).hexdigest()
     name = 'scale20k-content-0101-0200-v1'
     source = state.BASE / 'source'
     mapping = source / 'work-mapping.json'
