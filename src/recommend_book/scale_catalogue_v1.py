@@ -31,6 +31,7 @@ NATIVE_EXPORT_VERSIONS = {'scale-native-classification-export-v1',
                           'scale-content-native-classification-export-v2',
                           'scale-content-native-classification-export-v3'}
 _NATIVE_PIN_WORKERS = 4
+_CLI_ARCHIVE_ROOT = Path(__file__).resolve().parents[2] / 'data/autonomous-next-v3/reference/cli-artifacts'
 
 
 def collective_description(entity):
@@ -614,9 +615,13 @@ class ScaleCatalogue:
 
     def _native_proof_artifact(self, path, sha):
         """Verify exact bytes per operation; timestamps never authorize reuse."""
+        from .classification.native_cli_archive_v1 import resolve_cli_artifact
         path = Path(path)
         if not path.is_absolute():
             raise ValueError('native proof path must be absolute')
+        logical = path
+        logical_signature = _native_proof_signature(logical)
+        path = resolve_cli_artifact(path, sha, _CLI_ARCHIVE_ROOT)
         signature = _native_proof_signature(path)
         with path.open('rb') as stream:
             actual_sha = hashlib.file_digest(stream, 'sha256').hexdigest()
@@ -631,6 +636,8 @@ class ScaleCatalogue:
             confirmed_sha = hashlib.file_digest(stream, 'sha256').hexdigest()
         if confirmed_sha != sha or _native_proof_signature(path) != signature:
             raise ValueError('native proof changed during hash verification: ' + str(path))
+        if _native_proof_signature(logical) != logical_signature:
+            raise ValueError('native executable path changed during hash verification')
 
     def import_classifications(self, manifest_path, expected_sha256):
         """Adopt only a versioned authentic verifier's display-authorized labels.
