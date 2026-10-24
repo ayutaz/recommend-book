@@ -232,7 +232,9 @@ def test_mnovels_group_public_scope_keeps_unknowns_and_separates_reference_count
         'publisher_work_group_kind': 'futaba_mnovels_grouping', 'light_novel_confirmed': False,
         'authors': [], 'source_frame_member_count': 21, 'verified_bibliographic_member_count': 3,
         'frame_membership_complete': True, 'exact_grouping_filter_complete': None,
-        'global_membership_complete': None, 'grouping_source': {'raw_path': 'PRIVATE-SENTINEL'}}
+        'global_membership_complete': None, 'grouping_source': {'raw_path': 'PRIVATE-SENTINEL'},
+        'publisher_product_references': [{'title': '未対応の掲載書誌',
+            'source_url': 'https://www.futabasha.co.jp/book/book1', 'raw_path': 'PRIVATE-SENTINEL'}]}
     result = public_work(row)
     for key in ('publisher_work_group_kind', 'source_frame_member_count',
                 'verified_bibliographic_member_count', 'frame_membership_complete',
@@ -241,6 +243,8 @@ def test_mnovels_group_public_scope_keeps_unknowns_and_separates_reference_count
     assert result['light_novel_confirmed'] is False
     assert result['authors'] == []
     assert result['story_series_identity_asserted'] is False
+    assert result['publisher_product_references'][0]['title'] == '未対応の掲載書誌'
+    assert 'entry_id' not in result['publisher_product_references'][0]
     assert 'PRIVATE-SENTINEL' not in json.dumps(result)
     parent = public_work({'entry_id': 'lne:ndl:R100000002-I2', 'entry_kind': 'edition',
                           'members': [row]})['members'][0]
@@ -279,6 +283,85 @@ def test_mnovels_group_scope_is_not_exported_for_a_different_identity(kind, basi
     assert 'publisher_work_group_kind' not in result
     assert 'source_frame_member_count' not in result
     assert 'frame_membership_complete' not in result
+
+
+def test_publisher_source_group_http_keeps_source_references_separate_from_editions(site, monkeypatch):
+    base, catalogue = site
+    identifier = 'lng:pub:futaba:' + 'a' * 32
+    row = {'entry_id': identifier, 'entry_kind': 'publisher_group', 'family': 'light_novel',
+        'qid': None, 'title': '掲載グループ', 'original_language': None, 'authors': [],
+        'series_identity_basis': 'publisher_source_group',
+        'series_title_source': 'publisher_explicit_work_group',
+        'publisher_work_group_kind': 'futaba_mnovels_source_group',
+        'admission_status': 'publisher_source_group_verified',
+        'relation_resolution': 'publisher_source_group_verified', 'light_novel_confirmed': False,
+        'source_frame_member_count': 1, 'verified_bibliographic_member_count': 0,
+        'frame_membership_complete': True, 'exact_grouping_filter_complete': None,
+        'global_membership_complete': None, 'members': [],
+        'source_url': 'https://www.futabasha.co.jp/search?label_name=test',
+        'publisher_product_references': [{'publisher_reference_id': 'futaba-product:book1',
+            'title': '掲載書誌 完全題', 'source_url': 'https://www.futabasha.co.jp/book/book1?type=1',
+            'label': 'Ｍノベルス', 'form': None, 'credits': [{'role': 'author', 'name': '著者'}],
+            'media_references': [{'media_type_source_literal': 2, 'media_id_source_literal': 12,
+                'source_url': 'https://www.futabasha.co.jp/book/book1?type=2',
+                'raw_path': 'PRIVATE-SENTINEL'}], 'source_evidence': {'path': 'PRIVATE-SENTINEL'}}],
+        'publisher_source_proof': {'path': 'PRIVATE-SENTINEL'}}
+    monkeypatch.setattr(catalogue, 'work_detail', lambda key: row if key == identifier else None)
+    result = fetch(base, '/api/entries/' + quote(identifier, safe=''))
+    assert result['entry_id'] == identifier and result['entry_kind'] == 'publisher_group'
+    assert result['qid'] == '' and result['authors'] == [] and result['members'] == []
+    assert result['series_identity_basis'] == 'publisher_source_group'
+    assert result['relation_resolution'] == 'publisher_source_group_verified'
+    assert result['admission_status'] == 'publisher_source_group_verified'
+    assert result['publisher_work_group_kind'] == 'futaba_mnovels_source_group'
+    assert result['light_novel_confirmed'] is False and result['global_membership_complete'] is None
+    product = result['publisher_product_references'][0]
+    assert product['title'] == '掲載書誌 完全題'
+    assert product['credits'] == [{'role': 'author', 'name': '著者'}]
+    assert product['form'] is None
+    assert product['media_references'][0]['source_url'].endswith('?type=2')
+    assert 'entry_id' not in product and 'read_status' not in product
+    assert 'PRIVATE-SENTINEL' not in json.dumps(result)
+    fetch(base, '/api/recommendations', {'liked_entry_ids': [identifier]})
+    assert catalogue.calls[-1]['liked_entry_ids'] == [identifier]
+
+
+def test_source_group_product_reference_boundary_rejects_nested_values_and_unsafe_links():
+    result = public_work({'entry_id': 'lng:pub:futaba:' + 'a' * 32, 'entry_kind': 'publisher_group',
+        'series_identity_basis': 'publisher_source_group',
+        'series_title_source': 'publisher_explicit_work_group',
+        'publisher_work_group_kind': 'futaba_mnovels_source_group',
+        'publisher_product_references': [{'publisher_reference_id': {'raw_path': 'PRIVATE-SENTINEL'},
+            'title': '書誌', 'source_url': 'javascript:alert(1)', 'label': {'path': 'PRIVATE-SENTINEL'},
+            'form': None, 'credits': [{'role': 'author', 'name': {'path': 'PRIVATE-SENTINEL'}}],
+            'media_references': [{'media_type_source_literal': True, 'media_id_source_literal': -1,
+                'source_url': 'https://www.futabasha.co.jp/book/book1?type=2'},
+                {'source_url': 'file:///PRIVATE-SENTINEL'}]},
+            {'title': {'path': 'PRIVATE-SENTINEL'}}]})
+    product = result['publisher_product_references'][0]
+    assert product['source_url'] == '' and product['label'] is None
+    assert product['credits'] == []
+    assert product['media_references'] == [{'source_url': 'https://www.futabasha.co.jp/book/book1?type=2'}]
+    assert 'publisher_reference_id' not in product
+    assert len(result['publisher_product_references']) == 1
+    assert 'PRIVATE-SENTINEL' not in json.dumps(result)
+    wrong_kind = public_work({'entry_id': 'lns:ndl:R100000002-I1', 'entry_kind': 'series',
+        'series_identity_basis': 'publisher_source_group',
+        'series_title_source': 'publisher_explicit_work_group',
+        'publisher_work_group_kind': 'futaba_mnovels_source_group',
+        'publisher_product_references': [{'title': 'PRIVATE-SENTINEL'}]})
+    assert 'publisher_product_references' not in wrong_kind
+
+
+@pytest.mark.parametrize('identifier', [
+    'lng:pub:unknown:' + 'a' * 32, 'lng:pub:futaba:' + 'A' * 32,
+    'lng:pub:futaba:' + 'a' * 31, 'lng:pub:futaba:' + 'a' * 32 + '/other',
+])
+def test_source_group_typed_id_rejects_malformed_or_unknown_provider(site, identifier):
+    base, _ = site
+    with pytest.raises(HTTPError) as error:
+        fetch(base, '/api/recommendations', {'liked_entry_ids': [identifier]})
+    assert error.value.code == 400
 
 
 def test_publisher_work_group_http_preserves_scope_members_and_separate_statistics(site, monkeypatch):

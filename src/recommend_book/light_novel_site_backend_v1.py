@@ -13,8 +13,8 @@ import re
 
 
 _QID = re.compile(r'Q[1-9][0-9]*')
-_LIGHT = re.compile(r'(?:ln[sw]:wd:Q[1-9][0-9]*|ln[se]:ndl:[A-Za-z0-9._-]+)')
-_KINDS = {'series', 'work', 'edition'}
+_LIGHT = re.compile(r'(?:ln[sw]:wd:Q[1-9][0-9]*|ln[se]:ndl:[A-Za-z0-9._-]+|lng:pub:futaba:[0-9a-f]{32})')
+_KINDS = {'series', 'work', 'edition', 'publisher_group'}
 _STATES = {'unknown', 'unread', 'reading', 'read'}
 
 
@@ -258,11 +258,12 @@ class UnifiedCatalogue:
                 if _light_id(key) != light or row['status'] not in _STATES:
                     raise ValueError('stored reading-state identity or status is invalid')
                 datetime.fromisoformat(row['updated_at'].replace('Z', '+00:00'))
-                kind = 'work' if not light else {'lns': 'series', 'lnw': 'work', 'lne': 'edition'}[key[:3]]
+                kind = 'work' if not light else {'lns': 'series', 'lnw': 'work', 'lne': 'edition', 'lng': 'publisher_group'}[key[:3]]
                 records.append({'entry_id': key, 'entry_kind': kind, 'status': row['status'],
                                 'updated_at': row['updated_at']})
         records.sort(key=lambda r: r['entry_id'])
-        return {'version': 'catalogue-history-export-v2', 'kind': 'read-status',
+        version = 'catalogue-history-export-v3' if any(r['entry_kind'] == 'publisher_group' for r in records) else 'catalogue-history-export-v2'
+        return {'version': version, 'kind': 'read-status',
                 'records': records, 'record_count': len(records)}
 
     def _attach_history(self, db):

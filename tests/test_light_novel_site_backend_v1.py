@@ -6,6 +6,9 @@ from types import SimpleNamespace
 import pytest
 
 from recommend_book.light_novel_site_backend_v1 import UnifiedCatalogue
+from test_light_novel_catalogue_v1 import (
+    futaba_source_group_bundle, futaba_source_raw, membership_bundle, edition_bundle, setup_catalogue,
+)
 
 
 @pytest.mark.parametrize('source_keys', [('genres', 'languages'), (), ('genres',)])
@@ -274,6 +277,66 @@ def test_typed_routes_do_not_enter_legacy_qid_contract(stores):
     assert [x[0] for x in light.calls] == ['similar', 'status']
     with pytest.raises(ValueError):
         combined.work_detail('../../private')
+
+
+def test_source_publisher_group_real_catalogue_typed_search_preferences_and_history(
+        futaba_source_group_bundle, membership_bundle, tmp_path):
+    cat, _, path, sha, _ = futaba_source_group_bundle
+    _, series, edition, _, _ = membership_bundle
+    assert cat.ingest([series])['inserted'] == 1
+    assert cat.import_editions([edition])['inserted'] == 1
+    cat.set_read_status('lns:wd:Q1', 'reading')
+    cat.set_read_status('lne:ndl:R100000002-I1', 'read')
+    identities = cat.import_futaba_source_groups(path, sha)['reference_entries']
+    identity = next(iter(identities.values()))
+    world = Store(tmp_path / 'source-group-world.sqlite', [])
+    combined = UnifiedCatalogue(world, cat)
+    before = combined.export_reading_history()
+    assert before['version'] == 'catalogue-history-export-v2'
+    assert before['record_count'] == 2
+    assert combined.search_catalogue(family='light_novel', entry_kind='publisher_group')['total'] == 4
+    assert combined.search_catalogue(family='light_novel', entry_kind='series')['total'] == 5
+    assert combined.work_detail(identity)['entry_kind'] == 'publisher_group'
+    assert combined.recommend_preferences(liked_entry_ids=[identity], family='light_novel')['items'] == []
+    combined.set_read_status(identity, 'reading')
+    exported = combined.export_reading_history()
+    assert exported['version'] == 'catalogue-history-export-v3'
+    assert [r for r in exported['records'] if r['entry_id'] != identity] == before['records']
+    group_status = next(r for r in exported['records'] if r['entry_id'] == identity)
+    assert group_status['entry_kind'] == 'publisher_group'
+    assert str(path.parent) not in json.dumps(exported)
+    with pytest.raises(ValueError):
+        combined.delete_reading_history(export_sha256=before['sha256'], confirmation='DELETE_READ_STATUS')
+    combined.delete_reading_history(export_sha256=exported['sha256'], confirmation='DELETE_READ_STATUS')
+    assert combined.export_reading_history()['version'] == 'catalogue-history-export-v2'
+    assert combined.export_reading_history()['record_count'] == 0
+    assert cat.work_detail(identity)['read_status'] == 'unknown'
+    assert not world.calls
+
+
+def test_source_publisher_group_similar_stops_before_full_catalogue_or_unrelated_raw(
+        futaba_source_group_bundle, membership_bundle, tmp_path, monkeypatch):
+    from pathlib import Path
+    cat, env, path, sha, _ = futaba_source_group_bundle
+    identity = next(iter(cat.import_futaba_source_groups(path, sha)['reference_entries'].values()))
+    _, _, edition, _, _ = membership_bundle
+    assert cat.import_editions([edition])['inserted'] == 1
+    Path(edition['provenance']['raw_path']).write_bytes(b'unrelated raw must remain unread')
+    def forbidden(*args, **kwargs):
+        raise AssertionError('featureless publisher group cannot scan catalogue or world')
+    monkeypatch.setattr(cat, '_rows', forbidden)
+    monkeypatch.setattr(cat, 'recommend_preferences', forbidden)
+    world = Store(tmp_path / 'early-source-group-world.sqlite', [])
+    monkeypatch.setattr(world, 'recommend_preferences', forbidden)
+    monkeypatch.setattr(world, 'search_catalogue', forbidden)
+    combined = UnifiedCatalogue(world, cat)
+    result = combined.similar_works(identity, limit=8)
+    assert result['mode'] == 'insufficient_evidence' and result['items'] == []
+    assert result['classification_scope'] == 'publisher_group'
+    assert not world.calls
+    (env['root'] / 'm-page0.json').write_bytes(b'changed own group witness')
+    with pytest.raises(ValueError):
+        combined.similar_works(identity, limit=8)
 
 
 def test_ndl_authority_backed_series_is_not_fabricated_as_a_wikidata_work(stores):
