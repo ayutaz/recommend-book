@@ -34,7 +34,7 @@ uv sync --locked
 uv run --locked python scripts/serve_scale_catalogue_v1.py --database data/autonomous-next-v3/scale-v1/catalogue.sqlite --light-novels-database data/light-novels-v1/catalogue.sqlite --port 8769
 ```
 
-ブラウザで [小説の本棚](http://127.0.0.1:8769/) を開きます。「対象」で「日本のライトノベル」、「種別」で「シリーズ」を選ぶとシリーズ単位で探せます。ライトノベルDBを用意していない環境では、`--light-novels-database`を省略して世界小説だけを開けます。
+ブラウザで [小説の本棚](http://127.0.0.1:8769/) を開きます。「対象」で「日本のライトノベル」、「種別」で「シリーズ・作品グループ」を選ぶとシリーズなどの単位で探せます。ライトノベルDBを用意していない環境では、`--light-novels-database`を省略して世界小説だけを開けます。
 
 取得データ・DB・個人履歴はGit対象外の `data/` に保存します。リポジトリを取得するだけでは推薦用データは揃いません。従来の試作画面は `data/autonomous-next-v3/database/phase17-world-delivery-v1/index.html` にあります。
 
