@@ -15,6 +15,8 @@
 
 今後の補助実装についても変更に関係する試験を確認し、確定した実装で両OSのCIを確認する。実データの分類・審査・DB採用、最終監査、実HTTP・画面確認はfixture CIと別に確認する。文書だけの更新では、リンク・差分・保存結果との整合を確認し、分類や全件pytestを追加実行しない。
 
+最新実装は`ade2aad9654322b90f7065932973aa779f6cbbcb`。分類末尾処理、監査・利用量の接続、CLI更新後の証跡照合を含む。[run 40083544370](https://github.com/ayutaz/recommend-book/actions/runs/40083544370)を開始済みで、確認時点では実行待ち。ローカルでは分類・台帳・推薦・archive関連70試験、最終修正後のarchive・監査・利用量33試験、監査の4並列制御2試験がそれぞれ成功した。重複する試験があるため、これらを足した値を全件試験数としない。2万作品の実監査は別処理として進行中である。
+
 ## 過去のPython移行と検証（2026-10-20・phase16）
 
 Python 3.14系へ設定を統一し、[PR #20](https://github.com/ayutaz/recommend-book/pull/20)でmainへ統合した。依存パッケージのバージョン変更は0。対象head`46e0532`の[run 39346947438](https://github.com/ayutaz/recommend-book/actions/runs/39346947438)はWindows・Ubuntuとも成功、ローカルは1,873 passed。phase16の後続差分はMarkdownのみで、ソース・依存・テストを変更していないため全件試験・CIを重複実行しない。
