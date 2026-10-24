@@ -184,6 +184,56 @@ def test_current_hold_schema_checks_process_sql_and_absence(tmp_path):
     assert result["catalogue_rows_remaining"] == 0
 
 
+@pytest.mark.parametrize("change", [None, "legacy_pin", "unexpected_index", "missing_current"])
+def test_current_hold_collection_keeps_authenticated_legacy_schema_separate(tmp_path, change):
+    m = module()
+    # The historical receipt intentionally predates native_failures and uses
+    # different process names; audit3 verifies this schema separately.
+    legacy = pin(tmp_path / "legacy-hold.json", {
+        "version": "scale20k-unstarted-preflight-hold-v1", "window_index": 161,
+        "selected": 81, "model_calls": 0,
+        "processes": {"controller_worker": {}},
+    })
+    old_entry = pin(tmp_path / "old-entry.json", {"unstarted_preflight_hold": legacy})
+    first = pin(tmp_path / "hold196.json", {"window_index": 196, "selected": 93})
+    second = pin(tmp_path / "hold197.json", {
+        "window_index": 198 if change == "unexpected_index" else 197, "selected": 92})
+    middle = pin(tmp_path / "middle-entry.json", {
+        "previous_recovery_entry": old_entry,
+        **({} if change == "missing_current" else {"unstarted_hold": first}),
+    })
+    entry = pin(tmp_path / "entry.json", {"previous_entry": middle, "unstarted_hold": second})
+    expected_legacy = {**legacy, "sha256": "f" * 64} if change == "legacy_pin" else legacy
+    if change:
+        with pytest.raises(ValueError):
+            m._recovery_hold_pins(Path(entry["path"]), legacy_hold_pin=expected_legacy)
+    else:
+        holds = m._recovery_hold_pins(Path(entry["path"]), legacy_hold_pin=expected_legacy)
+        assert [item["document"]["window_index"] for item in holds] == [196, 197]
+
+
+def test_actual_catalogue_result_is_observed_before_recovery_assembly_failure(tmp_path, monkeypatch):
+    m = module()
+    monkeypatch.setattr(m, "verify_recovery_chain", lambda **kw: {})
+    monkeypatch.setattr(m, "verify_current_gap", lambda **kw: {})
+    monkeypatch.setattr(m, "_load_legacy_recovery_audit", lambda db: (None, None, {"hold": {}}))
+    monkeypatch.setattr(m, "_load_frozen_audit", lambda: None)
+    monkeypatch.setattr(m, "_archive_projection_context", lambda: {})
+    monkeypatch.setattr(m, "_current_control_verifier", lambda *a, **kw: None)
+    def fail_assembly(*a, **kw):
+        raise ValueError("fixture late assembly failure")
+    monkeypatch.setattr(m, "_recovery_hold_pins", fail_assembly)
+    actual = {"status": "complete", "counts": {"eligible_native": 20000}}
+    checkpoint = tmp_path / "actual-result.json"
+    def observe(result):
+        checkpoint.write_text(json.dumps(result), encoding="utf-8")
+    with pytest.raises(ValueError, match="late assembly"):
+        m.audit(database=tmp_path, cli212_hold=None,
+                manifest_verifier=lambda *a: [], catalogue_auditor=lambda **kw: actual,
+                catalogue_result_observer=observe)
+    assert json.loads(checkpoint.read_text()) == actual
+
+
 @pytest.mark.parametrize("change", ["exit", "stderr", "artifact"])
 def test_current_hold_schema_rejects_changed_witnesses(tmp_path, change):
     m, db, hold = hold_document(tmp_path)

@@ -402,8 +402,8 @@ def _pin(path: Path) -> dict[str, str]:
     return {"path": str(path), "sha256": sha256(path)}
 
 
-def _recovery_hold_pins(entry_path: Path) -> list[dict[str, Any]]:
-    """Collect the immutable hold receipts in the recovery entry ancestry."""
+def _recovery_hold_pins(entry_path: Path, *, legacy_hold_pin: dict[str, str]) -> list[dict[str, Any]]:
+    """Collect current holds; the exact legacy receipt is verified by audit3."""
     result: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
 
@@ -415,21 +415,35 @@ def _recovery_hold_pins(entry_path: Path) -> list[dict[str, Any]]:
         if key in seen:
             return
         seen.add(key)
+        if sha256(path) != pin["sha256"]:
+            raise ValueError("Recovery ancestry entry pin changed")
         document = json.loads(path.read_bytes())
         hold = document.get("unstarted_hold")
         if hold is None:
             hold = document.get("unstarted_preflight_hold")
         if isinstance(hold, dict) and hold.get("path"):
             hold_path = Path(hold["path"]).resolve(strict=True)
+            if sha256(hold_path) != hold.get("sha256"):
+                raise ValueError("Recovery ancestry hold pin changed")
             hold_doc = json.loads(hold_path.read_bytes())
-            result.append({"hold": _pin(hold_path), "document": hold_doc,
-                           "entry": {"path": str(path), "sha256": sha256(path)}})
+            index = hold_doc.get("window_index")
+            if index == 161:
+                if (_pin(hold_path) != legacy_hold_pin
+                        or hold_doc.get("version") != "scale20k-unstarted-preflight-hold-v1"):
+                    raise ValueError("Separately verified legacy hold pin differs")
+            elif index in {196, 197}:
+                result.append({"hold": _pin(hold_path), "document": hold_doc,
+                               "entry": {"path": str(path), "sha256": sha256(path)}})
+            else:
+                raise ValueError("Unexpected current recovery hold index")
         for key_name in ("previous_entry", "base_entry", "previous_recovery_entry"):
             child = document.get(key_name)
             if isinstance(child, dict):
                 visit(child)
 
     visit({"path": str(Path(entry_path).resolve(strict=True)), "sha256": sha256(entry_path)})
+    if sorted(item["document"]["window_index"] for item in result) != [196, 197]:
+        raise ValueError("Current recovery holds must cover exactly 196 and 197")
     return sorted(result, key=lambda item: item["document"].get("window_index", -1))
 
 
@@ -863,7 +877,8 @@ def audit(*, database: Path = DATABASE, entry_path: Path = RECOVERY_ENTRY,
            cli212_hold_sha256: str = CLI212_HOLD_SHA256,
            recovery_verifier: Callable[..., dict[str, Any]] | None = None,
            manifest_verifier: Callable[..., dict[str, Any]] | None = None,
-           catalogue_auditor: Callable[..., dict[str, Any]] | None = None) -> dict[str, Any]:
+           catalogue_auditor: Callable[..., dict[str, Any]] | None = None,
+           catalogue_result_observer: Callable[[dict[str, Any]], None] | None = None) -> dict[str, Any]:
     """Run recovery checks and the frozen catalogue audit without mutation."""
     recovery = verify_recovery_chain(entry_path=entry_path, entry_sha256=entry_sha256,
                                      database=database, recovery_verifier=recovery_verifier)
@@ -882,8 +897,10 @@ def audit(*, database: Path = DATABASE, entry_path: Path = RECOVERY_ENTRY,
                         current_gap=current_gap))
     if not isinstance(result, dict):
         raise ValueError("Catalogue auditor did not return an object")
+    if catalogue_result_observer is not None:
+        catalogue_result_observer(result)
     result = dict(result)
-    holds = _recovery_hold_pins(Path(entry_path))
+    holds = _recovery_hold_pins(Path(entry_path), legacy_hold_pin=old_unstarted["hold"])
     verified = recovery["verified"]
     if exact_shortfall_receipt is not None:
         result["exact_shortfall"] = verify_exact_shortfall_receipt(
@@ -980,7 +997,14 @@ def main() -> None:
     parser.add_argument("--exact-origin-index-sha256",
                         default="ecafd3a14d1718d95f4596c1edbc910dc9cef8b08a71e5ec71e98b207d5d26da")
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--catalogue-checkpoint", type=Path,
+                        help="Save the actual catalogue result before recovery-report assembly")
     args = parser.parse_args()
+    def save_catalogue_checkpoint(result):
+        args.catalogue_checkpoint.parent.mkdir(parents=True, exist_ok=True)
+        with args.catalogue_checkpoint.open("x", encoding="utf-8", newline="\n") as stream:
+            json.dump(result, stream, ensure_ascii=False, sort_keys=True, indent=2, allow_nan=False)
+            stream.write("\n")
     try:
         result = audit(database=args.database, entry_path=args.recovery_entry,
                        entry_sha256=args.recovery_entry_sha256,
@@ -991,7 +1015,9 @@ def main() -> None:
                        exact_source_index=args.exact_source_index,
                        exact_source_index_sha256=args.exact_source_index_sha256,
                        exact_run_name=args.exact_run_name,
-                       exact_origin_index_sha256=args.exact_origin_index_sha256)
+                       exact_origin_index_sha256=args.exact_origin_index_sha256,
+                       catalogue_result_observer=(save_catalogue_checkpoint
+                                                  if args.catalogue_checkpoint is not None else None))
     except (OSError, ValueError, TypeError, KeyError, sqlite3.DatabaseError) as exc:
         result = {"version": "scale20k-catalogue-audit-v4", "status": "violations",
                   "issues": [type(exc).__name__ + ": " + str(exc)], "model_calls": 0,
