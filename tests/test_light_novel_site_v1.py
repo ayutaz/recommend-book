@@ -178,7 +178,7 @@ def test_similarity_skips_only_featureless_typed_editions(site, monkeypatch, pat
     assert data['personalized'] is False
 
 
-@pytest.mark.parametrize('provider', ['futaba', 'orange'])
+@pytest.mark.parametrize('provider', ['futaba', 'orange', 'ecobalt'])
 def test_featureless_source_group_similarity_reuses_authenticated_detail(site, monkeypatch, provider):
     base, catalogue = site
     identifier = 'lng:pub:' + provider + ':' + 'a' * 32
@@ -376,6 +376,44 @@ def test_orange_source_group_http_preserves_explicit_credit_roles_without_editio
                                          {'role_literal': None, 'name': '役割未表示例'}]
     assert product['label'] is None and product['form'] is None and product['media_references'] == []
     assert not {'entry_id', 'isbn', 'read_status'} & product.keys()
+    assert 'PRIVATE-SENTINEL' not in json.dumps(result)
+    fetch(base, '/api/recommendations', {'liked_entry_ids': [identifier]})
+    assert catalogue.calls[-1]['liked_entry_ids'] == [identifier]
+
+
+def test_ecobalt_http_keeps_author_index_context_separate_from_book_authorship(site, monkeypatch):
+    base, catalogue = site
+    identifier = 'lng:pub:ecobalt:' + 'c' * 32
+    row = {'entry_id': identifier, 'entry_kind': 'publisher_group', 'family': 'light_novel',
+        'title': '掲載見出し', 'series_identity_basis': 'publisher_source_group',
+        'series_title_source': 'publisher_explicit_work_group',
+        'publisher_work_group_kind': 'ecobalt_author_index_source_group',
+        'authors': [], 'members': [], 'light_novel_confirmed': False,
+        'heading_author_display': '表示名 / 表示名B',
+        'role_context': {'literal': '著者50音別書籍リスト', 'scope': 'author_index_display_only',
+                         'locator': 'PRIVATE-SENTINEL'},
+        'publisher_product_references': [{'publisher_reference_id': 'shueisha-ebook:sc000001',
+            'title': '電子書籍の掲載題', 'source_url': 'https://www.shueisha.co.jp/books/items/contents.html?jdcn=sc000001',
+            'author_display': '表示名 / 表示名B', 'media_references': None,
+            'credits': [{'role': 'unknown', 'name': '表示名 / 表示名B'},
+                        {'role': 'author', 'name': '個別著者と推定しない'}],
+            'credit_literals': [{'name': '表示名 / 表示名B', 'entry_role_literal': None,
+                'role_context_literal': '著者50音別書籍リスト', 'role_scope': 'author_index_display_only',
+                'source_selector': 'PRIVATE-SENTINEL'},
+                {'name': 'PRIVATE-SENTINEL', 'entry_role_literal': '著者',
+                 'role_context_literal': '著者50音別書籍リスト', 'role_scope': 'individual_book_author'}]}]}
+    monkeypatch.setattr(catalogue, 'work_detail', lambda key: row if key == identifier else None)
+    result = fetch(base, '/api/entries/' + quote(identifier, safe=''))
+    assert result['heading_author_display'] == '表示名 / 表示名B'
+    assert result['role_context'] == {'literal': '著者50音別書籍リスト', 'scope': 'author_index_display_only'}
+    assert result['authors'] == [] and result['members'] == [] and result['light_novel_confirmed'] is False
+    product = result['publisher_product_references'][0]
+    assert product['publisher_reference_id'] == 'shueisha-ebook:sc000001'
+    assert product['author_display'] == '表示名 / 表示名B'
+    assert product['credits'] == [{'role': 'unknown', 'name': '表示名 / 表示名B'}]
+    assert product['credit_literals'] == [{'name': '表示名 / 表示名B', 'entry_role_literal': None,
+        'role_context_literal': '著者50音別書籍リスト', 'role_scope': 'author_index_display_only'}]
+    assert product['media_references'] == [] and product['label'] is None and product['form'] is None
     assert 'PRIVATE-SENTINEL' not in json.dumps(result)
     fetch(base, '/api/recommendations', {'liked_entry_ids': [identifier]})
     assert catalogue.calls[-1]['liked_entry_ids'] == [identifier]

@@ -8,7 +8,7 @@ import pytest
 from recommend_book.light_novel_site_backend_v1 import UnifiedCatalogue
 from test_light_novel_catalogue_v1 import (
     futaba_source_group_bundle, futaba_source_raw, membership_bundle, edition_bundle, setup_catalogue,
-    orange_source_group_bundle,
+    orange_source_group_bundle, ecobalt_source_group_bundle,
 )
 
 
@@ -368,6 +368,38 @@ def test_orange_source_group_typed_history_and_early_similar_preserve_other_prov
     monkeypatch.setattr(world, 'recommend_preferences', forbidden)
     assert combined.similar_works(identity)['mode'] == 'insufficient_evidence'
     assert not world.calls
+
+
+def test_ecobalt_source_group_typed_display_history_and_early_similar(
+        ecobalt_source_group_bundle, tmp_path, monkeypatch):
+    cat, env, path, sha, groups = ecobalt_source_group_bundle
+    world = Store(tmp_path / 'ecobalt-world.sqlite', [])
+    combined = UnifiedCatalogue(world, cat)
+    assert combined.export_reading_history()['version'] == 'catalogue-history-export-v2'
+    identity = cat.import_ecobalt_source_groups(path, sha)['reference_entries'][groups[2]['reference_id']]
+    row = combined.work_detail(identity)
+    assert row['heading_author_display'] == '甲/乙' and row['authors'] == []
+    assert row['publisher_product_references'][0]['publisher_reference_id'] == 'shueisha-ebook:9781234567897'
+    combined.set_read_status(identity, 'read')
+    history = combined.export_reading_history()
+    assert history['version'] == 'catalogue-history-export-v3'
+    assert history['records'][0]['entry_id'] == identity and history['records'][0]['entry_kind'] == 'publisher_group'
+    for invalid in ['lng:pub:ecobalt:' + 'A'*32, 'lng:pub:ecobalt:sc1', 'lng:pub:ecobalt:' + 'a'*31]:
+        with pytest.raises(ValueError):
+            combined.work_detail(invalid)
+    def forbidden(*args, **kwargs):
+        raise AssertionError('eCobalt similar must authenticate its own source without other catalogues')
+    monkeypatch.setattr(cat, '_futaba_workgroups', forbidden)
+    monkeypatch.setattr(cat, '_orange_workgroups', forbidden)
+    monkeypatch.setattr(cat, '_rows', forbidden)
+    monkeypatch.setattr(cat, 'recommend_preferences', forbidden)
+    monkeypatch.setattr(world, 'recommend_preferences', forbidden)
+    monkeypatch.setattr(world, 'search_catalogue', forbidden)
+    assert combined.similar_works(identity)['mode'] == 'insufficient_evidence'
+    assert not world.calls
+    (env['root'] / 'page.html').write_bytes(b'changed own source')
+    with pytest.raises(ValueError):
+        combined.similar_works(identity)
 
 
 def test_ndl_authority_backed_series_is_not_fabricated_as_a_wikidata_work(stores):

@@ -43,6 +43,15 @@ SOURCE_GROUP_PROVIDERS = {
         'public_kind': 'orange_native_taxonomy_source_group', 'complete_field': 'parent_page_membership_complete',
         'credit': '掲載グループ名・保存枠内の掲載参照: 集英社オレンジ文庫の書籍一覧',
     },
+    'ecobalt': {
+        'schema': 'light-novel-ecobalt-source-group-v1', 'record_provider': 'ecobalt',
+        'module': 'light_novel_ecobalt_groups_v1', 'verifier': 'verify_ecobalt_groups',
+        'loader': '_ecobalt_workgroups', 'reference_pattern': r'ecobalt-heading-local:[0-9a-f]{64}',
+        'member_pattern': r'shueisha-ebook:[A-Za-z0-9]+',
+        'source_kind': 'official_publisher_listing_group_reference',
+        'public_kind': 'ecobalt_author_index_source_group', 'complete_field': 'parent_page_membership_complete',
+        'credit': '掲載グループ名・著者索引表示・保存枠内の掲載参照: 集英社eコバルト文庫の書籍一覧',
+    },
 }
 
 
@@ -71,7 +80,7 @@ def _qid(value):
 
 
 def _entry(value):
-    if not isinstance(value, str) or not re.fullmatch(r'(?:ln[sw]:wd:Q[1-9][0-9]*|ln[se]:ndl:[A-Za-z0-9._-]+|lng:pub:(?:futaba|orange):[0-9a-f]{32})', value):
+    if not isinstance(value, str) or not re.fullmatch(r'(?:ln[sw]:wd:Q[1-9][0-9]*|ln[se]:ndl:[A-Za-z0-9._-]+|lng:pub:(?:futaba|orange|ecobalt):[0-9a-f]{32})', value):
         raise ValueError('a typed light-novel entry ID is required')
     return value
 
@@ -512,6 +521,9 @@ class LightNovelCatalogue:
     def _orange_workgroups(self, path, sha256, cache):
         return self._publisher_source_groups('orange', path, sha256, cache)
 
+    def _ecobalt_workgroups(self, path, sha256, cache):
+        return self._publisher_source_groups('ecobalt', path, sha256, cache)
+
     def _publisher_source_groups(self, provider, path, sha256, cache):
         profile = SOURCE_GROUP_PROVIDERS[provider]
         key = ('publisher_source_groups', provider, str(_resolved_path(path, cache)), sha256)
@@ -581,6 +593,8 @@ class LightNovelCatalogue:
         roles = {'author', 'illustrator', 'original_author', 'original_concept', 'supervisor', 'editor'}
         if provider == 'orange':
             roles |= {'cover_illustrator', 'commentary_author', 'screenplay_author', 'unknown'}
+        elif provider == 'ecobalt':
+            roles.add('unknown')
         rows = [{'publisher_reference_id': member['publisher_reference_id'], 'title': member['title'],
                  'source_url': member['source_url'], 'label': member['label'], 'form': member['form'],
                  'credits': [{'role': c['role'] if c['role'] in roles else None, 'name': c['name']}
@@ -592,7 +606,20 @@ class LightNovelCatalogue:
             for row, member in zip(rows, group['members'], strict=True):
                 row['credit_literals'] = [{'role_literal': c['role_literal'], 'name': c['name']}
                                           for c in member['credit_literals']]
+        elif provider == 'ecobalt':
+            for row, member in zip(rows, group['members'], strict=True):
+                row['author_display'] = member['author_display']
+                row['credit_literals'] = [{key: c[key] for key in
+                    ('name', 'entry_role_literal', 'role_context_literal', 'role_scope')}
+                    for c in member['credit_literals']]
         return rows
+
+    @staticmethod
+    def _publisher_source_display(provider, group):
+        if provider != 'ecobalt':
+            return {}
+        return {'heading_author_display': group['heading_author_display'],
+                'role_context': {key: group['role_context'][key] for key in ('literal', 'scope')}}
 
     def _project_futaba_source_group(self, record, cache):
         return self._project_publisher_source_group('futaba', record, cache)
@@ -622,9 +649,11 @@ class LightNovelCatalogue:
         group = getattr(self, profile['loader'])(active['manifest_path'], active['manifest_sha256'], cache).get(active['reference_id'])
         if (group is None or active != self._publisher_source_assertion(provider, active['manifest_path'], active['manifest_sha256'], group)
                 or record['title'] != group['title']
+                or any(record.get(key) != value for key, value in self._publisher_source_display(provider, group).items())
                 or record['publisher_product_references'] != self._publisher_product_references(provider, group)):
             raise ValueError('publisher source group fields do not replay')
-        return {'entry_id': identity, 'work_id': identity, 'entry_kind': 'publisher_group', 'qid': None,
+        return {**self._publisher_source_display(provider, group),
+            'entry_id': identity, 'work_id': identity, 'entry_kind': 'publisher_group', 'qid': None,
             'family': 'light_novel', 'title': group['title'], 'aliases': [], 'authors': [], 'publishers': [],
             'genres': [], 'subjects': [], 'original_language': None, 'language': None, 'year': None,
             'volume': None, 'isbn': [], 'publication_label': None, 'read_status': 'unknown',
@@ -650,6 +679,9 @@ class LightNovelCatalogue:
 
     def import_orange_source_groups(self, manifest_path, expected_sha256, *, reference_ids=None):
         return self._import_publisher_source_groups('orange', manifest_path, expected_sha256, reference_ids=reference_ids)
+
+    def import_ecobalt_source_groups(self, manifest_path, expected_sha256, *, reference_ids=None):
+        return self._import_publisher_source_groups('ecobalt', manifest_path, expected_sha256, reference_ids=reference_ids)
 
     def _import_publisher_source_groups(self, provider, manifest_path, expected_sha256, *, reference_ids=None):
         """Admit one provider's source groups without an NDL/story identity.
@@ -738,7 +770,8 @@ class LightNovelCatalogue:
                     record = {'schema_version': profile['schema'], 'source': 'publisher',
                         'provider': profile['record_provider'], 'kind': 'publisher_group', 'id': uuid.uuid4().hex,
                         'title': group['title'], 'source_group_assertions': [assertion],
-                        'publisher_product_references': self._publisher_product_references(provider, group)}
+                        'publisher_product_references': self._publisher_product_references(provider, group),
+                        **self._publisher_source_display(provider, group)}
                     identity = 'lng:pub:' + provider + ':' + record['id']
             if reason:
                 result['held'] += 1
@@ -2588,6 +2621,8 @@ class LightNovelCatalogue:
                 children = record['publisher_product_references']
                 authors.extend(c['name'] for child in children for c in child['credits'] if c['role'] == 'author')
                 child_titles = [child['title'] for child in children]
+                if record['schema_version'] == SOURCE_GROUP_PROVIDERS['ecobalt']['schema']:
+                    child_titles.append(record['heading_author_display'])
             else:
                 child_titles = []
             values[identity] = normalize_search(' '.join([*titles, *child_titles, *authors]))
@@ -2707,6 +2742,8 @@ class LightNovelCatalogue:
             children = row.get('publisher_product_references', []) if row['entry_kind'] == 'publisher_group' else []
             child_terms = [child['title'] for child in children]
             child_terms.extend(c['name'] for child in children for c in child['credits'] if c['role'] == 'author')
+            if row.get('publisher_work_group_kind') == SOURCE_GROUP_PROVIDERS['ecobalt']['public_kind']:
+                child_terms.append(row['heading_author_display'])
             if key and key not in normalize_search(' '.join([row['title'], *row['aliases'], *[a['name'] or a['qid'] for a in row['authors']], *child_terms])):
                 continue
             if genre and genre not in {g['qid'] for g in row['genres']}:
@@ -2855,7 +2892,7 @@ class LightNovelCatalogue:
 
     def similar_works(self, entry_id, limit=12, exclude_read=True):
         entry_id = _entry(entry_id)
-        if entry_id.startswith(('lng:pub:futaba:', 'lng:pub:orange:')):
+        if entry_id.startswith(tuple('lng:pub:' + provider + ':' for provider in SOURCE_GROUP_PROVIDERS)):
             provider = entry_id.split(':')[2]
             profile = SOURCE_GROUP_PROVIDERS[provider]
             if isinstance(limit, bool) or not 1 <= limit <= 100:

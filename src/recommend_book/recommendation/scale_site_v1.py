@@ -9,7 +9,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 
 _QID = r'Q[1-9][0-9]*'
-_ENTRY_ID = r'(?:ln[sw]:wd:Q[1-9][0-9]*|ln[se]:ndl:[A-Za-z0-9_-][A-Za-z0-9._-]{0,119}|lng:pub:(?:futaba|orange):[0-9a-f]{32})'
+_ENTRY_ID = r'(?:ln[sw]:wd:Q[1-9][0-9]*|ln[se]:ndl:[A-Za-z0-9_-][A-Za-z0-9._-]{0,119}|lng:pub:(?:futaba|orange|ecobalt):[0-9a-f]{32})'
 _FAMILIES = ('all', 'world', 'light_novel')
 _ENTRY_KINDS = ('series', 'work', 'edition', 'publisher_group')
 _ADMISSION_STATES = ('bibliographic_candidate_only', 'light_novel_confirmed', 'edition_series_membership_verified',
@@ -321,7 +321,8 @@ def _public_publisher_work_group_scope(row):
                 and row.get('publisher_work_group_kind') == 'futaba_mnovels_grouping')
     source_only = (row.get('entry_kind') == 'publisher_group'
                    and row.get('series_identity_basis') == 'publisher_source_group'
-                   and row.get('publisher_work_group_kind') in ('futaba_mnovels_source_group', 'orange_native_taxonomy_source_group'))
+                   and row.get('publisher_work_group_kind') in ('futaba_mnovels_source_group', 'orange_native_taxonomy_source_group',
+                                                               'ecobalt_author_index_source_group'))
     if not (anchored or source_only) or row.get('series_title_source') != 'publisher_explicit_work_group':
         return {}
     result = {'publisher_work_group_kind': row['publisher_work_group_kind']}
@@ -331,17 +332,29 @@ def _public_publisher_work_group_scope(row):
     for key in ('frame_membership_complete', 'exact_grouping_filter_complete', 'global_membership_complete'):
         if key in row and (row[key] is None or isinstance(row[key], bool)):
             result[key] = row[key]
+    if row['publisher_work_group_kind'] == 'ecobalt_author_index_source_group':
+        context = row.get('role_context')
+        if (isinstance(row.get('heading_author_display'), str) and isinstance(context, dict)
+                and context.get('literal') == '著者50音別書籍リスト'
+                and context.get('scope') == 'author_index_display_only'):
+            result['heading_author_display'] = row['heading_author_display']
+            result['role_context'] = {'literal': context['literal'], 'scope': context['scope']}
     return result
 
 
-def _public_publisher_product_references(values, *, orange=False):
+def _public_publisher_product_references(values, *, source_kind):
     result = []
     if not isinstance(values, list):
         return result
+    orange = source_kind == 'orange_native_taxonomy_source_group'
+    ecobalt = source_kind == 'ecobalt_author_index_source_group'
     roles = ('author', 'illustrator', 'original_author', 'original_concept', 'supervisor', 'editor')
     if orange:
         roles += ('cover_illustrator', 'commentary_author', 'screenplay_author', 'unknown')
-    reference_pattern = r'shueisha-orange-book:[^/?#\s]+' if orange else r'futaba-product:[A-Za-z0-9_-]+'
+    if ecobalt:
+        roles = ('unknown',)
+    reference_pattern = (r'shueisha-ebook:[A-Za-z0-9_-]+' if ecobalt else
+                         r'shueisha-orange-book:[^/?#\s]+' if orange else r'futaba-product:[A-Za-z0-9_-]+')
     for row in values:
         if not isinstance(row, dict) or not isinstance(row.get('title'), str):
             continue
@@ -363,6 +376,18 @@ def _public_publisher_product_references(values, *, orange=False):
                 if (isinstance(credit, dict) and isinstance(credit.get('name'), str)
                         and (credit.get('role_literal') is None or isinstance(credit.get('role_literal'), str))):
                     item['credit_literals'].append({'role_literal': credit.get('role_literal'), 'name': credit['name']})
+        if ecobalt:
+            if isinstance(row.get('author_display'), str):
+                item['author_display'] = row['author_display']
+            item['credit_literals'] = []
+            literals = row.get('credit_literals')
+            for credit in literals if isinstance(literals, list) else []:
+                if (isinstance(credit, dict) and isinstance(credit.get('name'), str)
+                        and 'entry_role_literal' in credit and credit['entry_role_literal'] is None
+                        and credit.get('role_context_literal') == '著者50音別書籍リスト'
+                        and credit.get('role_scope') == 'author_index_display_only'):
+                    item['credit_literals'].append({'name': credit['name'], 'entry_role_literal': None,
+                        'role_context_literal': credit['role_context_literal'], 'role_scope': credit['role_scope']})
         media = row.get('media_references')
         for entry in media if isinstance(media, list) else []:
             if not isinstance(entry, dict):
@@ -422,9 +447,10 @@ def public_work(row):
         if work_group:
             result.update(story_series_identity_asserted=False, original_work_identity_asserted=False)
             result.update(_public_publisher_work_group_scope(row))
-            if result.get('publisher_work_group_kind') in ('futaba_mnovels_grouping', 'futaba_mnovels_source_group', 'orange_native_taxonomy_source_group'):
+            if result.get('publisher_work_group_kind') in ('futaba_mnovels_grouping', 'futaba_mnovels_source_group', 'orange_native_taxonomy_source_group',
+                                                         'ecobalt_author_index_source_group'):
                 result['publisher_product_references'] = _public_publisher_product_references(
-                    row.get('publisher_product_references'), orange=result['publisher_work_group_kind'] == 'orange_native_taxonomy_source_group')
+                    row.get('publisher_product_references'), source_kind=result['publisher_work_group_kind'])
     if row.get('entry_kind') == 'edition' and row.get('edition_bibliography_confirmed') is True:
         result['confirmation_source_url'] = _link(row.get('confirmation_source_url'))
     result.update(_public_bibliography_correspondence(row))
@@ -635,7 +661,7 @@ async function showDetail(identifier){
   if(row.relation_resolution==='edition_series_membership_verified')body.append(node('p','物語シリーズへの所属を出典で確認済みです。版と原作品は別の項目として扱います。','muted'));
   if(row.relation_resolution==='publisher_work_group_membership_verified')body.append(node('p','出版社の作品グループに掲載された書誌との対応を確認済みです。原作品・物語シリーズの同一性は未確認です。','muted'));
   if(row.entry_kind==='series')body.append(node('p',row.series_identity_basis==='publisher_work_group_and_ndl_bibliography'?'出版社がまとめた作品グループです。内容特徴や読書状態は各巻へ自動反映しません。':'シリーズ全体の情報です。内容特徴や読書状態は各巻へ自動反映しません。','muted'));
-  if(['futaba_mnovels_grouping','futaba_mnovels_source_group','orange_native_taxonomy_source_group'].includes(row.publisher_work_group_kind)){if(row.entry_kind==='publisher_group')body.append(node('p','出版社がこの保存一覧内でまとめた掲載グループです。グループ共通の著者、原作品・物語シリーズの同一性は未確認です。読書状態は掲載書誌へ自動反映しません。','muted'));const products=section(body,'出版社の掲載書誌');products.append(node('p','出版社の掲載参照です。NDLの版や、紙・電子の同一版との対応を意味しません。全媒体・全期間の収録範囲は未確認です。','muted'));for(const product of row.publisher_product_references||[]){const div=node('div',undefined,'similar-row'),title=node(product.source_url?'a':'span',product.title||'書名不明');if(product.source_url){title.href=product.source_url;title.target='_blank';title.rel='noopener noreferrer';}div.append(title);const roles={author:'著者',illustrator:'イラスト',original_author:'原作',original_concept:'原案',supervisor:'監修',editor:'編集',cover_illustrator:'装画',commentary_author:'解説',screenplay_author:'脚本'};const credits=product.credit_literals?.length?product.credit_literals.map(c=>(c.role_literal||'役割未確認')+'：'+c.name):(product.credits||[]).map(c=>(roles[c.role]||'役割未確認')+'：'+c.name);if(credits.length)div.append(node('p',credits.join(' / '),'muted'));const facts=[product.label,product.form].filter(Boolean);if(facts.length)div.append(node('p',facts.join(' / '),'muted'));const seen=new Set([product.source_url]);for(const media of product.media_references||[]){if(!media.source_url||seen.has(media.source_url))continue;seen.add(media.source_url);const link=node('a','別の掲載ページ');link.href=media.source_url;link.target='_blank';link.rel='noopener noreferrer';const line=node('p');line.append(link);div.append(line);}products.append(div);}}
+  if(['futaba_mnovels_grouping','futaba_mnovels_source_group','orange_native_taxonomy_source_group','ecobalt_author_index_source_group'].includes(row.publisher_work_group_kind)){if(row.entry_kind==='publisher_group')body.append(node('p','出版社がこの保存一覧内でまとめた掲載グループです。グループ共通の著者、原作品・物語シリーズの同一性は未確認です。読書状態は掲載書誌へ自動反映しません。','muted'));if(row.publisher_work_group_kind==='ecobalt_author_index_source_group'&&row.heading_author_display)body.append(node('p','掲載リストの著者表示：'+row.heading_author_display+'（各書誌の担当役割は未確認）','muted'));const products=section(body,'出版社の掲載書誌');products.append(node('p','出版社の掲載参照です。NDLの版や、紙・電子の同一版との対応を意味しません。全媒体・全期間の収録範囲は未確認です。','muted'));for(const product of row.publisher_product_references||[]){const div=node('div',undefined,'similar-row'),title=node(product.source_url?'a':'span',product.title||'書名不明');if(product.source_url){title.href=product.source_url;title.target='_blank';title.rel='noopener noreferrer';}div.append(title);const roles={author:'著者',illustrator:'イラスト',original_author:'原作',original_concept:'原案',supervisor:'監修',editor:'編集',cover_illustrator:'装画',commentary_author:'解説',screenplay_author:'脚本'};const credits=product.credit_literals?.length?product.credit_literals.map(c=>(c.role_scope==='author_index_display_only'?'掲載リストの著者表示':c.role_literal||'役割未確認')+'：'+c.name):(product.credits||[]).map(c=>(roles[c.role]||'役割未確認')+'：'+c.name);if(credits.length)div.append(node('p',credits.join(' / '),'muted'));const facts=[product.label,product.form].filter(Boolean);if(facts.length)div.append(node('p',facts.join(' / '),'muted'));const seen=new Set([product.source_url]);for(const media of product.media_references||[]){if(!media.source_url||seen.has(media.source_url))continue;seen.add(media.source_url);const link=node('a','別の掲載ページ');link.href=media.source_url;link.target='_blank';link.rel='noopener noreferrer';const line=node('p');line.append(link);div.append(line);}products.append(div);}}
   if(row.source_url){const p=node('p'),a=node('a',row.entry_kind==='publisher_group'?'出版社の掲載一覧':'出典の書誌・作品ページ');a.href=row.source_url;a.target='_blank';a.rel='noopener noreferrer';p.append(a);body.append(p);}
   if(row.provenance?.retrieved_at)body.append(node('p','取得日：'+row.provenance.retrieved_at,'muted'));
   const coarse=section(body,'資料記載のジャンル');tags(coarse,row.genres);
@@ -663,7 +689,7 @@ async function stats(data){try{data=data||await api('/api/stats');const labels=[
 async function facets(data){try{data=data||await api('/api/facets');const previous={};for(const id of ['genre','preference-genre','language','preference-language']){const select=$(id);previous[id]=select.value;select.replaceChildren(select.options[0]);}for(const item of data.genres||[]){for(const id of ['genre','preference-genre']){const option=node('option',item.label+' ('+item.count.toLocaleString()+')');option.value=item.qid;$(id).append(option);}}for(const item of data.languages||[]){for(const id of ['language','preference-language']){const option=node('option',(languageName(item.value)||'不明')+' ('+item.count.toLocaleString()+')');option.value=item.value;$(id).append(option);}}for(const [id,value] of Object.entries(previous))if([...$(id).options].some(option=>option.value===value))$(id).value=value;}catch(e){$('message').textContent=e.message;}}
 function renderPreferenceFacets(data){state.preferenceFacets=data.axes||{};const parent=$('preference-facets');parent.replaceChildren();if(data.coverage_note)parent.append(node('p',data.coverage_note,'muted'));for(const axis of ['theme','structure','protagonist','atmosphere']){const group=node('fieldset',undefined,'facet-group');group.append(node('h3',axisNames[axis]));const options=node('div',undefined,'facet-options');for(const item of state.preferenceFacets[axis]||[]){if(!item.label_id&&!item.qid)continue;const id=item.label_id||item.qid,label=node('label',undefined,'facet-option');const prefer=document.createElement('input');prefer.type='checkbox';prefer.value=id;prefer.dataset.axis=axis;prefer.dataset.direction='prefer';prefer.setAttribute('aria-label',axisNames[axis]+' '+(item.label||id)+'を重視');const avoid=document.createElement('input');avoid.type='checkbox';avoid.value=id;avoid.dataset.axis=axis;avoid.dataset.direction='avoid';avoid.setAttribute('aria-label',axisNames[axis]+' '+(item.label||id)+'を避ける');prefer.addEventListener('change',()=>{if(prefer.checked)avoid.checked=false;});avoid.addEventListener('change',()=>{if(avoid.checked)prefer.checked=false;});label.append(prefer,node('span',(item.label||id)+'を重視'),avoid,node('span','避ける'));options.append(label);}if(!options.childElementCount)options.append(node('span','この軸の選択肢はありません。','muted'));group.append(options);parent.append(group);}const weights=$('axis-weights');weights.replaceChildren(node('strong','分類軸の重み'));for(const axis of Object.keys(axisNames)){const label=node('label',undefined,'axis-weight');const input=document.createElement('input');input.type='range';input.min='0';input.max='2';input.step='.25';input.value='1';input.dataset.axis=axis;const output=node('output','1.00');input.addEventListener('input',()=>{output.textContent=Number(input.value).toFixed(2);});label.append(node('span',axisNames[axis]),input,output);weights.append(label);}}
 async function preferenceFacets(data){try{data=data||await api('/api/preference-facets');await facets(data);renderPreferenceFacets(data);}catch(e){$('preference-message').textContent=e.message;await facets();}}
-function preferencePayload(){const preferred=[],avoided=[],weights={};for(const input of document.querySelectorAll('#preference-facets input:checked')){(input.dataset.direction==='avoid'?avoided:preferred).push(input.value);}for(const input of document.querySelectorAll('#axis-weights input[data-axis]'))weights[input.dataset.axis]=Number(input.value);for(const axis of Object.keys(axisNames))if(weights[axis]===undefined)weights[axis]=1;const value=(id)=>$(id).value;const payload={liked_qids:[...state.favorites.keys()].filter(id=>/^Q[1-9][0-9]*$/.test(id)),liked_entry_ids:[...state.favorites.keys()].filter(id=>/^ln[sw]:wd:Q[1-9][0-9]*$|^ln[se]:ndl:[A-Za-z0-9_-][A-Za-z0-9._-]*$|^lng:pub:(?:futaba|orange):[0-9a-f]{32}$/.test(id)),family:value('preference-family'),preferred_features:preferred,avoided_features:avoided,axis_weights:weights,genre:value('preference-genre'),language:value('preference-language'),year_from:value('preference-year-from')?Number(value('preference-year-from')):null,year_to:value('preference-year-to')?Number(value('preference-year-to')):null,exclude_read:$('preference-exclude-read').checked,limit:30};return payload;}
+function preferencePayload(){const preferred=[],avoided=[],weights={};for(const input of document.querySelectorAll('#preference-facets input:checked')){(input.dataset.direction==='avoid'?avoided:preferred).push(input.value);}for(const input of document.querySelectorAll('#axis-weights input[data-axis]'))weights[input.dataset.axis]=Number(input.value);for(const axis of Object.keys(axisNames))if(weights[axis]===undefined)weights[axis]=1;const value=(id)=>$(id).value;const payload={liked_qids:[...state.favorites.keys()].filter(id=>/^Q[1-9][0-9]*$/.test(id)),liked_entry_ids:[...state.favorites.keys()].filter(id=>/^ln[sw]:wd:Q[1-9][0-9]*$|^ln[se]:ndl:[A-Za-z0-9_-][A-Za-z0-9._-]*$|^lng:pub:(?:futaba|orange|ecobalt):[0-9a-f]{32}$/.test(id)),family:value('preference-family'),preferred_features:preferred,avoided_features:avoided,axis_weights:weights,genre:value('preference-genre'),language:value('preference-language'),year_from:value('preference-year-from')?Number(value('preference-year-from')):null,year_to:value('preference-year-to')?Number(value('preference-year-to')):null,exclude_read:$('preference-exclude-read').checked,limit:30};return payload;}
 function renderRecommendations(data){const parent=$('recommendations');parent.replaceChildren();if(data.explanation)parent.append(node('p',data.explanation,'muted'));if(!data.items?.length){parent.append(node('p','条件に合う候補がありません。特徴を減らすか、好きな作品を追加してください。','muted'));return;}for(const row of data.items){const article=node('article',undefined,'recommendation-card');const title=node('button',row.title||'書名不明');title.type='button';title.addEventListener('click',()=>showDetail(entryKey(row)));article.append(node('h3',undefined).appendChild(title).parentNode,node('p',describe(row),'muted'),favoriteControl(row));if(row.score!==undefined&&row.score!==null)article.append(node('p','推薦スコア '+Number(row.score).toFixed(3)+'（未校正・順位付け用）','muted'));for(const reason of row.reasons||[]){const shared=(reason.shared||[]).map(item=>typeof item==='string'?item:item.label||item.qid).join('・');const prefix=reason.direction==='avoid'?'避けたい特徴：':reason.direction==='context'?'補助的な一致：':reason.direction==='prefer'?'好みに合う理由：':'推薦根拠：';const detail=reason.detail||reason.message||reason.label||reason.kind||'一致した根拠';const text=shared?detail+'（'+shared+'）':detail;article.append(node('p',prefix+text,'recommendation-reason'));}if(row.feature_insufficiency)article.append(node('p','特徴不足：'+row.feature_insufficiency,'recommendation-warning'));if(row.content_sources?.length)sourceCredits(article,row.content_sources);for(const source of row.recommendation_provenance||[]){const p=node('p',undefined,'recommendation-provenance');if(source.source_url){const a=node('a','根拠の出典');a.href=source.source_url;a.target='_blank';a.rel='noopener noreferrer';p.append(a);}if(source.revision)p.append(node('span',' ・ 版 '+source.revision));article.append(p);}parent.append(article);}}
 async function recommend(){const button=$('recommend');button.disabled=true;$('preference-message').textContent='';try{renderRecommendations(await api('/api/recommendations',{method:'POST',headers:{'Content-Type':'application/json','X-Catalogue-Request':'1'},body:JSON.stringify(preferencePayload())}));}catch(e){$('preference-message').textContent=e.message;}finally{button.disabled=false;}}
 async function loadOverview(){const button=$('load-overview');button.disabled=true;button.textContent='読み込み中…';try{const data=await api('/api/overview');await preferenceFacets(data.preference_facets);await stats(data.stats);button.hidden=true;}catch(e){$('message').textContent=e.message;button.textContent='収録状況と詳しい絞込みを表示';}finally{button.disabled=false;}}

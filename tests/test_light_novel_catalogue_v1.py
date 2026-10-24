@@ -5,6 +5,7 @@ import pytest
 
 from test_light_novel_futaba_workgroups_v1 import source as futaba_source_raw
 from test_light_novel_orange_groups_v1 import source as _orange_raw_fixture
+from test_light_novel_ecobalt_groups_v1 import source as _ecobalt_raw_fixture
 
 from recommend_book.light_novel_catalogue_v1 import LightNovelCatalogue, normalize_search
 
@@ -36,6 +37,161 @@ def orange_source_group_bundle(tmp_path):
     path = root / 'proof.json'
     groups = verify_orange_groups(path, env['sha'])
     return LightNovelCatalogue(tmp_path / 'orange.sqlite'), env, path, env['sha'], groups
+
+
+@pytest.fixture
+def ecobalt_source_group_bundle(tmp_path):
+    from recommend_book.light_novel_ecobalt_groups_v1 import verify_ecobalt_groups
+    root = tmp_path / 'ecobalt-raw'
+    root.mkdir()
+    env = _ecobalt_raw_fixture.__wrapped__(root)
+    path = root / 'proof.json'
+    groups = verify_ecobalt_groups(path, env['sha'])
+    return LightNovelCatalogue(tmp_path / 'ecobalt.sqlite'), env, path, env['sha'], groups
+
+
+def _ecobalt_next_snapshot(env, replace_child=False):
+    from copy import deepcopy
+    from test_light_novel_ecobalt_groups_v1 import save, rebind_raw
+    following = deepcopy(env)
+    following['root'] = env['root'] / 'next'
+    following['root'].mkdir()
+    for item in env['root'].iterdir():
+        if item.is_file():
+            (following['root'] / item.name).write_bytes(item.read_bytes())
+    following['proof']['capture_revision'] = 2
+    if replace_child:
+        page = following['root'] / 'page.html'
+        raw = page.read_bytes().replace(b'book=sc1', b'book=replaced1')
+        page.write_bytes(raw)
+        for book in following['books'] + following['handoff'][0]['explicit_memberships']:
+            if book['publisher_book_id'] == 'sc1':
+                book['publisher_book_id'] = 'replaced1'
+                book['source_url'] = book['source_url'].replace('book=sc1', 'book=replaced1')
+        rebind_raw(following, raw)
+    save(following)
+    return following['root'] / 'proof.json', following['sha']
+
+
+def test_ecobalt_source_group_preserves_listing_display_roles_and_complete_titles(ecobalt_source_group_bundle):
+    cat, _, path, sha, groups = ecobalt_source_group_bundle
+    result = cat.import_ecobalt_source_groups(path, sha)
+    assert result['inserted'] == 3 and result['held'] == 0
+    assert len(set(result['reference_entries'].values())) == 3
+    identity = result['reference_entries'][groups[0]['reference_id']]
+    row = cat.work_detail(identity)
+    assert identity.startswith('lng:pub:ecobalt:')
+    assert row['publisher_work_group_kind'] == 'ecobalt_author_index_source_group'
+    assert row['entry_kind'] == 'publisher_group' and row['heading_author_display'] == '甲'
+    assert row['role_context'] == {'literal': '著者50音別書籍リスト', 'scope': 'author_index_display_only'}
+    assert row['authors'] == row['aliases'] == row['members'] == row['genres'] == row['native_features'] == []
+    assert row['qid'] is row['publication_label'] is None and row['isbn'] == []
+    assert not row['light_novel_confirmed'] and not row['story_series_identity_asserted']
+    child = row['publisher_product_references'][0]
+    assert child['title'] == '完全題　１【電子限定】' and child['author_display'] == '甲'
+    assert child['credits'] == [{'role': 'unknown', 'name': '甲'}]
+    assert child['credit_literals'] == [{'name': '甲', 'entry_role_literal': None,
+        'role_context_literal': '著者50音別書籍リスト', 'role_scope': 'author_index_display_only'}]
+    assert child['label'] is child['form'] is None and child['media_references'] == []
+    assert cat.search_catalogue('完全題 1【電子限定】')['items'][0]['entry_id'] == identity
+    assert cat.search_catalogue('甲/乙')['total'] == 1
+    assert cat.search_catalogue('未所属の完全題')['total'] == 0
+    assert cat.search_catalogue('同題アンソロジー')['total'] == 2
+    assert cat.search_catalogue(entry_kind='series')['total'] == 3
+    assert cat.catalogue_stats()['publisher_work_groups'] == 3 and cat.catalogue_stats()['series'] == 0
+    assert not any(marker in json.dumps(row, ensure_ascii=False) for marker in
+        ('PRIVATE_', 'raw_path', 'source_selector', '著者：', str(path.parent)))
+
+
+@pytest.mark.parametrize('replace_child', [False, True])
+def test_ecobalt_source_group_snapshot_requires_shared_child_for_uuid_continuity(ecobalt_source_group_bundle, replace_child):
+    cat, env, path, sha, groups = ecobalt_source_group_bundle
+    first = cat.import_ecobalt_source_groups(path, sha)
+    identity = first['reference_entries'][groups[0]['reference_id']]
+    cat.set_read_status(identity, 'reading')
+    assert cat.import_ecobalt_source_groups(path, sha)['unchanged'] == 3
+    following, digest = _ecobalt_next_snapshot(env, replace_child)
+    result = cat.import_ecobalt_source_groups(following, digest)
+    assert result['inserted'] == 0 and result['held'] == int(replace_child)
+    assert result['updated'] == 3 - int(replace_child)
+    assert cat.work_detail(identity)['read_status'] == 'reading'
+    with cat._connect() as db:
+        assert {r[0] for r in db.execute('SELECT entry_id FROM entries')} == set(first['reference_entries'].values())
+        record = json.loads(db.execute('SELECT record_json FROM entries WHERE entry_id=?', (identity,)).fetchone()[0])
+    assert len(record['source_group_assertions']) == (1 if replace_child else 2)
+    assert record['source_group_assertions'][0]['manifest_sha256'] == sha
+
+
+def test_ecobalt_source_group_scope_preserves_both_previous_providers(
+        ecobalt_source_group_bundle, orange_source_group_bundle, futaba_source_group_bundle, monkeypatch):
+    _, _, path, sha, _ = ecobalt_source_group_bundle
+    _, _, opath, osha, _ = orange_source_group_bundle
+    cat, _, fpath, fsha, _ = futaba_source_group_bundle
+    fids = cat.import_futaba_source_groups(fpath, fsha)['reference_entries']
+    cat.import_orange_source_groups(opath, osha)
+    cat.set_read_status(next(iter(fids.values())), 'read')
+    tables = ['entries', 'read_status', 'edition_series_memberships', 'features']
+    with cat._connect() as db:
+        before = {t: [tuple(r) for r in db.execute('SELECT * FROM ' + t + ' ORDER BY 1')] for t in tables}
+    def forbidden(*args, **kwargs):
+        raise AssertionError('ecobalt import must not replay other providers')
+    monkeypatch.setattr(cat, '_futaba_workgroups', forbidden)
+    monkeypatch.setattr(cat, '_orange_workgroups', forbidden)
+    assert cat.import_ecobalt_source_groups(path, sha)['inserted'] == 3
+    assert cat.import_ecobalt_source_groups(path, sha)['unchanged'] == 3
+    with cat._connect() as db:
+        for table in tables:
+            rows = [tuple(r) for r in db.execute('SELECT * FROM ' + table + ' ORDER BY 1')]
+            assert [r for r in rows if table != 'entries' or not r[0].startswith('lng:pub:ecobalt:')] == before[table]
+
+
+@pytest.mark.parametrize('change', ['raw', 'rehash', 'typed'])
+def test_ecobalt_source_group_authenticates_raw_and_display_metadata(ecobalt_source_group_bundle, change):
+    cat, env, path, sha, _ = ecobalt_source_group_bundle
+    if change == 'raw':
+        (env['root'] / 'page.html').write_bytes(b'changed source')
+        with pytest.raises(ValueError):
+            cat.import_ecobalt_source_groups(path, sha)
+        with cat._connect() as db:
+            assert db.execute('SELECT count(*) FROM entries').fetchone()[0] == 0
+        return
+    identity = next(iter(cat.import_ecobalt_source_groups(path, sha)['reference_entries'].values()))
+    with cat._connect() as db:
+        if change == 'typed':
+            db.execute('UPDATE entries SET kind=? WHERE entry_id=?', ('series', identity))
+        else:
+            record = json.loads(db.execute('SELECT record_json FROM entries WHERE entry_id=?', (identity,)).fetchone()[0])
+            record['heading_author_display'] = '偽の表示'
+            encoded = json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+            db.execute('UPDATE entries SET record_json=?,record_sha256=? WHERE entry_id=?',
+                (encoded, hashlib.sha256(encoded.encode()).hexdigest(), identity))
+    with pytest.raises(ValueError):
+        cat.work_detail(identity)
+
+
+def test_ecobalt_source_listing_does_not_exclude_or_rewrite_independent_cobalt_story(
+        ecobalt_source_group_bundle, cobalt_member, monkeypatch):
+    _, _, path, sha, _ = ecobalt_source_group_bundle
+    cat, edition, frames, fsha, extra, esha, reference, _ = cobalt_member
+    assert cat.import_ndl_series_from_publishers(frames, fsha, source_root=frames.parent,
+        cobalt_series_path=extra, cobalt_series_sha256=esha, reference_ids={reference})['inserted'] == 1
+    story = 'lns:ndl:' + edition['id']
+    cat.set_read_status(story, 'reading')
+    with cat._connect() as db:
+        before = {table: [tuple(r) for r in db.execute('SELECT * FROM ' + table + ' ORDER BY 1')]
+            for table in ['entries', 'features', 'read_status', 'edition_series_memberships']}
+    with monkeypatch.context() as patch:
+        def forbidden(*args, **kwargs):
+            raise AssertionError('new eCobalt source scope cannot re-audit old story/NDL proof')
+        patch.setattr(cat, '_project_ndl_series', forbidden)
+        assert cat.import_ecobalt_source_groups(path, sha)['inserted'] == 3
+    with cat._connect() as db:
+        for table, old in before.items():
+            rows = [tuple(r) for r in db.execute('SELECT * FROM ' + table + ' ORDER BY 1')]
+            assert [r for r in rows if table != 'entries' or not r[0].startswith('lng:pub:ecobalt:')] == old
+    assert cat.work_detail(story)['read_status'] == 'reading'
+    assert cat.search_catalogue('完全題 1【電子限定】')['total'] == 1
+    assert cat.catalogue_stats()['series'] == 1 and cat.catalogue_stats()['publisher_work_groups'] == 3
 
 
 def _orange_next_snapshot(env, change=None):
@@ -365,13 +521,13 @@ def test_futaba_source_group_preserves_actual_anchor_bindings_and_reading_states
                 for table in tables} == before
 
 
-@pytest.mark.parametrize('race_kind', ['source', 'anchor', 'orange'])
+@pytest.mark.parametrize('race_kind', ['source', 'anchor', 'orange', 'ecobalt'])
 def test_futaba_source_group_new_target_race_is_detected_before_first_write(request, monkeypatch, race_kind):
     from contextlib import contextmanager
     import sqlite3
-    if race_kind == 'orange':
-        cat, _, path, sha, _ = request.getfixturevalue('orange_source_group_bundle')
-        saved = cat.import_orange_source_groups(path, sha)
+    if race_kind in {'orange', 'ecobalt'}:
+        cat, _, path, sha, _ = request.getfixturevalue(race_kind + '_source_group_bundle')
+        saved = getattr(cat, 'import_' + race_kind + '_source_groups')(path, sha)
         identity = next(iter(saved['reference_entries'].values()))
     elif race_kind == 'source':
         cat, _, path, sha, _ = request.getfixturevalue('futaba_source_group_bundle')
@@ -382,7 +538,7 @@ def test_futaba_source_group_new_target_race_is_detected_before_first_write(requ
         cat.correlate_publisher_bibliographies('futaba-mnovels', m_path, m_sha)
         cat.import_futaba_mnovels_workgroups(path, sha)
         identity = 'lns:ndl:' + first['id']
-    importer = cat.import_orange_source_groups if race_kind == 'orange' else cat.import_futaba_source_groups
+    importer = getattr(cat, 'import_' + race_kind + '_source_groups') if race_kind in {'orange', 'ecobalt'} else cat.import_futaba_source_groups
     with cat._connect() as db:
         racing = tuple(db.execute('SELECT * FROM entries WHERE entry_id=?', (identity,)).fetchone())
         db.execute('DELETE FROM edition_series_memberships WHERE series_id=?', (identity,))

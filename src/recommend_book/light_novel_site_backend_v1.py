@@ -13,7 +13,7 @@ import re
 
 
 _QID = re.compile(r'Q[1-9][0-9]*')
-_LIGHT = re.compile(r'(?:ln[sw]:wd:Q[1-9][0-9]*|ln[se]:ndl:[A-Za-z0-9._-]+|lng:pub:(?:futaba|orange):[0-9a-f]{32})')
+_LIGHT = re.compile(r'(?:ln[sw]:wd:Q[1-9][0-9]*|ln[se]:ndl:[A-Za-z0-9._-]+|lng:pub:(?:futaba|orange|ecobalt):[0-9a-f]{32})')
 _KINDS = {'series', 'work', 'edition', 'publisher_group'}
 _STATES = {'unknown', 'unread', 'reading', 'read'}
 
