@@ -53,6 +53,15 @@ SOURCE_GROUP_PROVIDERS = {
         'public_kind': 'ecobalt_author_index_source_group', 'complete_field': 'parent_page_membership_complete',
         'credit': '掲載グループ名・著者索引表示・保存枠内の掲載参照: 集英社eコバルト文庫の書籍一覧',
     },
+    'sbcr': {
+        'schema': 'light-novel-sbcr-source-group-v1', 'record_provider': 'sbcr',
+        'module': 'light_novel_sbcr_groups_v1', 'verifier': 'verify_sbcr_groups',
+        'loader': '_sbcr_workgroups', 'reference_pattern': r'sbcr-group-local:[0-9a-f]{64}',
+        'member_pattern': r'sbcr-product:[A-Za-z0-9]+',
+        'source_kind': 'official_publisher_listing_group_reference',
+        'public_kind': 'sbcr_ebook_source_group', 'complete_field': 'parent_page_membership_complete',
+        'credit': '掲載グループ名・保存枠内の掲載参照: SBクリエイティブの電子書籍一覧',
+    },
 }
 
 
@@ -81,7 +90,7 @@ def _qid(value):
 
 
 def _entry(value):
-    if not isinstance(value, str) or not re.fullmatch(r'(?:ln[sw]:wd:Q[1-9][0-9]*|ln[se]:ndl:[A-Za-z0-9._-]+|lng:pub:(?:futaba|orange|ecobalt):[0-9a-f]{32}|lnr:pub:ecobalt:[0-9a-f]{32})', value):
+    if not isinstance(value, str) or not re.fullmatch(r'(?:ln[sw]:wd:Q[1-9][0-9]*|ln[se]:ndl:[A-Za-z0-9._-]+|lng:pub:(?:futaba|orange|ecobalt|sbcr):[0-9a-f]{32}|lnr:pub:ecobalt:[0-9a-f]{32})', value):
         raise ValueError('a typed light-novel entry ID is required')
     return value
 
@@ -527,6 +536,9 @@ class LightNovelCatalogue:
     def _ecobalt_workgroups(self, path, sha256, cache):
         return self._publisher_source_groups('ecobalt', path, sha256, cache)
 
+    def _sbcr_workgroups(self, path, sha256, cache):
+        return self._publisher_source_groups('sbcr', path, sha256, cache)
+
     def _ecobalt_source_frame(self, path, sha256, cache):
         from .light_novel_ecobalt_groups_v1 import verify_ecobalt_frame
         key = ('ecobalt_source_frame', str(_resolved_path(path, cache)), sha256)
@@ -627,6 +639,9 @@ class LightNovelCatalogue:
 
     @staticmethod
     def _publisher_source_display(provider, group):
+        if provider == 'sbcr':
+            return {'robots_evidence': dict(group['robots_evidence']),
+                    'usage_permissions': dict(group['usage_permissions'])}
         if provider != 'ecobalt':
             return {}
         return {'heading_author_display': group['heading_author_display'],
@@ -693,6 +708,9 @@ class LightNovelCatalogue:
 
     def import_ecobalt_source_groups(self, manifest_path, expected_sha256, *, reference_ids=None):
         return self._import_publisher_source_groups('ecobalt', manifest_path, expected_sha256, reference_ids=reference_ids)
+
+    def import_sbcr_source_groups(self, manifest_path, expected_sha256, *, reference_ids=None):
+        return self._import_publisher_source_groups('sbcr', manifest_path, expected_sha256, reference_ids=reference_ids)
 
     def _ecobalt_publisher_references(self, path, sha256, cache):
         result = {}
@@ -906,7 +924,9 @@ class LightNovelCatalogue:
                     continue
                 old = record['source_group_assertions'][-1]
                 competing = set().union(*(products.get(m, set()) for m in assertion['member_reference_ids'])) - {identity}
-                if competing or not self._publisher_source_continuity(old, assertion):
+                if provider == 'sbcr' and record['title'] != group['title']:
+                    reason = 'source_group_scope_or_title_changed'
+                elif competing or not self._publisher_source_continuity(old, assertion):
                     reason = 'ambiguous_source_group_continuation'
                 elif old == assertion:
                     result['unchanged'] += 1

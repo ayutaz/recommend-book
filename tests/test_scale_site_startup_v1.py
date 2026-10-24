@@ -22,6 +22,7 @@ function element() {
 }
 const document = {
   getElementById(id){if(!elements.has(id))elements.set(id,element());return elements.get(id);},
+  querySelectorAll(){return [];},
   createElement(){return element();}
 };
 const context = {document, URLSearchParams, Map, Intl,
@@ -60,6 +61,9 @@ assert.equal(vm.runInNewContext('entryLabel(ROW)',{...context,ROW:reference}), '
 assert.ok(vm.runInNewContext('describe(ROW)',{...context,ROW:reference}).includes('掲載リストの著者表示：表示名A / 表示名B'));
 assert.equal(vm.runInNewContext('favoriteControl(ROW)',{...context,ROW:reference}).listeners.click, undefined,
              'a source-only product reference must not be selectable as recommendation evidence');
+vm.runInNewContext("state.favorites.set('lng:pub:sbcr:'+'a'.repeat(32),{title:'SB掲載群'})",context);
+assert.equal(vm.runInNewContext('preferencePayload().liked_entry_ids[0]',context),'lng:pub:sbcr:'+'a'.repeat(32),
+             'a selected SB group must retain its typed identity when submitting preferences');
 '''
     result = subprocess.run([node, '-'], input='const SOURCE=' + json.dumps(_JS) + ';\n' + harness,
                             text=True, encoding='utf-8', capture_output=True, timeout=10)

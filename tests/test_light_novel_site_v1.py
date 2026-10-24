@@ -178,7 +178,7 @@ def test_similarity_skips_only_featureless_typed_editions(site, monkeypatch, pat
     assert data['personalized'] is False
 
 
-@pytest.mark.parametrize('provider', ['futaba', 'orange', 'ecobalt'])
+@pytest.mark.parametrize('provider', ['futaba', 'orange', 'ecobalt', 'sbcr'])
 def test_featureless_source_group_similarity_reuses_authenticated_detail(site, monkeypatch, provider):
     base, catalogue = site
     identifier = 'lng:pub:' + provider + ':' + 'a' * 32
@@ -377,6 +377,41 @@ def test_orange_source_group_http_preserves_explicit_credit_roles_without_editio
     assert product['label'] is None and product['form'] is None and product['media_references'] == []
     assert not {'entry_id', 'isbn', 'read_status'} & product.keys()
     assert 'PRIVATE-SENTINEL' not in json.dumps(result)
+    fetch(base, '/api/recommendations', {'liked_entry_ids': [identifier]})
+    assert catalogue.calls[-1]['liked_entry_ids'] == [identifier]
+
+
+def test_sbcr_group_http_keeps_unknown_roles_and_rights_explicit(site, monkeypatch):
+    base, catalogue = site
+    identifier = 'lng:pub:sbcr:' + 'f' * 32
+    permissions = {'bibliographic_reference_only': True, 'commercial_reuse': 'unknown',
+        'prose_ai_permission': False, 'images_permission': False, 'raw_redistribution_permission': False}
+    row = {'entry_id': identifier, 'entry_kind': 'publisher_group', 'family': 'light_novel',
+        'title': '電子シリーズの掲載群', 'series_identity_basis': 'publisher_source_group',
+        'series_title_source': 'publisher_explicit_work_group', 'publisher_work_group_kind': 'sbcr_ebook_source_group',
+        'source_url': 'https://ebook.sbcr.jp/lightnovel/series/id/1',
+        'light_novel_confirmed': False, 'authors': [], 'members': [],
+        'robots_evidence': {'status': 'not_saved_in_existing_source_evidence', 'permission_inferred': False,
+                            'raw_path': 'PRIVATE-SENTINEL'},
+        'usage_permissions': dict(permissions, raw_path='PRIVATE-SENTINEL'),
+        'publisher_product_references': [{'publisher_reference_id': 'sbcr-product:1234567890123',
+            'title': '掲載された完全題', 'source_url': 'https://ebook.sbcr.jp/product/1234567890123',
+            'credits': [{'role': 'author', 'name': 'PRIVATE-SENTINEL'}],
+            'label': '推定しない', 'form': '推定しない',
+            'media_references': [{'source_url': 'https://example.com/PRIVATE-SENTINEL'}],
+            'raw_path': 'PRIVATE-SENTINEL'}]}
+    monkeypatch.setattr(catalogue, 'work_detail', lambda key: row if key == identifier else None)
+    result = fetch(base, '/api/entries/' + quote(identifier, safe=''))
+    assert result['entry_id'] == identifier and result['entry_kind'] == 'publisher_group'
+    assert result['publisher_work_group_kind'] == 'sbcr_ebook_source_group'
+    assert result['authors'] == [] and result['members'] == [] and result['light_novel_confirmed'] is False
+    assert result['usage_permissions'] == permissions
+    assert result['robots_evidence'] == {'status': 'not_saved_in_existing_source_evidence', 'permission_inferred': False}
+    product = result['publisher_product_references'][0]
+    assert product['publisher_reference_id'] == 'sbcr-product:1234567890123'
+    assert product['credits'] == [] and product['media_references'] == []
+    assert product['label'] is None and product['form'] is None
+    assert 'isbn' not in product and 'PRIVATE-SENTINEL' not in json.dumps(result)
     fetch(base, '/api/recommendations', {'liked_entry_ids': [identifier]})
     assert catalogue.calls[-1]['liked_entry_ids'] == [identifier]
 

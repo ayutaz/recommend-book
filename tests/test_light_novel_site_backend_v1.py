@@ -8,7 +8,7 @@ import pytest
 from recommend_book.light_novel_site_backend_v1 import UnifiedCatalogue
 from test_light_novel_catalogue_v1 import (
     futaba_source_group_bundle, futaba_source_raw, membership_bundle, edition_bundle, setup_catalogue,
-    orange_source_group_bundle, ecobalt_source_group_bundle,
+    orange_source_group_bundle, ecobalt_source_group_bundle, sbcr_source_group_bundle,
 )
 
 
@@ -445,6 +445,39 @@ def test_ecobalt_publisher_reference_similar_authenticates_only_own_frame_before
     assert result['mode'] == 'insufficient_evidence' and result['items'] == []
     assert result['classification_scope'] == 'publisher_reference' and not world.calls
     (env['root'] / 'page.html').write_bytes(b'changed own product reference witness')
+    with pytest.raises(ValueError):
+        combined.similar_works(identity)
+
+
+def test_sbcr_source_group_typed_history_unknown_rights_and_early_similar(sbcr_source_group_bundle, tmp_path, monkeypatch):
+    cat, env, path, sha, _ = sbcr_source_group_bundle
+    world = Store(tmp_path / 'sbcr-world.sqlite', [])
+    combined = UnifiedCatalogue(world, cat)
+    assert combined.export_reading_history()['version'] == 'catalogue-history-export-v2'
+    identity = next(iter(cat.import_sbcr_source_groups(path, sha)['reference_entries'].values()))
+    row = combined.work_detail(identity)
+    assert row['entry_kind'] == 'publisher_group' and row['publisher_work_group_kind'] == 'sbcr_ebook_source_group'
+    assert row['robots_evidence']['permission_inferred'] is False
+    assert row['usage_permissions']['commercial_reuse'] == 'unknown'
+    combined.set_read_status(identity, 'read')
+    history = combined.export_reading_history()
+    assert history['version'] == 'catalogue-history-export-v3'
+    assert history['records'][0]['entry_id'] == identity and history['records'][0]['entry_kind'] == 'publisher_group'
+    assert combined.search_catalogue(family='light_novel', entry_kind='series', query='完全な巻題 2')['total'] == 1
+    for invalid in ['lng:pub:sbcr:' + 'A'*32, 'lng:pub:sbcr:7', 'lnr:pub:sbcr:' + 'a'*32]:
+        with pytest.raises(ValueError):
+            combined.work_detail(invalid)
+    def forbidden(*args, **kwargs):
+        raise AssertionError('SB similar cannot replay other providers or full/world catalogues')
+    for name in ['_rows', '_futaba_workgroups', '_orange_workgroups', '_ecobalt_workgroups', '_ecobalt_source_frame',
+                 '_feature_rows', 'recommend_preferences']:
+        monkeypatch.setattr(cat, name, forbidden)
+    monkeypatch.setattr(world, 'recommend_preferences', forbidden)
+    monkeypatch.setattr(world, 'search_catalogue', forbidden)
+    result = combined.similar_works(identity)
+    assert result['mode'] == 'insufficient_evidence' and result['classification_scope'] == 'publisher_group'
+    assert not world.calls
+    (env['root'] / 'coverage' / 'parent.html').write_bytes(b'changed selected SB source')
     with pytest.raises(ValueError):
         combined.similar_works(identity)
 

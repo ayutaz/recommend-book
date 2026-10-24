@@ -13,9 +13,9 @@ import json
 from pathlib import Path
 import re
 
-from .light_novel_ndl_series_v1 import _Links, _cards, _sbcr_books, _snapshot_text
+from .light_novel_ndl_series_v1 import _cards, _sbcr_books, _snapshot_text
 from .light_novel_publisher_references_v1 import (
-    MAX_METADATA_BYTES, MAX_SOURCE_BYTES, _DOM, _read, _relative,
+    MAX_METADATA_BYTES, MAX_SOURCE_BYTES, _DOM, _Node, _read, _relative,
 )
 
 
@@ -32,12 +32,24 @@ _ROBOTS = {'status': 'not_saved_in_existing_source_evidence', 'permission_inferr
 _OPEN = '<!-- ↓↓↓↓ partial.comic.bookloop ↓↓↓↓ -->'
 _CLOSE = '<!-- ↑↑↑↑ partial.comic.bookloop↑↑↑↑ -->'
 _SCOPE = 'selected_saved_parent_bookloops'
+_BOOKLIST_CONTRACT = {'scope': 'partial.comic.bookloop',
+    'cards': 'div.bookarea > div.book_line > div.book > dl',
+    'complete_title': 'dd.title > a[href]', 'cover_alt_is_title': False,
+    'unscoped_links_are_members': False, 'conflicting_explicit_titles': 'reject',
+    'legacy_handoff': 'exact_existing_helper_projection_only',
+    'canonical_title_agreement_with_legacy_required': False,
+    'canonical_url_set_and_count_agreement': True}
 
 
 def _one(items, field):
     if len(items) != 1:
         raise ValueError('SB field cardinality differs: ' + field)
     return items[0]
+
+
+def _children(node, tag, cls=None):
+    return [n for n in node.parts if isinstance(n, _Node) and n.tag == tag
+            and (cls is None or cls in n.attrs.get('class', '').split())]
 
 
 def _load(root, pin):
@@ -99,24 +111,38 @@ def _members(document, url, receipt, declared):
     tree = _DOM(block).root
     if any('next' in n.attrs.get('rel', '').split() for n in tree.nodes(tag='a') + tree.nodes(tag='link')):
         raise ValueError('SB own bookloop has an unresolved next page')
-    links = _Links()
-    links.feed(block)
-    unique = {}
-    for link in links.links:
-        href = link['href']
-        if '/product/' not in href:
-            continue
+    area = _one(tree.nodes(tag='div', cls='bookarea'), 'own bookarea')
+    lines = _children(area, 'div', 'book_line')
+    cards = [card for line in lines for card in _children(line, 'div', 'book')]
+    if not cards or cards != area.nodes(tag='div', cls='book'):
+        raise ValueError('SB explicit own book card boundary differs')
+    unique, books = {}, []
+    for number, card in enumerate(cards, 1):
+        dl = _one(_children(card, 'dl'), 'own book card dl')
+        field = _one(_children(dl, 'dd', 'title'), 'explicit complete title field')
+        anchor = _one(_children(field, 'a'), 'explicit complete title link')
+        if field.nodes(tag='a') != [anchor] or anchor.nodes(tag='img'):
+            raise ValueError('SB complete title field contains non-title link/image')
+        href, title = anchor.attrs.get('href', ''), anchor.text()
         if not re.fullmatch(r'/product/[A-Za-z0-9]+', href):
             raise ValueError('SB own child URL is outside the fixed product route')
-        title = link['text'] or next(iter(link['images']), None)
         if not title:
             raise ValueError('SB complete child title is absent')
-        if href in unique and unique[href] != title:
-            raise ValueError('SB duplicate child URL has conflicting complete titles')
-        unique[href] = title
-    books = _sbcr_books(document, url)
-    if not books or len(books) != len(unique) or books != declared['explicit_book_memberships']:
-        raise ValueError('SB declared parent child projection differs from raw')
+        if href in unique:
+            if unique[href]['title'] != title:
+                raise ValueError('SB duplicate child URL has conflicting explicit complete title fields')
+            continue
+        item = {'book_url': 'https://ebook.sbcr.jp' + href, 'title': title}
+        unique[href] = {**item, 'card_ordinal': number}
+        books.append(item)
+    # Reproduce the pre-existing projection as evidence of what was saved.
+    # Its all-link/cover fallback is not the authority for the safe full title.
+    legacy_books = _sbcr_books(document, url)
+    if legacy_books != declared['explicit_book_memberships']:
+        raise ValueError('SB declared legacy child projection differs from raw')
+    if (len(books) != len(legacy_books)
+            or {b['book_url'] for b in books} != {b['book_url'] for b in legacy_books}):
+        raise ValueError('SB explicit title fields and legacy own child URL set/count differ')
     count = declared['publisher_reported_edition_count']
     if type(count) is not int or count != len(books):
         raise ValueError('SB own index count and closed parent bookloop differ')
@@ -125,7 +151,9 @@ def _members(document, url, receipt, declared):
         match = _BOOK.fullmatch(book['book_url'])
         if not match:
             raise ValueError('SB child opaque product URL differs')
-        locator = f'partial.comic.bookloop a[href="/product/{match[1]}"] (unique-member={number})'
+        ordinal = unique['/product/' + match[1]]['card_ordinal']
+        locator = ('partial.comic.bookloop div.bookarea > div.book_line > '
+                   f'div.book[matching-index={ordinal}] > dl > dd.title > a[href="/product/{match[1]}"]')
         result.append({'publisher_reference_id': 'sbcr-product:' + match[1],
             'opaque_book_url_key': match[1], 'source_unit': 'publisher_product_reference',
             'source_url': book['book_url'], 'title': book['title'], 'credits': [], 'credit_literals': [],
@@ -134,6 +162,8 @@ def _members(document, url, receipt, declared):
             'story_series_asserted': False, 'original_work_identity_asserted': False,
             'paper_electronic_same_edition_asserted': False,
             'membership_basis': 'explicit_link_in_saved_own_parent_bookloop',
+            'title_basis': 'explicit_own_book_card_dd_title_anchor_text',
+            'legacy_projection_is_canonical_title': False,
             'source_selector': locator, 'source_evidence': [{'source_url': url,
                 'raw_sha256': receipt['sha256'], 'locator': locator}]})
     return result
@@ -149,9 +179,10 @@ def verify_sbcr_groups(manifest_path: str | Path, sha256: str) -> list[dict]:
     root = path.parent
     try:
         proof = json.loads(_read(path, sha256, MAX_METADATA_BYTES))
-        if (proof.get('schema_version') != 'sbcr-selected-publisher-groups-proof-v1'
+        if (proof.get('schema_version') != 'sbcr-selected-publisher-groups-proof-v2'
                 or proof.get('usage_scope') != _USAGE or proof.get('robots_evidence') != _ROBOTS
-                or proof.get('source_rights_literal') != _RIGHTS):
+                or proof.get('source_rights_literal') != _RIGHTS
+                or proof.get('booklist_contract') != _BOOKLIST_CONTRACT):
             raise ValueError('SB proof schema/rights/missing robots context differs')
         source_root = _relative(root, proof['source_root'])
         counts = proof['expected_counts']
@@ -234,7 +265,12 @@ def verify_sbcr_groups(manifest_path: str | Path, sha256: str) -> list[dict]:
                     or row.get('publisher_reported_edition_count') != by_url[url]['publisher_reported_edition_count']):
                 raise ValueError('SB selected group metadata/index/scope differs')
             receipt = row['series_source_snapshot']
-            members = _members(_source(source_root, receipt, url, cache), url, receipt, row)
+            try:
+                members = _members(_source(source_root, receipt, url, cache), url, receipt, row)
+            except ValueError as exc:
+                raise ValueError(f'SB parent reference={reference} source_url={url} '
+                                 f'raw_sha256={receipt.get("sha256")} '
+                                 f'locator=partial.comic.bookloop/dd.title/a: {exc}') from exc
             for member in members:
                 child, title = member['source_url'], member['title']
                 if child in seen_children and seen_children[child] != title:
@@ -253,10 +289,12 @@ def verify_sbcr_groups(manifest_path: str | Path, sha256: str) -> list[dict]:
                 'original_work_identity_asserted': False, 'independent_volume_numbers_inferred': False,
                 'paper_electronic_same_edition_asserted': False, 'members': members,
                 'frame_member_count': len(members), 'parent_page_membership_complete': True,
+                'legacy_projection_reproduced': True, 'legacy_projection_is_canonical_title': False,
                 'global_membership_complete': None, 'scope': _SCOPE,
                 'source_evidence': [{'source_url': _PAGE, 'raw_sha256': index_receipt['sha256'],
                                      'locator': 'index a[href resolving to "' + url + '"] (series title/count)'},
-                    {'source_url': url, 'raw_sha256': receipt['sha256'], 'locator': 'partial.comic.bookloop (explicit closed own list)'}],
+                    {'source_url': url, 'raw_sha256': receipt['sha256'],
+                     'locator': 'partial.comic.bookloop div.bookarea > div.book_line > div.book > dl > dd.title > a[href]'}],
                 'robots_evidence': dict(_ROBOTS), 'usage_permissions': dict(_USAGE)})
         if (sum(len(g['members']) for g in result) != counts['selected_members']
                 or len(seen_children) != counts['unique_selected_members']):

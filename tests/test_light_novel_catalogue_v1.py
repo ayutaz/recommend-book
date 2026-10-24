@@ -6,6 +6,7 @@ import pytest
 from test_light_novel_futaba_workgroups_v1 import source as futaba_source_raw
 from test_light_novel_orange_groups_v1 import source as _orange_raw_fixture
 from test_light_novel_ecobalt_groups_v1 import source as _ecobalt_raw_fixture
+from test_light_novel_sbcr_groups_v1 import fixture as _sbcr_raw_fixture
 
 from recommend_book.light_novel_catalogue_v1 import LightNovelCatalogue, normalize_search
 
@@ -48,6 +49,132 @@ def ecobalt_source_group_bundle(tmp_path):
     path = root / 'proof.json'
     groups = verify_ecobalt_groups(path, env['sha'])
     return LightNovelCatalogue(tmp_path / 'ecobalt.sqlite'), env, path, env['sha'], groups
+
+
+@pytest.fixture
+def sbcr_source_group_bundle(tmp_path):
+    from recommend_book.light_novel_sbcr_groups_v1 import verify_sbcr_groups
+    root = tmp_path / 'sbcr-raw'
+    root.mkdir()
+    env = _sbcr_raw_fixture(root)
+    path, sha = root / env['pin']['path'], env['pin']['sha256']
+    return LightNovelCatalogue(tmp_path / 'sbcr.sqlite'), env, path, sha, verify_sbcr_groups(path, sha)
+
+
+def _sbcr_next_snapshot(env, change=None):
+    from test_light_novel_sbcr_groups_v1 import update, change_raw
+    root = env['root'] / 'next'
+    root.mkdir()
+    following = _sbcr_raw_fixture(root)
+    following['proof']['capture_revision'] = 2
+    if change == 'title':
+        index = root / 'coverage' / 'index.html'
+        raw = index.read_bytes().replace('完全な親題'.encode(), '変更された親題'.encode())
+        index.write_bytes(raw)
+        receipt = following['frames'][-1]['pages'][0]
+        receipt.update(sha256=hashlib.sha256(raw).hexdigest(), byte_length=len(raw))
+        for row in following['rows'] + following['roster']:
+            row['index_source_sha256'] = receipt['sha256']
+            if row['title'] == '完全な親題':
+                row['title'] = '変更された親題'
+        update(following, 'source_frames', following['frames'])
+        update(following, 'source_roster', following['roster'])
+        update(following, 'source_handoff', following['rows'])
+    elif change == 'children':
+        for member in following['rows'][0]['explicit_book_memberships']:
+            member['book_url'] += 'NEW'
+        page = root / 'coverage' / 'parent.html'
+        change_raw(following, page.read_text(encoding='utf-8').replace('/product/OPAQUE1', '/product/OPAQUE1NEW').replace('/product/OPAQUE2', '/product/OPAQUE2NEW'))
+    following['pin'] = following['save']('proof.json', following['proof'])
+    return root / 'proof.json', following['pin']['sha256']
+
+
+def test_sbcr_source_group_selected_raw_and_unknown_rights_projection(sbcr_source_group_bundle):
+    cat, _, path, sha, groups = sbcr_source_group_bundle
+    result = cat.import_sbcr_source_groups(path, sha)
+    assert result['source_groups'] == result['inserted'] == 1 and result['held'] == 0
+    identity = result['reference_entries'][groups[0]['reference_id']]
+    assert identity.startswith('lng:pub:sbcr:')
+    row = cat.work_detail(identity)
+    assert row['publisher_work_group_kind'] == 'sbcr_ebook_source_group'
+    assert row['authors'] == row['aliases'] == row['members'] == row['genres'] == row['native_features'] == []
+    assert row['isbn'] == [] and row['publication_label'] is row['qid'] is None
+    assert not row['light_novel_confirmed'] and not row['story_series_identity_asserted']
+    assert row['robots_evidence'] == {'status': 'not_saved_in_existing_source_evidence', 'permission_inferred': False}
+    assert row['usage_permissions'] == {'bibliographic_reference_only': True, 'commercial_reuse': 'unknown',
+        'prose_ai_permission': False, 'images_permission': False, 'raw_redistribution_permission': False}
+    assert [child['title'] for child in row['publisher_product_references']] == ['完全な巻題 1', '完全な巻題 2']
+    assert all(child['credits'] == [] and child['media_references'] == [] and child['label'] is child['form'] is None
+        for child in row['publisher_product_references'])
+    assert cat.search_catalogue('完全な巻題 2')['items'][0]['entry_id'] == identity
+    assert cat.search_catalogue('ROLELESS PROXY')['total'] == 0
+    assert cat.catalogue_stats()['publisher_work_groups'] == 1 and cat.catalogue_stats()['series'] == 0
+    assert not any(marker in json.dumps(row, ensure_ascii=False) for marker in ('SECRET', 'MUST_NOT_OPEN', 'source_selector', str(path.parent)))
+
+
+@pytest.mark.parametrize('change', [None, 'title', 'children'])
+def test_sbcr_source_group_snapshot_continuity_preserves_local_uuid_or_holds(sbcr_source_group_bundle, change):
+    cat, env, path, sha, _ = sbcr_source_group_bundle
+    first = cat.import_sbcr_source_groups(path, sha)
+    identity = next(iter(first['reference_entries'].values()))
+    cat.set_read_status(identity, 'reading')
+    assert cat.import_sbcr_source_groups(path, sha)['unchanged'] == 1
+    following, digest = _sbcr_next_snapshot(env, change)
+    result = cat.import_sbcr_source_groups(following, digest)
+    assert result['inserted'] == 0 and result['updated'] == int(change is None) and result['held'] == int(change is not None)
+    assert cat.work_detail(identity)['read_status'] == 'reading'
+    with cat._connect() as db:
+        assert {r[0] for r in db.execute('SELECT entry_id FROM entries')} == {identity}
+
+
+@pytest.mark.parametrize('change', ['raw', 'rehash', 'typed'])
+def test_sbcr_source_group_rejects_raw_or_stored_contract_tampering(sbcr_source_group_bundle, change):
+    cat, env, path, sha, _ = sbcr_source_group_bundle
+    if change == 'raw':
+        (env['root'] / 'coverage' / 'parent.html').write_bytes(b'changed selected own raw')
+        with pytest.raises(ValueError):
+            cat.import_sbcr_source_groups(path, sha)
+        with cat._connect() as db:
+            assert db.execute('SELECT count(*) FROM entries').fetchone()[0] == 0
+        return
+    identity = next(iter(cat.import_sbcr_source_groups(path, sha)['reference_entries'].values()))
+    with cat._connect() as db:
+        if change == 'typed':
+            db.execute('UPDATE entries SET kind=? WHERE entry_id=?', ('series', identity))
+        else:
+            record = json.loads(db.execute('SELECT record_json FROM entries WHERE entry_id=?', (identity,)).fetchone()[0])
+            record['robots_evidence']['permission_inferred'] = True
+            encoded = json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+            db.execute('UPDATE entries SET record_json=?,record_sha256=? WHERE entry_id=?',
+                (encoded, hashlib.sha256(encoded.encode()).hexdigest(), identity))
+    with pytest.raises(ValueError):
+        cat.work_detail(identity)
+
+
+def test_sbcr_source_group_import_does_not_replay_or_rewrite_older_providers(
+        sbcr_source_group_bundle, futaba_source_group_bundle, orange_source_group_bundle, ecobalt_source_group_bundle, monkeypatch):
+    _, _, path, sha, _ = sbcr_source_group_bundle
+    cat, _, fpath, fsha, _ = futaba_source_group_bundle
+    _, _, opath, osha, _ = orange_source_group_bundle
+    _, _, epath, esha, _ = ecobalt_source_group_bundle
+    identity = next(iter(cat.import_futaba_source_groups(fpath, fsha)['reference_entries'].values()))
+    cat.import_orange_source_groups(opath, osha)
+    cat.import_ecobalt_source_groups(epath, esha)
+    cat.import_ecobalt_publisher_references(epath, esha)
+    cat.set_read_status(identity, 'read')
+    with cat._connect() as db:
+        before = {r['entry_id']: tuple(r) for r in db.execute('SELECT * FROM entries')}
+        states = [tuple(r) for r in db.execute('SELECT * FROM read_status')]
+    def forbidden(*args, **kwargs):
+        raise AssertionError('SB selected import cannot replay older providers')
+    for method in ['_futaba_workgroups', '_orange_workgroups', '_ecobalt_workgroups', '_ecobalt_source_frame']:
+        monkeypatch.setattr(cat, method, forbidden)
+    assert cat.import_sbcr_source_groups(path, sha)['inserted'] == 1
+    assert cat.import_sbcr_source_groups(path, sha)['unchanged'] == 1
+    with cat._connect() as db:
+        after = {r['entry_id']: tuple(r) for r in db.execute('SELECT * FROM entries')}
+        assert {identity: after[identity] for identity in before} == before
+        assert [tuple(r) for r in db.execute('SELECT * FROM read_status')] == states
 
 
 def _ecobalt_next_snapshot(env, replace_child=False, rename_reference=False):
@@ -662,7 +789,7 @@ def test_futaba_source_group_preserves_actual_anchor_bindings_and_reading_states
                 for table in tables} == before
 
 
-@pytest.mark.parametrize('race_kind', ['source', 'anchor', 'orange', 'ecobalt', 'ecobalt_reference'])
+@pytest.mark.parametrize('race_kind', ['source', 'anchor', 'orange', 'ecobalt', 'ecobalt_reference', 'sbcr'])
 def test_futaba_source_group_new_target_race_is_detected_before_first_write(request, monkeypatch, race_kind):
     from contextlib import contextmanager
     import sqlite3
@@ -670,7 +797,7 @@ def test_futaba_source_group_new_target_race_is_detected_before_first_write(requ
         cat, _, path, sha, _ = request.getfixturevalue('ecobalt_source_group_bundle')
         saved = cat.import_ecobalt_publisher_references(path, sha)
         identity = next(iter(saved['reference_entries'].values()))
-    elif race_kind in {'orange', 'ecobalt'}:
+    elif race_kind in {'orange', 'ecobalt', 'sbcr'}:
         cat, _, path, sha, _ = request.getfixturevalue(race_kind + '_source_group_bundle')
         saved = getattr(cat, 'import_' + race_kind + '_source_groups')(path, sha)
         identity = next(iter(saved['reference_entries'].values()))
@@ -686,7 +813,7 @@ def test_futaba_source_group_new_target_race_is_detected_before_first_write(requ
     if race_kind == 'ecobalt_reference':
         importer = cat.import_ecobalt_publisher_references
     else:
-        importer = getattr(cat, 'import_' + race_kind + '_source_groups') if race_kind in {'orange', 'ecobalt'} else cat.import_futaba_source_groups
+        importer = getattr(cat, 'import_' + race_kind + '_source_groups') if race_kind in {'orange', 'ecobalt', 'sbcr'} else cat.import_futaba_source_groups
     with cat._connect() as db:
         racing = tuple(db.execute('SELECT * FROM entries WHERE entry_id=?', (identity,)).fetchone())
         db.execute('DELETE FROM edition_series_memberships WHERE series_id=?', (identity,))
