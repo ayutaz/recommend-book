@@ -34,6 +34,14 @@ def _json(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
 
 
+def _resolved_path(path, cache):
+    """Canonicalize each spelling once per operation, without caching evidence."""
+    key = ('resolved_path', str(path))
+    if key not in cache:
+        cache[key] = Path(path).resolve()
+    return cache[key]
+
+
 def _qid(value):
     if not isinstance(value, str) or not re.fullmatch(r'Q[1-9][0-9]*', value):
         raise ValueError('invalid Wikidata QID')
@@ -107,6 +115,10 @@ class LightNovelCatalogue:
                     edition_id TEXT PRIMARY KEY REFERENCES entries(entry_id),
                     series_id TEXT NOT NULL REFERENCES entries(entry_id),
                     proof_json TEXT NOT NULL,proof_sha256 TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS edition_book_confirmations(
+                    edition_id TEXT NOT NULL REFERENCES entries(entry_id),provider TEXT NOT NULL,
+                    proof_json TEXT NOT NULL,proof_sha256 TEXT NOT NULL,
+                    PRIMARY KEY(edition_id,provider));
             ''')
 
     @contextmanager
@@ -121,7 +133,7 @@ class LightNovelCatalogue:
             db.close()
 
     def _artifact(self, path, expected, cache):
-        key = (str(Path(path).resolve()), expected)
+        key = (str(_resolved_path(path, cache)), expected)
         if key not in cache:
             raw = Path(path).read_bytes()
             if not isinstance(expected, str) or hashlib.sha256(raw).hexdigest() != expected:
@@ -130,7 +142,7 @@ class LightNovelCatalogue:
         return cache[key]
 
     def _payload(self, path, expected, cache):
-        key = ('json', str(Path(path).resolve()), expected)
+        key = ('json', str(_resolved_path(path, cache)), expected)
         if key not in cache:
             cache[key] = json.loads(self._artifact(path, expected, cache))
         return cache[key]
@@ -268,7 +280,8 @@ class LightNovelCatalogue:
         source_record = record['source_record']
         raw = self._artifact(proof['raw_path'], proof['raw_sha256'], cache)
         key = ('ndl_records', proof['raw_path'], proof['raw_sha256'], source_record['retrieved_at'])
-        if key not in cache:
+        node_key = ('ndl_nodes', proof['raw_path'], proof['raw_sha256'])
+        if node_key not in cache:
             try:
                 xml = ET.fromstring(raw)
             except ET.ParseError as exc:
@@ -276,21 +289,28 @@ class LightNovelCatalogue:
             nodes = xml.findall(f'.//{{{SRU}}}recordData')
             if not nodes:
                 nodes = [xml]
-            normalized = {}
-            adapter = NDLAdapter(None, approved_providers={'iss-ndl-opac'})
-            artifact = RawArtifact(proof['raw_sha256'], proof['raw_path'], len(raw), source_record['retrieved_at'], 'https://ndlsearch.ndl.go.jp/api/sru')
+            indexed = {}
             for index, node in enumerate(nodes, 1):
                 if len(node) == 0 and node.text:
                     try:
                         node = ET.fromstring(node.text)
                     except ET.ParseError as exc:
                         raise ValueError('NDL record XML is malformed') from exc
-                try:
-                    item = adapter._normalize(node, artifact, 'iss-ndl-opac', locator=f'records[{index}]/recordData')
-                except (ValueError, TypeError):
-                    continue
-                normalized[item.source_id] = item.model_dump(mode='json')
-            cache[key] = normalized
+                identities = {v.split('#', 1)[0].rsplit('/', 1)[-1] for child in node.iter()
+                              for v in child.attrib.values() if v.startswith('https://ndlsearch.ndl.go.jp/books/')}
+                for identity in identities:
+                    if identity in indexed:
+                        raise ValueError('duplicate NDL identity within raw response')
+                    indexed[identity] = (node, index)
+            cache[node_key] = indexed
+        if key not in cache:
+            cache[key] = {}
+        if source_id not in cache[key] and source_id in cache[node_key]:
+            node, index = cache[node_key][source_id]
+            adapter = NDLAdapter(None, approved_providers={'iss-ndl-opac'})
+            artifact = RawArtifact(proof['raw_sha256'], proof['raw_path'], len(raw), source_record['retrieved_at'], 'https://ndlsearch.ndl.go.jp/api/sru')
+            item = adapter._normalize(node, artifact, 'iss-ndl-opac', locator=f'records[{index}]/recordData')
+            cache[key][source_id] = item.model_dump(mode='json')
         actual = cache[key].get(source_id)
         if not actual or actual != source_record:
             raise ValueError('NDL source record not reproduced by raw')
@@ -375,12 +395,13 @@ class LightNovelCatalogue:
         assertion = publisher_assertions(proof, self._artifact, cache).get(proof['reference_id'])
         if assertion is None:
             raise ValueError('official novel series assertion absent')
-        match = match_bibliography(assertion, anchor['source_record'], normalize_search, allow_unnumbered=True)
+        match = match_bibliography(assertion, self._source_with_title_parts(anchor, cache), normalize_search, allow_unnumbered=True)
         if match is None:
             raise ValueError('NDL anchor does not reproduce publisher series identity')
         entry_id = 'lns:ndl:' + anchor['id']
         return {**base, 'entry_id': entry_id, 'work_id': entry_id, 'entry_kind': 'series',
                 'title': match['title'], 'aliases': anchor['source_record']['extra'].get('title_readings', []),
+                'title_origin': match['title_origin'],
                 'authors': [{'qid': None, 'name': a['name'], 'ndl_authorities': a['authority_ids']} for a in match['authors']],
                 'original_language': None, 'language': None, 'original_language_status': 'unknown',
                 'year': None, 'anchor_edition_year': base['year'],
@@ -392,12 +413,35 @@ class LightNovelCatalogue:
                 'publisher_series_reference_id': assertion['reference_id'],
                 'source_attributions': [{**s, 'scope': 'series_bibliographic_metadata'} for s in base['source_attributions']]}
 
+    def _source_with_title_parts(self, edition, cache):
+        """Parse only explicit ISBD separators in reproduced RDF title fields."""
+        from .ingestion.ndl import DC, DCTERMS, _value_text
+        source = edition['source_record']
+        proof = edition['provenance']
+        key = ('ndl_nodes', proof['raw_path'], proof['raw_sha256'])
+        if key not in cache:
+            self._project_edition(edition, cache)
+        node, index = cache[key][source['source_id']]
+        originals = {title['value'] for title in source['titles']}
+        parts = []
+        for title_node in node.iter():
+            if title_node.tag not in {f'{{{DC}}}title', f'{{{DCTERMS}}}title'}:
+                continue
+            value = _value_text(title_node)
+            if value not in originals:
+                continue
+            main = re.split(r' (?:=|:) ', value, maxsplit=1)[0].strip()
+            if main and main != value:
+                parts.append({'value': main, 'locator': f'records[{index}]/recordData/{title_node.tag}',
+                              'kind': 'rdf_title_isbd_main', 'source_value': value})
+        return {**source, '_cataloguing_main_titles': parts}
+
     def _ndl_membership_match(self, series, series_record, edition_record, cache):
         from .light_novel_ndl_series_v1 import publisher_assertions, match_bibliography
         proof = series_record['publisher_series_proof']
         assertion = publisher_assertions(proof, self._artifact, cache).get(proof['reference_id'])
-        source = edition_record['source_record']
-        anchor = series_record['anchor_edition_record']['source_record']
+        source = self._source_with_title_parts(edition_record, cache)
+        anchor = self._source_with_title_parts(series_record['anchor_edition_record'], cache)
         match = match_bibliography(assertion, source, normalize_search,
                                   allow_unnumbered=source['source_id'] == anchor['source_id']) if assertion else None
         anchor_match = match_bibliography(assertion, anchor, normalize_search, allow_unnumbered=True) if assertion else None
@@ -429,14 +473,18 @@ class LightNovelCatalogue:
             if edition['entry_kind'] != 'edition':
                 continue
             record = records[edition['entry_id']]
-            candidates = {s['entry_id']: s for t in record['source_record']['titles'] for s in index.get(normalize_search(t['value']), [])}
+            source = self._source_with_title_parts(record, cache)
+            candidates = {s['entry_id']: s for t in [*source['titles'], *source.get('_cataloguing_main_titles', [])]
+                          for s in index.get(normalize_search(t['value']), [])}
             matched = [match for series in candidates.values()
                        if (match := self._ndl_membership_match(series, records[series['entry_id']], record, cache))]
             if len(matched) == 1:
                 result[edition['entry_id']] = matched[0]
         return result
 
-    def import_ndl_series_from_publishers(self, frames_path, expected_sha256, *, source_root):
+    def import_ndl_series_from_publishers(self, frames_path, expected_sha256, *, source_root,
+                                         sbcr_series_path=None, sbcr_series_sha256=None,
+                                         label_aliases_path=None, label_aliases_sha256=None):
         """Admit uniquely cross-checked series; retain a stable NDL anchor ID."""
         from .light_novel_ndl_series_v1 import publisher_assertions, match_bibliography
         cache = {}
@@ -451,16 +499,30 @@ class LightNovelCatalogue:
             self._artifact(frozen, expected_sha256, cache)
         source_proof = {'frames_path': str(frozen.resolve()), 'frames_sha256': expected_sha256,
                         'source_root': str(Path(source_root).resolve())}
+        for name, path, digest in [('sbcr_series', sbcr_series_path, sbcr_series_sha256),
+                                   ('label_aliases', label_aliases_path, label_aliases_sha256)]:
+            if bool(path) != bool(digest):
+                raise ValueError('publisher supplemental path and SHA are required together')
+            if path:
+                content = self._artifact(path, digest, cache)
+                snapshot = frozen.parent / (digest + '.json')
+                try:
+                    with snapshot.open('xb') as handle:
+                        handle.write(content)
+                except FileExistsError:
+                    self._artifact(snapshot, digest, cache)
+                source_proof[name + '_path'] = str(snapshot.resolve())
+                source_proof[name + '_sha256'] = digest
         assertions = publisher_assertions(source_proof, self._artifact, cache)
-        rows = self._rows(include_features=False)
+        rows = self._rows(include_features=False, _cache=cache)
         with self._connect() as db:
             stored = {r['entry_id']: dict(r) for r in db.execute('SELECT * FROM entries')}
         records = {key: json.loads(value['record_json']) for key, value in stored.items()}
         editions = {}
         for row in rows:
             if row['entry_kind'] == 'edition':
-                source = records[row['entry_id']]['source_record']
-                for title in source['titles']:
+                source = self._source_with_title_parts(records[row['entry_id']], cache)
+                for title in [*source['titles'], *source.get('_cataloguing_main_titles', [])]:
                     editions.setdefault(normalize_search(title['value']), {})[row['entry_id']] = records[row['entry_id']]
         wd_titles = {normalize_search(title) for row in rows if row['entry_kind'] == 'series' and row['qid']
                      for title in [row['title'], *row['aliases']]}
@@ -478,7 +540,7 @@ class LightNovelCatalogue:
                 continue
             qualified = []
             for edition in editions.get(key, {}).values():
-                match = match_bibliography(assertion, edition['source_record'], normalize_search, allow_unnumbered=True)
+                match = match_bibliography(assertion, self._source_with_title_parts(edition, cache), normalize_search, allow_unnumbered=True)
                 if match:
                     qualified.append((edition, match))
             if not qualified:
@@ -497,17 +559,19 @@ class LightNovelCatalogue:
         anchors = {}
         for proposal in proposals:
             anchors.setdefault(proposal['id'], []).append(proposal)
+        admitted = []
         for group in anchors.values():
             if len(group) != 1:
                 for _ in group:
                     hold('ambiguous_publisher_series_for_same_ndl_anchor')
                 continue
-            imported = self.ingest(group)
-            for key in ('inserted', 'updated', 'unchanged'):
-                result[key] += imported[key]
-            result['failures'].extend(imported['failures'])
-            if imported['failed']:
-                hold('projection_validation_failed')
+            admitted.extend(group)
+        imported = self.ingest(admitted)
+        for key in ('inserted', 'updated', 'unchanged'):
+            result[key] += imported[key]
+        result['failures'].extend(imported['failures'])
+        for _ in range(imported['failed']):
+            hold('projection_validation_failed')
         # Persist edition membership separately; it never creates an original work.
         rows = self._rows(include_features=False)
         with self._connect() as db:
@@ -525,7 +589,7 @@ class LightNovelCatalogue:
         return result
 
     def _author_authorities(self, manifest_path, expected_sha256, cache):
-        key = ('author_authorities', str(Path(manifest_path).resolve()), expected_sha256)
+        key = ('author_authorities', str(_resolved_path(manifest_path, cache)), expected_sha256)
         if key in cache:
             return cache[key]
         manifest = self._payload(manifest_path, expected_sha256, cache)
@@ -549,6 +613,145 @@ class LightNovelCatalogue:
             result[qid] = ids
         cache[key] = result
         return result
+
+    @staticmethod
+    def _publisher_books(provider, manifest_path, expected_sha256):
+        if provider == 'kadokawa':
+            from .light_novel_publisher_books_v1 import verify_kadokawa_books
+            return verify_kadokawa_books(manifest_path, expected_sha256)
+        if provider == 'shueisha-dx':
+            from .light_novel_shueisha_books_v1 import verify_shueisha_books
+            return verify_shueisha_books(manifest_path, expected_sha256)
+        if provider == 'ichijinsha-iris':
+            from .light_novel_ichijinsha_books_v1 import verify_ichijinsha_books
+            return verify_ichijinsha_books(manifest_path, expected_sha256)
+        raise ValueError('unknown bibliographic publisher provider')
+
+    def _publisher_edition_match(self, provider, publisher, edition, cache):
+        from .normalization import normalize_isbn
+        from .light_novel_ndl_series_v1 import person_key
+        scopes = {'kadokawa': {'電撃文庫', 'MF文庫J', 'ファンタジア文庫', '角川スニーカー文庫'},
+                  'shueisha-dx': {'ダッシュエックス文庫', 'スーパーダッシュ文庫', 'ダッシュエックス文庫DIGITAL',
+                                  'Dノベルf／ダッシュエックスノベルエフ', 'Dノベル／ダッシュエックスノベル'},
+                  'ichijinsha-iris': {'一迅社文庫アイリス', 'アイリスNEO', '一迅社文庫アイリスNEO'}}
+        if publisher.get('label') not in scopes.get(provider, set()):
+            return None
+        source = self._source_with_title_parts(edition, cache)
+        if (source['language'] not in {'ja', 'jpn'} or not source.get('publisher')
+                or not any(code.startswith('913') for code in source.get('extra', {}).get('ndc_codes', []))):
+            return None
+        isbn = normalize_isbn(str(publisher.get('isbn') or ''))
+        if not isbn or isbn not in {normalize_isbn(row['value']) for row in source['identifiers'] if row['source'] == 'isbn'}:
+            return None
+        def title_key(value):
+            return ''.join(c for c in normalize_search(value) if not unicodedata.category(c).startswith('P'))
+        ndl_titles = [*source['titles'], *source.get('_cataloguing_main_titles', [])]
+        matched_title = next((row['value'] for row in ndl_titles if title_key(row['value']) == title_key(publisher['title'])), None)
+        if matched_title is None:
+            return None
+        imprint = unicodedata.normalize('NFKC', source.get('series') or '').split(';')[0].strip()
+        official_labels = [publisher['label']]
+        if provider == 'shueisha-dx' and '／' in publisher['label']:
+            official_labels += publisher['label'].split('／')
+        if not {normalize_search(label) for label in official_labels} & {normalize_search(value) for value in imprint.split(' = ')}:
+            return None
+        official_authors = [credit['name'] for credit in publisher.get('credits', [])
+                            if credit.get('role') in {'author', '著', '著者', '原作', '著者・イラスト', '著・イラスト'}]
+        if not official_authors:
+            return None
+        matched_authors = []
+        for name in official_authors:
+            candidates = [author for author in source['contributors']
+                          if author['role'] == 'author' and person_key(author['name']) == person_key(name)]
+            authorities = sorted({identifier['value'] for author in candidates for identifier in author['identifiers']
+                if identifier['source'] == 'ndl-authority' and re.fullmatch(r'https?://id\.ndl\.go\.jp/auth/(?:entity|ndlna)/[0-9]{6,12}', identifier['value'])})
+            if not authorities:
+                return None
+            matched_authors.append({'official_credit': name, 'ndl_authorities': authorities})
+        return {'rule_version': 'publisher-ndl-edition-confirmation-v1', 'scope': 'edition_only',
+                'isbn13': isbn, 'matched_ndl_title': matched_title, 'authors': matched_authors,
+                'ndl_imprint': imprint, 'official_label': publisher['label'],
+                'ndl_publisher': source['publisher'], 'original_work_identity_asserted': False,
+                'story_series_identity_asserted': False,
+                'sources': [source['source_url'], publisher['source_url']]}
+
+    def confirm_publisher_editions(self, provider, manifest_path, expected_sha256):
+        """Confirm existing NDL editions, without making a work or series."""
+        from .normalization import normalize_isbn
+        books = self._publisher_books(provider, manifest_path, expected_sha256)
+        cache = {}
+        rows = self._rows(include_features=False, _cache=cache)
+        with self._connect() as db:
+            stored = {row['entry_id']: dict(row) for row in db.execute('SELECT * FROM entries WHERE kind=?', ('edition',))}
+        by_isbn = {}
+        for book in books:
+            isbn = normalize_isbn(str(book.get('isbn') or ''))
+            if isbn:
+                by_isbn.setdefault(isbn, {})[book['publisher_book_id']] = book
+        result = {'publisher_books': len(books), 'publisher_books_with_valid_isbn': sum(len(v) for v in by_isbn.values()),
+                  'ndl_editions_considered': len(stored), 'confirmed': 0, 'unchanged': 0}
+        matched = set()
+        with self._connect() as db:
+            for entry in stored.values():
+                edition = json.loads(entry['record_json'])
+                candidates = {}
+                for identifier in edition['source_record']['identifiers']:
+                    if identifier['source'] == 'isbn':
+                        candidates.update(by_isbn.get(normalize_isbn(identifier['value']), {}))
+                accepted = [(book, match) for book in candidates.values()
+                            if (match := self._publisher_edition_match(provider, book, edition, cache))]
+                if not accepted:
+                    continue
+                book, match = min(accepted, key=lambda pair: pair[0]['publisher_book_id'])
+                matched.update(candidate['publisher_book_id'] for candidate, _ in accepted)
+                proof = {'provider': provider, 'manifest_path': str(Path(manifest_path).resolve()),
+                         'manifest_sha256': expected_sha256, 'publisher_book_id': book['publisher_book_id'],
+                         'edition_record_sha256': entry['record_sha256'], 'match': match}
+                encoded = _json(proof)
+                digest = hashlib.sha256(encoded.encode()).hexdigest()
+                previous = db.execute('SELECT proof_sha256 FROM edition_book_confirmations WHERE edition_id=? AND provider=?',
+                                      (entry['entry_id'], provider)).fetchone()
+                if previous and previous['proof_sha256'] == digest:
+                    result['unchanged'] += 1
+                else:
+                    db.execute('INSERT OR REPLACE INTO edition_book_confirmations VALUES(?,?,?,?)',
+                               (entry['entry_id'], provider, encoded, digest))
+                    result['confirmed'] += 1
+        result['matched_publisher_books'] = len(matched)
+        result['unmatched_publisher_books'] = len(books) - len(matched)
+        return result
+
+    def _attach_book_confirmations(self, rows, stored, cache):
+        with self._connect() as db:
+            bindings = db.execute('SELECT * FROM edition_book_confirmations').fetchall()
+        indexed = {row['entry_id']: row for row in rows}
+        stored = {row['entry_id']: row for row in stored}
+        documents = {}
+        for binding in bindings:
+            try:
+                if hashlib.sha256(binding['proof_json'].encode()).hexdigest() != binding['proof_sha256']:
+                    continue
+                proof = json.loads(binding['proof_json'])
+                entry_id = binding['edition_id']
+                if (entry_id not in indexed or proof['provider'] != binding['provider']
+                        or stored[entry_id]['record_sha256'] != proof['edition_record_sha256']):
+                    continue
+                key = (proof['provider'], proof['manifest_path'], proof['manifest_sha256'])
+                if key not in documents:
+                    documents[key] = {book['publisher_book_id']: book for book in self._publisher_books(*key)}
+                book = documents[key].get(proof['publisher_book_id'])
+                edition = json.loads(stored[entry_id]['record_json'])
+                match = self._publisher_edition_match(proof['provider'], book, edition, cache) if book else None
+                if match != proof['match']:
+                    continue
+                row = indexed[entry_id]
+                row.update(light_novel_confirmed=True, edition_bibliography_confirmed=True,
+                           edition_identity_basis='publisher_isbn_and_ndl_bibliography',
+                           confirmation_source_url=book['source_url'], edition_confirmation_evidence=match)
+                if row.get('admission_status') != 'edition_series_membership_verified':
+                    row['admission_status'] = 'publisher_ndl_edition_verified'
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
 
     @staticmethod
     def _membership_match(series, source_record, authorities):
@@ -690,10 +893,16 @@ class LightNovelCatalogue:
                 # A stale relation cannot prevent access to independently valid bibliography.
                 continue
 
-    def _feature_rows(self):
+    def _feature_rows(self, entry_ids=None):
         from .light_novel_classification_v1 import verify_feature_export
         with self._connect() as db:
-            bindings = db.execute('SELECT * FROM features').fetchall()
+            if entry_ids is None:
+                bindings = db.execute('SELECT * FROM features').fetchall()
+            elif not entry_ids:
+                return {}
+            else:
+                entry_ids = list(entry_ids)
+                bindings = db.execute('SELECT * FROM features WHERE entry_id IN (' + ','.join('?' for _ in entry_ids) + ')', entry_ids).fetchall()
         manifests, result = {}, {}
         for binding in bindings:
             key = (binding['manifest_path'], binding['manifest_sha256'])
@@ -724,12 +933,40 @@ class LightNovelCatalogue:
                 result['imported'] += 1
         return result
 
-    def _rows(self, *, include_features=True):
-        cache = {}
+    @staticmethod
+    def _apply_feature(row, feature):
+        if not feature:
+            return
+        public_label_keys = {'label_id', 'label', 'axis', 'decision', 'scope', 'relevance',
+            'raw_confidence', 'calibrated_confidence', 'calibration_status', 'calibration_version',
+            'evidence', 'missing_reason', 'spoiler'}
+        labels = [{k: v for k, v in label.items() if k in public_label_keys}
+                  for label in feature.get('labels', feature.get('admitted_labels', []))
+                  if label.get('scope') == 'series' and label.get('decision') == 'present']
+        content_ids = {s.get('evidence_id') for s in feature.get('source_attributions', [])
+                       if s.get('kind') in ('synopsis', 'excerpt', 'note')}
+        for label in labels:
+            label['evidence'] = [_safe(e) for e in label.get('evidence', [])]
+            for evidence in label['evidence']:
+                evidence['quote'] = None
+            label['evidence_basis'] = 'content' if any(e.get('evidence_id') in content_ids for e in label['evidence']) else 'bibliographic'
+        row['native_features'] = row['llm_features'] = labels
+        row['llm_held_features'] = [{k: v for k, v in label.items() if k in {'label_id', 'reason', 'axis'}}
+                                  for label in feature.get('held_labels', [])]
+        row['content_sources'] = [_content_source(s) for s in feature.get('source_attributions', feature.get('source_attribution', []))]
+        row['content_features_adopted'] = bool(labels) and feature.get('content_features_adopted') is True
+        row['recommendable'] = bool(row['genres'] or labels)
+        row['recommendation_mode'] = 'series_content_preferences' if row['content_features_adopted'] else row['recommendation_mode']
+        row['classification_axes'] = [{'axis': axis, 'adopted_count': sum(label.get('axis') == axis for label in labels),
+            'held_count': sum(label.get('axis', label.get('label_id', '').split('.')[0]) == axis for label in feature.get('held_labels', [])),
+            'unknown': not any(label.get('axis') == axis for label in labels)} for axis in AXES]
+
+    def _rows(self, *, include_features=True, feature_entry_ids=None, _cache=None):
+        cache = {} if _cache is None else _cache
         with self._connect() as db:
             stored = db.execute('SELECT e.*, r.status FROM entries e LEFT JOIN read_status r USING(entry_id)').fetchall()
             has_features = db.execute('SELECT count(*) FROM features').fetchone()[0]
-        features = self._feature_rows() if include_features and has_features else {}
+        features = self._feature_rows(feature_entry_ids) if include_features and has_features else {}
         rows = []
         for entry in stored:
             if hashlib.sha256(entry['record_json'].encode()).hexdigest() != entry['record_sha256']:
@@ -739,34 +976,10 @@ class LightNovelCatalogue:
             if row['entry_id'] != entry['entry_id'] or row['entry_kind'] != entry['kind']:
                 raise ValueError('stored typed identity differs')
             row['read_status'] = entry['status'] or 'unknown'
-            feature = features.get(row['entry_id'])
-            if feature:
-                public_label_keys = {'label_id', 'label', 'axis', 'decision', 'scope', 'relevance',
-                    'raw_confidence', 'calibrated_confidence', 'calibration_status', 'calibration_version',
-                    'evidence', 'missing_reason', 'spoiler'}
-                labels = [{k: v for k, v in l.items() if k in public_label_keys}
-                          for l in feature.get('labels', feature.get('admitted_labels', []))
-                          if l.get('scope') == 'series' and l.get('decision') == 'present']
-                # Evidence locators are public; private process/source paths are not.
-                for label in labels:
-                    label['evidence'] = [_safe(e) for e in label.get('evidence', [])]
-                    for evidence in label['evidence']:
-                        evidence['quote'] = None
-                    content_ids = {s.get('evidence_id') for s in feature.get('source_attributions', [])
-                                   if s.get('kind') in ('synopsis', 'excerpt', 'note')}
-                    label['evidence_basis'] = 'content' if any(e.get('evidence_id') in content_ids for e in label['evidence']) else 'bibliographic'
-                row['native_features'] = row['llm_features'] = labels
-                row['llm_held_features'] = [{k: v for k, v in l.items() if k in {'label_id', 'reason', 'axis'}}
-                                          for l in feature.get('held_labels', [])]
-                row['content_sources'] = [_content_source(s) for s in feature.get('source_attributions', feature.get('source_attribution', []))]
-                row['content_features_adopted'] = bool(labels) and feature.get('content_features_adopted') is True
-                row['recommendable'] = bool(row['genres'] or labels)
-                row['recommendation_mode'] = 'series_content_preferences' if row['content_features_adopted'] else row['recommendation_mode']
-                row['classification_axes'] = [{'axis': a, 'adopted_count': sum(l.get('axis') == a for l in labels),
-                    'held_count': sum(l.get('axis', l.get('label_id', '').split('.')[0]) == a for l in feature.get('held_labels', [])),
-                    'unknown': not any(l.get('axis') == a for l in labels)} for a in AXES]
+            self._apply_feature(row, features.get(row['entry_id']))
             rows.append(row)
         self._attach_memberships(rows, stored, cache)
+        self._attach_book_confirmations(rows, stored, cache)
         return rows
 
     @staticmethod
@@ -843,17 +1056,21 @@ class LightNovelCatalogue:
                        year_to=year_to, read_filter=read_filter, entry_kind=entry_kind)
         query_key = normalize_search(query)
         kind_priority = {'series': 0, 'work': 1, 'edition': 2}
-        rows = sorted(self._filtered(self._rows(), **filters), key=lambda r: (
+        rows = sorted(self._filtered(self._rows(include_features=False), **filters), key=lambda r: (
             0 if query_key and normalize_search(r['title']) == query_key else 1,
             kind_priority[r['entry_kind']], r['title'], r['entry_id']))
         if exclude_work_qids:
             rows = [r for r in rows if r['entry_kind'] != 'work' or r['qid'] not in exclude_work_qids]
-        return {'items': rows[(page - 1) * page_size:page * page_size], 'total': len(rows),
+        selected = rows[(page - 1) * page_size:page * page_size]
+        features = self._feature_rows({row['entry_id'] for row in selected})
+        for row in selected:
+            self._apply_feature(row, features.get(row['entry_id']))
+        return {'items': selected, 'total': len(rows),
                 'page': page, 'page_size': page_size, 'pages': math.ceil(len(rows) / page_size), 'filters': filters}
 
     def work_detail(self, entry_id, **_):
         entry_id = _entry(entry_id)
-        rows = self._rows()
+        rows = self._rows(feature_entry_ids={entry_id})
         row = next((r for r in rows if r['entry_id'] == entry_id), None)
         if row:
             families = self._families(rows)
@@ -918,6 +1135,8 @@ class LightNovelCatalogue:
         return {'works': len(rows), 'searchable_works': len(rows), 'series': counts['series'],
                 'individual_works': counts['work'], 'editions': counts['edition'], 'held_works': 0,
                 'verified_edition_series_relations': sum(bool(r.get('series_entry_id')) for r in rows),
+                'confirmed_light_novel_editions': sum(r['entry_kind'] == 'edition' and r.get('light_novel_confirmed') is True for r in rows),
+                'publisher_confirmed_editions': sum(r.get('edition_bibliography_confirmed') is True for r in rows),
                 'content_feature_series': content, 'source_genre_series': source,
                 'feature_bearing_works': sum(bool(r['genres'] or r['llm_features']) for r in rows),
                 'recommendable_works': sum(r['recommendable'] for r in rows), 'source_genre_works': sum(bool(r['genres']) for r in rows),

@@ -164,7 +164,7 @@ def test_authenticated_series_features_never_become_volume_features(setup_catalo
     assert cat.work_detail('lnw:wd:Q3')['llm_features'] == []
     assert 'raw_path' not in json.dumps(cat.work_detail('lns:wd:Q1'))
     assert cat.catalogue_stats()['content_feature_series'] == 1
-    assert len(calls) >= 5  # Evidence is checked anew for separate operations.
+    assert len(calls) >= 4  # Relevant evidence is checked anew for separate operations.
     def invalid(path, sha):
         raise ValueError('changed pinned artifact')
     monkeypatch.setattr(verifier, 'verify_feature_export', invalid)
@@ -494,3 +494,261 @@ def test_official_series_can_have_one_unnumbered_ndl_book(publisher_ndl_bundle):
     row = cat.work_detail('lns:ndl:R100000002-I1')
     assert len(row['members']) == 1 and row['members'][0]['volume'] is None
     assert row['original_language'] is None and row['year'] is None
+
+
+def test_detail_and_search_do_not_verify_unrelated_native_manifests(setup_catalogue, tmp_path, monkeypatch):
+    import recommend_book.light_novel_classification_v1 as native
+    cat, records = setup_catalogue
+    cat.ingest(records)
+    calls = []
+    def verify(path, sha):
+        calls.append((str(path), sha))
+        return {'rows': [{'entry_id': 'lns:wd:Q1', 'scope': 'series', 'labels': [], 'admitted_labels': []}]}
+    monkeypatch.setattr(native, 'verify_feature_export', verify)
+    cat.import_features(tmp_path / 'manifest.json', 'a' * 64)
+    calls.clear()
+    assert cat.work_detail('lns:wd:Q2')['entry_id'] == 'lns:wd:Q2'
+    assert cat.search_catalogue('ソードアート')['total'] == 1
+    assert calls == []
+    cat.work_detail('lns:wd:Q1')
+    assert len(calls) == 1
+    cat.search_catalogue('魔法科')
+    assert len(calls) == 2
+
+
+def test_ndl_batch_normalizes_only_records_used_in_this_request(edition_bundle, monkeypatch):
+    from pathlib import Path
+    from recommend_book.ingestion.ndl import NDLAdapter
+    cat, _, record = edition_bundle
+    raw = Path(record['provenance']['raw_path'])
+    first = raw.read_text(encoding='utf-8')
+    other = first.replace('R100000002-I1', 'R100000002-I2').replace('書誌候補 第一巻', '無関係な別の書誌')
+    raw.write_text('<srw:searchRetrieveResponse xmlns:srw="http://www.loc.gov/zing/srw/">'
+        '<srw:records><srw:record><srw:recordData>' + first + '</srw:recordData></srw:record>'
+        '<srw:record><srw:recordData>' + other + '</srw:recordData></srw:record></srw:records></srw:searchRetrieveResponse>', encoding='utf-8')
+    digest = hashlib.sha256(raw.read_bytes()).hexdigest()
+    record['provenance']['raw_sha256'] = record['source_record']['raw_sha256'] = digest
+    calls = []
+    original = NDLAdapter._normalize
+    def normalize(self, *args, **kwargs):
+        calls.append(kwargs.get('locator'))
+        return original(self, *args, **kwargs)
+    monkeypatch.setattr(NDLAdapter, '_normalize', normalize)
+    assert cat.ingest([record])['inserted'] == 1
+    assert calls == ['records[1]/recordData']
+
+
+def test_sbcr_series_membership_uses_bookloop_and_ndl_author_role(publisher_ndl_bundle, tmp_path):
+    from pathlib import Path
+    import xml.etree.ElementTree as ET
+    from recommend_book.ingestion.ndl import NDLAdapter
+    from recommend_book.ingestion.core import RawArtifact
+    cat, edition, frames, _, root, page = publisher_ndl_bundle
+    raw = Path(edition['provenance']['raw_path'])
+    xml = raw.read_text(encoding='utf-8').replace('ホビージャパン', 'SBクリエイティブ').replace('HJ文庫', 'GA文庫')
+    raw.write_text(xml, encoding='utf-8')
+    digest = hashlib.sha256(raw.read_bytes()).hexdigest()
+    source = NDLAdapter(None)._normalize(ET.fromstring(xml), RawArtifact(digest, str(raw), len(raw.read_bytes()),
+        '2026-10-24T00:00:00Z', 'https://ndlsearch.ndl.go.jp/api/sru'), 'iss-ndl-opac', locator='records[1]/recordData').model_dump(mode='json')
+    edition.update(source_record=source, publisher=source['publisher'], label=source['series'], label_evidence=[{'query_term': 'GA文庫'}])
+    edition['provenance']['raw_sha256'] = digest
+    assert cat.ingest([edition])['updated'] == 1
+    series_url = 'https://ebook.sbcr.jp/lightnovel/series/id/1'
+    page.write_text('<a href="/lightnovel/series/id/1">「魔法科高校の劣等生」シリーズ (1)</a>', encoding='utf-8')
+    fsha = write(frames, [{'id': 'ga-ebook-series', 'publisher': 'SBクリエイティブ', 'label': 'GA文庫 / GAノベル / ツギクルブックス',
+        'pages': [{'source_url': 'https://ebook.sbcr.jp/lightnovel/series', 'http_status': 200,
+            'raw_path': page.name, 'sha256': hashlib.sha256(page.read_bytes()).hexdigest(), 'content_type': 'text/html;charset=utf-8'}]}])
+    series_page = tmp_path / 'series-page.html'
+    series_page.write_text('''<a href="/product/RANKING">無関係なランキング</a>
+        <!-- ↓↓↓↓ partial.comic.bookloop ↓↓↓↓ --><a href="/product/BOOK1">魔法科高校の劣等生</a>
+        <!-- ↑↑↑↑ partial.comic.bookloop↑↑↑↑ -->''', encoding='utf-8')
+    product_page = tmp_path / 'product-page.html'
+    product_page.write_text('''<ul class="author clear"><li class="mgnBottom10">著者 / 絵担当</li>
+        <li>レーベル：<a>GA文庫</a></li></ul>''', encoding='utf-8')
+    def receipt(path, url):
+        return {'source_url': url, 'http_status': 200, 'raw_path': path.name,
+                'sha256': hashlib.sha256(path.read_bytes()).hexdigest(), 'content_type': 'text/html;charset=utf-8'}
+    book = {'book_url': 'https://ebook.sbcr.jp/product/BOOK1', 'title': '魔法科高校の劣等生'}
+    supplemental = tmp_path / 'sbcr-handoff.json'
+    handoff = [{'reference_id': 'publisher-series:' + hashlib.sha256(series_url.encode()).hexdigest()[:24],
+        'source_url': series_url, 'title': '魔法科高校の劣等生', 'series_source_snapshot': receipt(series_page, series_url),
+        'explicit_book_memberships': [book], 'representative_products': [{**book,
+            'source_snapshot': receipt(product_page, book['book_url']),
+            'fields': {'著者表示': ['著者 / 絵担当'], 'レーベル': 'GA文庫'}}]}]
+    ssha = write(supplemental, handoff)
+    result = cat.import_ndl_series_from_publishers(frames, fsha, source_root=root,
+                                                  sbcr_series_path=supplemental, sbcr_series_sha256=ssha)
+    assert result['inserted'] == 1
+    row = cat.work_detail('lns:ndl:R100000002-I1')
+    assert [a['name'] for a in row['authors']] == ['著者']
+    assert row['original_language'] is None and row['isbn'] == []
+    handoff[0]['representative_products'][0]['book_url'] = 'https://ebook.sbcr.jp/product/RANKING'
+    ssha = write(supplemental, handoff)
+    with pytest.raises(ValueError, match='not an explicit member'):
+        cat.import_ndl_series_from_publishers(frames, fsha, source_root=root,
+                                             sbcr_series_path=supplemental, sbcr_series_sha256=ssha)
+
+
+def test_gzip_publisher_html_is_decoded_after_raw_hash_binding():
+    import gzip
+    from recommend_book.light_novel_ndl_series_v1 import _decode
+    assert _decode(gzip.compress('<p>公式シリーズ</p>'.encode('utf-8')), 'text/html;charset=utf-8') == '<p>公式シリーズ</p>'
+
+
+@pytest.mark.parametrize(('raw_title', 'admitted'), [
+    ('魔法科高校の劣等生 : 外部書誌の副題', True),
+    ('魔法科高校の劣等生 = English Parallel Title : 外部書誌の副題', True),
+    ('魔法科高校の劣等生を語る別の小説', False),
+    ('魔法科高校の劣等生:独立した題名', False),
+])
+def test_main_title_is_explicit_rdf_isbd_part_not_fuzzy_prefix(publisher_ndl_bundle, raw_title, admitted):
+    from pathlib import Path
+    import xml.etree.ElementTree as ET
+    from recommend_book.ingestion.ndl import NDLAdapter
+    from recommend_book.ingestion.core import RawArtifact
+    cat, edition, frames, fsha, root, _ = publisher_ndl_bundle
+    raw = Path(edition['provenance']['raw_path'])
+    xml = raw.read_text(encoding='utf-8').replace('魔法科高校の劣等生', raw_title)
+    raw.write_text(xml, encoding='utf-8')
+    digest = hashlib.sha256(raw.read_bytes()).hexdigest()
+    source = NDLAdapter(None)._normalize(ET.fromstring(xml), RawArtifact(digest, str(raw), len(raw.read_bytes()),
+        '2026-10-24T00:00:00Z', 'https://ndlsearch.ndl.go.jp/api/sru'), 'iss-ndl-opac', locator='records[1]/recordData').model_dump(mode='json')
+    edition.update(source_record=source, title=source['titles'][0]['value'])
+    edition['provenance']['raw_sha256'] = digest
+    assert cat.ingest([edition])['updated'] == 1
+    result = cat.import_ndl_series_from_publishers(frames, fsha, source_root=root)
+    assert result['inserted'] == int(admitted)
+    if admitted:
+        row = cat.work_detail('lns:ndl:R100000002-I1')
+        assert row['title'] == '魔法科高校の劣等生'
+        assert row['title_origin']['kind'] == 'rdf_title_isbd_main'
+        assert row['members'][0]['entry_id'] == 'lne:ndl:R100000002-I1'
+
+
+def test_typed_read_states_survive_new_python_process(membership_bundle, setup_catalogue):
+    import subprocess
+    import sys
+    cat, series, _, manifest, msha = membership_bundle
+    _, records = setup_catalogue
+    records[2]['provenance']['conditions_sha256'] = series['provenance']['conditions_sha256']
+    assert cat.ingest([records[2]])['inserted'] == 1
+    cat.resolve_edition_series_memberships(manifest, msha)
+    cat.set_read_status('lns:wd:Q1', 'reading')
+    cat.set_read_status('lne:ndl:R100000002-I1', 'read')
+    command = [sys.executable, '-c', '''import json, sys
+from recommend_book.light_novel_catalogue_v1 import LightNovelCatalogue
+c = LightNovelCatalogue(sys.argv[1])
+print(json.dumps([c.work_detail('lns:wd:Q1')['read_status'],
+                  c.work_detail('lne:ndl:R100000002-I1')['read_status'],
+                  c.work_detail('lnw:wd:Q3')['read_status']]))
+''', str(cat.db_path)]
+    result = subprocess.run(command, check=True, capture_output=True, text=True, timeout=30)
+    assert json.loads(result.stdout) == ['reading', 'read', 'unknown']
+
+
+def test_hj_label_alias_requires_two_exact_edition_membership_witnesses(publisher_ndl_bundle, tmp_path):
+    from pathlib import Path
+    from recommend_book.light_novel_ndl_series_v1 import publisher_assertions
+    cat, edition, frames, _, root, _ = publisher_ndl_bundle
+    base = Path(edition['provenance']['raw_path']).read_text(encoding='utf-8')
+    cards, witnesses = [], []
+    def receipt(path, url):
+        return {'source_url': url, 'http_status': 200, 'raw_path': path.name,
+                'sha256': hashlib.sha256(path.read_bytes()).hexdigest(), 'content_type': 'text/html;charset=utf-8'}
+    for n, title, isbn in [(1, '魔法科高校の劣等生', '9784798613161'), (2, '別の小説シリーズ', '9784798613178')]:
+        url = f'https://firecross.jp/hjnovels/series/{n}'
+        book_url = f'https://firecross.jp/hjnovels/product/{n}'
+        ref = 'publisher-series:' + hashlib.sha256(url.encode()).hexdigest()[:24]
+        cards.append(f'''<li class="seriesList_item"><a class="seriesList_itemTitle" href="{url}">{title}</a>
+            <ul class="book-author-list"><li class="book-author-item"><span class="book-author-type">著者</span>
+            <a class="book-author-name">著者</a></li></ul></li>''')
+        ndl = tmp_path / f'alias-ndl-{n}.xml'
+        xml = base.replace('魔法科高校の劣等生', title).replace('HJ文庫', 'HJ NOVELS').replace('R100000002-I1', f'R100000002-I{n}')
+        xml = xml.replace('</n:BibResource>', f'<d:identifier rdf:datatype="ISBN">{isbn}</d:identifier></n:BibResource>')
+        ndl.write_text(xml, encoding='utf-8')
+        series = tmp_path / f'alias-series-{n}.html'
+        series.write_text('<script type="application/ld+json">' + json.dumps({'@type': 'BookSeries',
+            'name': title, 'url': url, 'hasPart': [{'@type': 'Book', 'url': book_url, 'isbn': isbn}]}) + '</script>', encoding='utf-8')
+        book = tmp_path / f'alias-book-{n}.html'
+        book.write_text('<script type="application/ld+json">' + json.dumps({'@type': 'Book',
+            'url': book_url, 'isbn': isbn, 'isPartOf': {'url': url}}) + '</script>', encoding='utf-8')
+        witnesses.append({'ndl_record_id': f'R100000002-I{n}', 'ndl_source_url': f'https://ndlsearch.ndl.go.jp/books/R100000002-I{n}',
+            'ndl_raw_path': str(ndl), 'ndl_raw_sha256': hashlib.sha256(ndl.read_bytes()).hexdigest(), 'ndl_imprint': 'HJ NOVELS ; 1',
+            'publisher_reference': {'reference_id': ref}, 'series_source_snapshot': receipt(series, url),
+            'publisher_product_checks': [{'source_snapshot': receipt(book, book_url)}]})
+    page = tmp_path / 'alias-index.html'
+    page.write_text(''.join(cards), encoding='utf-8')
+    fsha = write(frames, [{'id': 'hj-novels-series', 'publisher': 'ホビージャパン', 'label': 'HJノベルス',
+                          'pages': [receipt(page, 'https://firecross.jp/hjnovels/series')]}])
+    alias = tmp_path / 'alias.json'
+    asha = write(alias, witnesses)
+    proof = {'frames_path': str(frames), 'frames_sha256': fsha, 'source_root': str(root),
+             'label_aliases_path': str(alias), 'label_aliases_sha256': asha}
+    rows = publisher_assertions(proof, cat._artifact, {})
+    assert len(rows) == 2 and all(row['label_aliases'] == ['HJ NOVELS'] for row in rows.values())
+    # Same ISBN without Book.isPartOf proving this series cannot establish the alias.
+    book = tmp_path / 'alias-book-2.html'
+    book.write_text(book.read_text(encoding='utf-8').replace('/series/2', '/series/999'), encoding='utf-8')
+    witnesses[1]['publisher_product_checks'][0]['source_snapshot']['sha256'] = hashlib.sha256(book.read_bytes()).hexdigest()
+    proof['label_aliases_sha256'] = write(alias, witnesses)
+    with pytest.raises(ValueError, match='exact edition ISBN'):
+        publisher_assertions(proof, cat._artifact, {})
+
+
+def test_official_book_confirms_only_ndl_edition_and_expires_on_raw_change(publisher_ndl_bundle, tmp_path):
+    from pathlib import Path
+    import xml.etree.ElementTree as ET
+    from recommend_book.ingestion.ndl import NDLAdapter
+    from recommend_book.ingestion.core import RawArtifact
+    cat, edition, _, _, _, _ = publisher_ndl_bundle
+    raw = Path(edition['provenance']['raw_path'])
+    xml = raw.read_text(encoding='utf-8').replace('HJ文庫', '電撃文庫').replace('ホビージャパン', '角川書店')
+    xml = xml.replace('</n:BibResource>', '<d:identifier rdf:datatype="ISBN">9784798613161</d:identifier></n:BibResource>')
+    raw.write_text(xml, encoding='utf-8')
+    digest = hashlib.sha256(raw.read_bytes()).hexdigest()
+    source = NDLAdapter(None)._normalize(ET.fromstring(xml), RawArtifact(digest, str(raw), len(raw.read_bytes()),
+        '2026-10-24T00:00:00Z', 'https://ndlsearch.ndl.go.jp/api/sru'), 'iss-ndl-opac', locator='records[1]/recordData').model_dump(mode='json')
+    edition.update(source_record=source, publisher=source['publisher'], label=source['series'], label_evidence=[{'query_term': '電撃文庫'}], isbn=['9784798613161'])
+    edition['provenance']['raw_sha256'] = digest
+    assert cat.ingest([edition])['updated'] == 1
+    publisher_raw = tmp_path / 'official-books.json'
+    item = {'itemCode': '123456789012', 'title': '魔法科高校の劣等生', 'isbn': '9784798613161',
+            'label_id': 330, 'disp_author_name': '<li>著者 著者</li><li>イラスト 絵担当</li>', 'catchphrase': 'not public'}
+    rawsha = write(publisher_raw, {'count_raw': {'book': 1}, 'result': {'book': [item]}})
+    manifest = tmp_path / 'official-books-manifest.json'
+    body = {'schema_version': 'kadokawa-publisher-books-v1', 'rights_scope': 'reference_only_bibliography',
+        'pages': [{'source_url': 'https://www.kadokawa.co.jp/product/search/', 'final_url': 'https://www.kadokawa.co.jp/product/search/',
+            'http_status': 200, 'http_method': 'POST', 'request_data': {'label': '330', 'releaseDate': '1', 'size': '20',
+                'pageno': '1', 'pageno_book': '1', 'pageno_media': '1'}, 'raw_path': publisher_raw.name, 'sha256': rawsha}]}
+    sha = write(manifest, body)
+    result = cat.confirm_publisher_editions('kadokawa', manifest, sha)
+    assert result['confirmed'] == 1
+    row = cat.work_detail('lne:ndl:R100000002-I1')
+    assert row['edition_bibliography_confirmed'] and row['light_novel_confirmed']
+    assert row['entry_kind'] == 'edition' and row['original_language'] is None
+    assert row['publishers'][0]['label'] == '角川書店'
+    assert row['source_url'] == source['source_url']
+    assert row['confirmation_source_url'] == 'https://www.kadokawa.co.jp/product/123456789012/'
+    assert row['members'] == [] and row['llm_features'] == []
+    assert cat.catalogue_stats()['series'] == 0 and cat.catalogue_stats()['individual_works'] == 0
+    assert cat.confirm_publisher_editions('kadokawa', manifest, sha)['unchanged'] == 1
+    assert 'raw_path' not in json.dumps(row) and 'not public' not in json.dumps(row)
+    publisher_raw.write_text('{}', encoding='utf-8')
+    row = cat.work_detail('lne:ndl:R100000002-I1')
+    assert not row['light_novel_confirmed'] and 'edition_bibliography_confirmed' not in row
+
+
+@pytest.mark.parametrize('label', ['ヤングジャンプコミックス', 'ジャンプコミックスDIGITAL',
+    'ヤングジャンプコミックスDIGITAL', 'ダッシュエックス文庫コミックス'])
+def test_dx_comics_are_denied_even_when_other_edition_evidence_matches(setup_catalogue, monkeypatch, label):
+    cat, _ = setup_catalogue
+    source = {'language': 'jpn', 'publisher': '集英社', 'series': label,
+        'extra': {'ndc_codes': ['913.6']}, 'identifiers': [{'source': 'isbn', 'value': '9784798613161'}],
+        'titles': [{'value': '小説と同名の漫画'}], 'source_url': 'https://ndlsearch.ndl.go.jp/books/R100000002-I1',
+        'contributors': [{'name': '著者', 'role': 'author', 'identifiers': [
+            {'source': 'ndl-authority', 'value': 'http://id.ndl.go.jp/auth/entity/01234567'}]}]}
+    monkeypatch.setattr(cat, '_source_with_title_parts', lambda record, cache: source)
+    book = {'publisher_book_id': '123', 'source_url': 'https://dash.shueisha.co.jp/bookDetail/index/9784798613161',
+        'isbn': '9784798613161', 'title': '小説と同名の漫画', 'credits': [{'role': '著者', 'name': '著者'}],
+        'publisher': '集英社', 'label': label}
+    assert cat._publisher_edition_match('shueisha-dx', book, {}, {}) is None

@@ -170,6 +170,21 @@ def test_series_content_match_has_a_reader_facing_reason():
     assert result['reasons'][0]['detail'] == '基準シリーズと内容特徴が共通'
 
 
+def test_confirmed_publisher_edition_exposes_credit_without_private_proof():
+    result = public_work({'entry_id': 'lne:ndl:R100000002-I1', 'entry_kind': 'edition',
+        'light_novel_confirmed': True, 'edition_bibliography_confirmed': True,
+        'admission_status': 'publisher_ndl_edition_verified',
+        'confirmation_source_url': 'https://www.kadokawa.co.jp/product/000001/',
+        'confirmation_proof': {'raw_path': 'PRIVATE-SENTINEL'}})
+    assert result['edition_bibliography_confirmed'] is True
+    assert result['admission_status'] == 'publisher_ndl_edition_verified'
+    assert result['confirmation_source_url'] == 'https://www.kadokawa.co.jp/product/000001/'
+    assert 'PRIVATE-SENTINEL' not in json.dumps(result)
+    unsafe = public_work({'entry_id': 'lne:ndl:R100000002-I1', 'entry_kind': 'edition',
+        'edition_bibliography_confirmed': True, 'confirmation_source_url': 'javascript:alert(1)'})
+    assert not unsafe.get('confirmation_source_url')
+
+
 def test_content_sources_keep_distinct_sections_of_one_revision():
     result = public_work({'entry_id': 'lns:wd:Q2', 'content_sources': [
         {'source_url': 'https://en.wikipedia.org/w/index.php?oldid=123', 'revision': '123',

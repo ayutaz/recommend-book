@@ -76,8 +76,9 @@ def test_identity_evidence_and_unknown_are_strict(series):
 
 def test_style_is_unknown_for_encyclopedia_series_sources(series):
     wrong = native(series)
-    wrong["labels"][0].update(label_id="style.plain", axis="style")
-    with pytest.raises(ValueError):
+    style_id = next(label["label_id"] for label in load_taxonomy()["labels"] if label["axis"] == "style")
+    wrong["labels"][0].update(label_id=style_id, axis="style")
+    with pytest.raises(ValueError, match="cannot establish prose style"):
         validate_result(wrong, series)
 
 
@@ -212,8 +213,9 @@ def test_metadata_cannot_support_content_attributes(series):
     metadata.evidence[0].kind = "bibliographic"
     value["input_hash"] = input_hash(metadata)
     assert validate_result(value, metadata)
-    value["labels"][0].update(label_id="atmosphere.dark", axis="atmosphere")
-    with pytest.raises(ValueError):
+    atmosphere_id = next(label["label_id"] for label in load_taxonomy()["labels"] if label["axis"] == "atmosphere")
+    value["labels"][0].update(label_id=atmosphere_id, axis="atmosphere")
+    with pytest.raises(ValueError, match="Metadata cannot establish"):
         validate_result(value, metadata)
 
 
