@@ -439,7 +439,9 @@ class LightNovelCatalogue:
         match = self._publisher_series_match(assertion, anchor, cache, allow_unnumbered=True)
         if match is None:
             raise ValueError('NDL anchor does not reproduce publisher series identity')
-        explicit = assertion.get('index_id') == 'cobalt-explicit-series'
+        cobalt = assertion.get('index_id') == 'cobalt-explicit-series'
+        earthstar = assertion.get('index_id') == 'earthstar-explicit-work-group'
+        explicit = cobalt or earthstar
         if explicit and record.get('title') != assertion['title']:
             raise ValueError('explicit series search title differs from official source')
         entry_id = 'lns:ndl:' + anchor['id']
@@ -455,14 +457,21 @@ class LightNovelCatalogue:
                 'series_identity_basis': 'publisher_series_and_ndl_bibliography',
                 'series_assertion_source_url': assertion['source_url'],
                 'publisher_series_reference_id': assertion['reference_id'],
-                'source_attributions': [{**s, 'scope': 'series_member_bibliographic_anchor' if explicit else 'series_bibliographic_metadata'}
+                'source_attributions': [{**s, 'scope': 'publisher_work_group_member_bibliographic_anchor' if earthstar else
+                                        'series_member_bibliographic_anchor' if explicit else 'series_bibliographic_metadata'}
                                         for s in base['source_attributions']],
-                **({'series_title_source': 'publisher_explicit_group', 'publication_label': None, 'publishers': [],
+                **({'series_title_source': 'publisher_explicit_work_group' if earthstar else 'publisher_explicit_group',
+                    'publication_label': None, 'publishers': [],
                     'content_sources': [
-                        {'source_url': assertion['source_url'], 'attribution': 'シリーズ名・著者・収録参照: 集英社公式資料'},
+                        {'source_url': assertion['source_url'], 'attribution': '作品名・著者・収録参照: アース・スター公式資料' if earthstar else 'シリーズ名・著者・収録参照: 集英社公式資料'},
                         {'source_url': base['source_url'], 'attribution': base['source_attributions'][0]['credit'],
                          'license_url': base['source_attributions'][0]['license_url']}]}
-                   if explicit else {})}
+                   if explicit else {}),
+                **({'series_identity_basis': 'publisher_work_group_and_ndl_bibliography',
+                    'admission_status': 'publisher_work_group_verified',
+                    'relation_resolution': 'publisher_work_group_and_anchor_verified',
+                    'story_series_identity_asserted': False, 'original_work_identity_asserted': False}
+                   if earthstar else {})}
 
     def _source_with_title_parts(self, edition, cache):
         """Parse only explicit ISBD separators in reproduced RDF title fields."""
@@ -488,6 +497,10 @@ class LightNovelCatalogue:
         return {**source, '_cataloguing_main_titles': parts}
 
     def _publisher_series_match(self, assertion, edition_record, cache, *, allow_unnumbered=False):
+        if assertion.get('index_id') == 'earthstar-explicit-work-group':
+            from .light_novel_earthstar_match_v1 import match_earthstar_member
+            parts = self._edition_primary_bibliographic_parts(edition_record, cache)
+            return match_earthstar_member(assertion, parts) if parts else None
         if assertion.get('index_id') == 'cobalt-explicit-series':
             from .light_novel_explicit_series_match_v1 import match_cobalt_member
             parts = self._edition_primary_bibliographic_parts(edition_record, cache)
@@ -604,6 +617,15 @@ class LightNovelCatalogue:
             return {authority.rsplit('/', 1)[-1] for a in value['authors'] for authority in a['authority_ids']}
         if ids(match) != ids(anchor_match):
             return None
+        if assertion.get('index_id') == 'earthstar-explicit-work-group':
+            return {'rule_version': 'earthstar-explicit-ndl-workgroup-membership-v1',
+                'scope': 'edition_to_publisher_work_group_only',
+                'edition_id': 'lne:ndl:' + source['source_id'], 'series_entry_id': series['entry_id'],
+                'matched_title': match['matched_ndl_title'], 'official_work_group_title': assertion['title'],
+                'volume': match['volume'], 'volume_number': match['volume_number'],
+                'author_authority_ids': sorted(ids(match)), 'imprint': match['imprint'], 'ndc_codes': match['ndc_codes'],
+                'sources': [source['source_url'], assertion['source_url']], 'explicit_member_match': match,
+                'story_series_identity_asserted': False, 'original_work_identity_asserted': False}
         if assertion.get('index_id') == 'cobalt-explicit-series':
             return {'rule_version': 'cobalt-explicit-ndl-series-membership-v1', 'scope': 'edition_membership_only',
                 'edition_id': 'lne:ndl:' + source['source_id'], 'series_entry_id': series['entry_id'],
@@ -633,11 +655,11 @@ class LightNovelCatalogue:
         for series in series_rows:
             index.setdefault(normalize_search(series['title']), []).append(series)
             proof = records[series['entry_id']]['publisher_series_proof']
-            if proof.get('cobalt_series_path'):
+            if proof.get('cobalt_series_path') or proof.get('earthstar_series_path'):
                 from .light_novel_ndl_series_v1 import publisher_assertions
                 from .light_novel_explicit_series_match_v1 import candidate_title_keys
                 assertion = publisher_assertions(proof, self._artifact, cache).get(proof['reference_id'])
-                if assertion and assertion.get('index_id') == 'cobalt-explicit-series':
+                if assertion and assertion.get('index_id') in ('cobalt-explicit-series', 'earthstar-explicit-work-group'):
                     for key in candidate_title_keys(assertion):
                         explicit_index.setdefault(key, []).append(series)
         result = {}
@@ -662,6 +684,7 @@ class LightNovelCatalogue:
                                          sbcr_series_path=None, sbcr_series_sha256=None,
                                          label_aliases_path=None, label_aliases_sha256=None,
                                          cobalt_series_path=None, cobalt_series_sha256=None,
+                                         earthstar_series_path=None, earthstar_series_sha256=None,
                                          reference_ids=None):
         """Admit uniquely cross-checked series; retain a stable NDL anchor ID."""
         from .light_novel_ndl_series_v1 import publisher_assertions, match_bibliography
@@ -699,6 +722,12 @@ class LightNovelCatalogue:
             # Preserve that hash-pinned location rather than rebasing its paths.
             source_proof.update(cobalt_series_path=str(Path(cobalt_series_path).resolve()),
                                 cobalt_series_sha256=cobalt_series_sha256)
+        if bool(earthstar_series_path) != bool(earthstar_series_sha256):
+            raise ValueError('EarthStar supplemental path and SHA are required together')
+        if earthstar_series_path:
+            self._artifact(earthstar_series_path, earthstar_series_sha256, cache)
+            source_proof.update(earthstar_series_path=str(Path(earthstar_series_path).resolve()),
+                                earthstar_series_sha256=earthstar_series_sha256)
         assertions = publisher_assertions(source_proof, self._artifact, cache)
         with self._connect() as db:
             stored = {r['entry_id']: dict(r) for r in db.execute('SELECT * FROM entries')}
@@ -717,13 +746,18 @@ class LightNovelCatalogue:
         active = requested - completed
         target_titles = {normalize_search(assertions[key]['title']) for key in active}
         explicit_titles = set()
-        if cobalt_series_path:
+        if cobalt_series_path or earthstar_series_path:
             from .light_novel_explicit_series_match_v1 import candidate_title_keys, candidate_ndl_title_keys
             for key in active:
-                if assertions[key].get('index_id') == 'cobalt-explicit-series':
+                if assertions[key].get('index_id') in ('cobalt-explicit-series', 'earthstar-explicit-work-group'):
                     explicit_titles.update(candidate_title_keys(assertions[key]))
         selected = set(stored) if not scoped else set()
         if scoped:
+            # "Unchanged" still authenticates the explicitly requested existing
+            # group and its anchor; unrelated completed groups stay unopened.
+            selected.update(key for key, record in records.items()
+                if record.get('schema_version') == 'light-novel-ndl-series-v1'
+                and record['publisher_series_proof']['reference_id'] in completed)
             for key, record in records.items():
                 if stored[key]['kind'] == 'edition' or record.get('schema_version') in {
                         'light-novel-edition-v1', 'light-novel-edition-bulk-v1'}:
@@ -748,12 +782,15 @@ class LightNovelCatalogue:
                 raise ValueError('stored typed identity differs')
             projected[key] = row
         rows = list(projected.values())
-        editions = {}
+        editions, explicit_editions = {}, {}
         for row in rows:
             if row['entry_kind'] == 'edition':
                 source = self._source_with_title_parts(records[row['entry_id']], cache)
                 for title in [*source['titles'], *source.get('_cataloguing_main_titles', [])]:
                     editions.setdefault(normalize_search(title['value']), {})[row['entry_id']] = records[row['entry_id']]
+                if explicit_titles:
+                    for title_key in candidate_ndl_title_keys(source):
+                        explicit_editions.setdefault(title_key, {})[row['entry_id']] = records[row['entry_id']]
         wd_titles = {normalize_search(title) for row in rows if row['entry_kind'] == 'series' and row['qid']
                      for title in [row['title'], *row['aliases']]}
         result = {'inserted': 0, 'updated': 0, 'unchanged': len(completed), 'held': 0, 'held_reasons': {}, 'failures': [],
@@ -771,8 +808,13 @@ class LightNovelCatalogue:
                 hold('potential_wikidata_series_overlap_requires_authority_review')
                 continue
             qualified = []
-            candidates = (records[row['entry_id']] for row in rows if row['entry_kind'] == 'edition') if (
-                assertion.get('index_id') == 'cobalt-explicit-series') else editions.get(key, {}).values()
+            if assertion.get('index_id') in ('cobalt-explicit-series', 'earthstar-explicit-work-group'):
+                matching_editions = {}
+                for title_key in candidate_title_keys(assertion):
+                    matching_editions.update(explicit_editions.get(title_key, {}))
+                candidates = matching_editions.values()
+            else:
+                candidates = editions.get(key, {}).values()
             for edition in candidates:
                 match = self._publisher_series_match(assertion, edition, cache, allow_unnumbered=True)
                 if match:
@@ -793,7 +835,7 @@ class LightNovelCatalogue:
                 continue
             proposals.append({'schema_version': 'light-novel-ndl-series-v1', 'source': 'ndl', 'id': anchor['id'],
                               'anchor_edition_record': anchor, 'publisher_series_proof': {**source_proof, 'reference_id': reference}})
-            if assertion.get('index_id') == 'cobalt-explicit-series':
+            if assertion.get('index_id') in ('cobalt-explicit-series', 'earthstar-explicit-work-group'):
                 proposals[-1]['title'] = assertion['title']
         anchors = {}
         for proposal in proposals:
@@ -1359,7 +1401,7 @@ class LightNovelCatalogue:
                 row.update(light_novel_confirmed=True, edition_bibliography_confirmed=True,
                            edition_identity_basis='publisher_isbn_and_ndl_bibliography',
                            confirmation_source_url=book['source_url'], edition_confirmation_evidence=match)
-                if row.get('admission_status') != 'edition_series_membership_verified':
+                if row.get('admission_status') not in ('edition_series_membership_verified', 'publisher_work_group_membership_verified'):
                     row['admission_status'] = 'publisher_ndl_edition_verified'
             except (OSError, ValueError, KeyError, TypeError):
                 continue
@@ -1486,9 +1528,15 @@ class LightNovelCatalogue:
                     membership = plans[key].get(edition_id)
                     if membership != proof['membership'] or membership.get('series_entry_id') != series_id:
                         continue
-                    indexed[edition_id].update(series_entry_id=series_id, volume_number=membership['volume_number'],
-                        relation_resolution='edition_series_membership_verified', light_novel_confirmed=True,
-                        admission_status='edition_series_membership_verified', series_membership_evidence=membership)
+                    if membership.get('rule_version') == 'earthstar-explicit-ndl-workgroup-membership-v1':
+                        indexed[edition_id].update(series_entry_id=series_id, volume_number=membership['volume_number'],
+                            relation_resolution='publisher_work_group_membership_verified', light_novel_confirmed=True,
+                            admission_status='publisher_work_group_membership_verified', series_membership_evidence=membership,
+                            story_series_identity_asserted=False, original_work_identity_asserted=False)
+                    else:
+                        indexed[edition_id].update(series_entry_id=series_id, volume_number=membership['volume_number'],
+                            relation_resolution='edition_series_membership_verified', light_novel_confirmed=True,
+                            admission_status='edition_series_membership_verified', series_membership_evidence=membership)
                     continue
                 key = (proof['manifest_path'], proof['manifest_sha256'])
                 if key not in plans:
@@ -1594,7 +1642,8 @@ class LightNovelCatalogue:
             titles = [base.get('title', ''), *base.get('aliases', []),
                       *[t['value'] for t in source.get('titles', [])],
                       *source.get('extra', {}).get('title_readings', [])]
-            if record.get('publisher_series_proof', {}).get('cobalt_series_path') and record.get('title'):
+            if (record.get('publisher_series_proof', {}).get('cobalt_series_path')
+                    or record.get('publisher_series_proof', {}).get('earthstar_series_path')) and record.get('title'):
                 titles.append(record['title'])
             authors = [a.get('label', '') if isinstance(a, dict) else a for a in base.get('authors', [])]
             values[identity] = normalize_search(' '.join([*titles, *authors]))
@@ -1758,7 +1807,8 @@ class LightNovelCatalogue:
             member_keys = ('entry_id', 'entry_kind', 'qid', 'title', 'year', 'read_status', 'source_url',
                            'light_novel_confirmed', 'admission_status', 'language', 'original_language',
                            'relation_resolution', 'volume', 'volume_number', 'publication_label', 'series_entry_id',
-                           'series_membership_evidence')
+                           'series_membership_evidence', 'series_identity_basis', 'series_title_source',
+                           'story_series_identity_asserted', 'original_work_identity_asserted')
             row['members'] = [{k: r[k] for k in member_keys if k in r}
                               for r in rows if r['entry_id'] != entry_id and families[r['entry_id']] == families[entry_id]]
             row['members'].sort(key=lambda r: (r.get('volume_number') or 0, r['title'], r['entry_id']))
@@ -1806,16 +1856,24 @@ class LightNovelCatalogue:
     def catalogue_stats(self):
         rows = self._rows()
         counts = {k: sum(r['entry_kind'] == k for r in rows) for k in ('series', 'work', 'edition')}
+        work_groups = sum(r.get('series_identity_basis') == 'publisher_work_group_and_ndl_bibliography' for r in rows)
+        counts['series'] -= work_groups
         statuses = {s: sum(r['read_status'] == s for r in rows) for s in READ_STATUSES}
         with self._connect() as db:
             failures = db.execute('SELECT count(*) FROM ingestion_failures').fetchone()[0]
             unresolved_failures = db.execute('''SELECT count(DISTINCT f.source_id) FROM ingestion_failures f
                 WHERE NOT EXISTS(SELECT 1 FROM entries e WHERE json_extract(e.record_json,'$.id')=f.source_id)''').fetchone()[0]
-        content = sum(r['entry_kind'] == 'series' and r['content_features_adopted'] for r in rows)
-        source = sum(r['entry_kind'] == 'series' and bool(r['genres']) for r in rows)
+        content = sum(r['entry_kind'] == 'series' and r.get('series_identity_basis') != 'publisher_work_group_and_ndl_bibliography'
+                      and r['content_features_adopted'] for r in rows)
+        source = sum(r['entry_kind'] == 'series' and r.get('series_identity_basis') != 'publisher_work_group_and_ndl_bibliography'
+                     and bool(r['genres']) for r in rows)
         return {'works': len(rows), 'searchable_works': len(rows), 'series': counts['series'],
+                'publisher_work_groups': work_groups,
                 'individual_works': counts['work'], 'editions': counts['edition'], 'held_works': 0,
-                'verified_edition_series_relations': sum(bool(r.get('series_entry_id')) for r in rows),
+                'verified_edition_series_relations': sum(bool(r.get('series_entry_id')) and
+                    r.get('relation_resolution') != 'publisher_work_group_membership_verified' for r in rows),
+                'verified_edition_work_group_relations': sum(
+                    r.get('relation_resolution') == 'publisher_work_group_membership_verified' for r in rows),
                 'confirmed_light_novel_editions': sum(r['entry_kind'] == 'edition' and r.get('light_novel_confirmed') is True for r in rows),
                 'publisher_confirmed_editions': sum(r.get('edition_bibliography_confirmed') is True for r in rows),
                 'content_feature_series': content, 'source_genre_series': source,

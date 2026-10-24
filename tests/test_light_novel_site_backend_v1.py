@@ -278,6 +278,16 @@ def test_world_stats_are_not_inflated_by_series_or_editions(stores):
     assert combined.catalogue_facets()['languages'] == [{'value': 'ja', 'count': 5}]
 
 
+def test_publisher_work_group_statistics_are_separate_from_series_and_world(stores, monkeypatch):
+    _, light, combined = stores
+    stats = light.catalogue_stats()
+    monkeypatch.setattr(light, 'catalogue_stats', lambda: {**stats, 'publisher_work_groups': 7})
+    values = combined.catalogue_stats()
+    assert values['light_novel_publisher_work_groups'] == 7
+    assert values['light_novel_series'] == 2
+    assert values['works'] == values['searchable_works'] == 2
+
+
 def test_history_export_is_typed_private_and_deletion_is_fenced_across_both_databases(stores):
     world, light, combined = stores
     stamp = '2026-10-24T00:00:00+00:00'

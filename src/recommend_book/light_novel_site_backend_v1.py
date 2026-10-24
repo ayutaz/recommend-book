@@ -159,6 +159,7 @@ class UnifiedCatalogue:
         world = self.world.catalogue_stats()
         light = self.light_novels.catalogue_stats()
         return {**world, 'light_novel_series': light['series'],
+                'light_novel_publisher_work_groups': light.get('publisher_work_groups', 0),
                 'light_novel_featured_series': light['content_feature_series'],
                 'light_novel_works': light['individual_works'], 'light_novel_editions': light['editions']}
 

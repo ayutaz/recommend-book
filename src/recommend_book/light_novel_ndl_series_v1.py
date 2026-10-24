@@ -253,10 +253,14 @@ def _cards(index_id, document):
 
 def publisher_assertions(proof, artifact, cache):
     """Reproduce official card IDs/authors from pinned source receipts and HTML."""
+    if bool(proof.get('earthstar_series_path')) != bool(proof.get('earthstar_series_sha256')):
+        raise ValueError('EarthStar supplemental path and SHA are required together')
     key = ('publisher_assertions', str(_resolved_path(proof['frames_path'], cache)), proof['frames_sha256'],
            str(_resolved_path(proof['source_root'], cache)), proof.get('sbcr_series_sha256'),
            proof.get('label_aliases_sha256'), proof.get('cobalt_series_sha256'),
-           str(_resolved_path(proof['cobalt_series_path'], cache)) if proof.get('cobalt_series_path') else None)
+           str(_resolved_path(proof['cobalt_series_path'], cache)) if proof.get('cobalt_series_path') else None,
+           proof.get('earthstar_series_sha256'),
+           str(_resolved_path(proof['earthstar_series_path'], cache)) if proof.get('earthstar_series_path') else None)
     if key in cache:
         return cache[key]
     frames = json.loads(artifact(proof['frames_path'], proof['frames_sha256'], cache))
@@ -326,6 +330,15 @@ def publisher_assertions(proof, artifact, cache):
             result[reference] = {**row, 'reference_id': reference, 'index_id': 'cobalt-explicit-series',
                 'source_url': row['official_series_url'], 'title': row['series_title'],
                 'authors': [row['series_author']['display_text']]}
+    if proof.get('earthstar_series_path'):
+        from .light_novel_earthstar_series_v1 import verify_earthstar_series
+        for row in verify_earthstar_series(proof['earthstar_series_path'], proof['earthstar_series_sha256']):
+            reference = 'publisher-series:' + hashlib.sha256(row['source_url'].encode()).hexdigest()[:24]
+            if reference in result:
+                raise ValueError('duplicate explicit publisher work-group reference')
+            result[reference] = {**row, 'reference_id': reference, 'index_id': 'earthstar-explicit-work-group',
+                'series_title': row['title'],
+                'authors': [credit['name'] for credit in row['index_author_credits'] if credit['role'] == 'author']}
     cache[key] = result
     return result
 

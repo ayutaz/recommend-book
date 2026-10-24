@@ -144,6 +144,50 @@ def test_series_title_origin_exports_only_the_supported_public_scope(marker):
     assert 'title_origin' not in result
 
 
+@pytest.mark.parametrize(('basis', 'marker', 'expected'), [
+    ('publisher_work_group_and_ndl_bibliography', 'publisher_explicit_work_group', True),
+    ('publisher_work_group_and_ndl_bibliography', 'publisher_explicit_group', False),
+    ('publisher_series_and_ndl_bibliography', 'publisher_explicit_work_group', False),
+    ('unknown', 'publisher_explicit_work_group', False),
+    ({'private': 'proof'}, 'publisher_explicit_work_group', False),
+    ('publisher_work_group_and_ndl_bibliography', {'private': 'proof'}, False),
+])
+def test_publisher_work_group_scope_cannot_be_exported_as_a_story_series(basis, marker, expected):
+    result = public_work({'entry_id': 'lns:ndl:R100000002-I1', 'entry_kind': 'series',
+        'series_identity_basis': basis, 'series_title_source': marker,
+        'title_origin': {'raw_path': 'PRIVATE-SENTINEL'}})
+    assert ('series_title_source' in result) is expected
+    if expected:
+        assert result['story_series_identity_asserted'] is False
+        assert result['original_work_identity_asserted'] is False
+    assert 'PRIVATE-SENTINEL' not in json.dumps(result)
+
+
+def test_publisher_work_group_http_preserves_scope_members_and_separate_statistics(site, monkeypatch):
+    base, catalogue = site
+    identifier = 'lns:ndl:R100000002-I032593374'
+    monkeypatch.setattr(catalogue, 'work_detail', lambda key: {
+        **catalogue.item(key), 'title': '出版社の作品グループ',
+        'series_identity_basis': 'publisher_work_group_and_ndl_bibliography',
+        'series_title_source': 'publisher_explicit_work_group',
+        'admission_status': 'publisher_work_group_verified',
+        'relation_resolution': 'publisher_work_group_and_anchor_verified',
+        'series_assertion_source_url': 'https://earthstar-novel.com/book/detail/esn017/',
+        'publisher_series_proof': {'raw_path': 'PRIVATE-SENTINEL'}})
+    result = fetch(base, '/api/entries/' + quote(identifier, safe=''))
+    assert result['admission_status'] == 'publisher_work_group_verified'
+    assert result['relation_resolution'] == 'publisher_work_group_and_anchor_verified'
+    assert result['series_title_source'] == 'publisher_explicit_work_group'
+    assert result['story_series_identity_asserted'] is False
+    assert len(result['members']) == 1
+    assert 'PRIVATE-SENTINEL' not in json.dumps(result)
+    monkeypatch.setattr(catalogue, 'catalogue_stats', lambda: {
+        'light_novel_series': 1000, 'light_novel_publisher_work_groups': 3})
+    stats = fetch(base, '/api/stats')
+    assert stats['light_novel_series'] == 1000
+    assert stats['light_novel_publisher_work_groups'] == 3
+
+
 def test_typed_preferences_keep_qids_distinct_and_reject_unsafe_identifiers(site):
     base, catalogue = site
     result = fetch(base, '/api/recommendations', {'liked_qids': ['Q2'],
@@ -210,6 +254,23 @@ def test_public_typed_entry_retains_only_safe_member_fields():
     edition = public_work({'qid': 'lne:ndl:000001', 'entry_id': 'lne:ndl:000001',
                           'entry_kind': 'edition', 'source_url': 'javascript:alert(1)'})
     assert edition['qid'] == '' and edition['source_url'] == ''
+
+
+@pytest.mark.parametrize('marker', ['publisher_explicit_work_group', {'private': 'PRIVATE-SENTINEL'}])
+def test_parent_link_keeps_work_group_scope_without_exporting_internal_proof(marker):
+    result = public_work({'entry_id': 'lne:ndl:R100000002-I1', 'entry_kind': 'edition',
+        'admission_status': 'publisher_work_group_membership_verified',
+        'relation_resolution': 'publisher_work_group_membership_verified',
+        'members': [{'entry_id': 'lns:ndl:R100000002-I1', 'entry_kind': 'series',
+            'title': '作品グループ', 'series_identity_basis': 'publisher_work_group_and_ndl_bibliography',
+            'series_title_source': marker, 'publisher_series_proof': {'raw_path': 'PRIVATE-SENTINEL'}}]})
+    parent = result['members'][0]
+    assert parent['series_identity_basis'] == 'publisher_work_group_and_ndl_bibliography'
+    assert parent['story_series_identity_asserted'] is False
+    assert ('series_title_source' in parent) is (marker == 'publisher_explicit_work_group')
+    assert result['relation_resolution'] == 'publisher_work_group_membership_verified'
+    assert result['admission_status'] == 'publisher_work_group_membership_verified'
+    assert 'PRIVATE-SENTINEL' not in json.dumps(result)
 
 
 def test_ndl_candidates_preserve_uncertain_kind_language_and_relation():

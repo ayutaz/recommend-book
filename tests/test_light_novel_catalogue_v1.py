@@ -1245,6 +1245,175 @@ def cobalt_member(publisher_edition_v2, tmp_path, monkeypatch):
     return cat, record, frames, fsha, extra, esha, reference, group
 
 
+def test_earthstar_assertion_adapter_pins_supplement_path_and_sha(tmp_path, monkeypatch):
+    from recommend_book.light_novel_ndl_series_v1 import publisher_assertions
+    import recommend_book.light_novel_earthstar_series_v1 as earthstar
+    frames = tmp_path / 'frames.json'
+    fsha = write(frames, [])
+    first, second = tmp_path / 'first' / 'proof.json', tmp_path / 'second' / 'proof.json'
+    first.parent.mkdir(); second.parent.mkdir()
+    sha = write(first, {})
+    write(second, {})
+    group = {'title': '作品グループ名', 'source_url': 'https://earthstar-novel.com/book/detail/group/',
+             'index_author_credits': [{'role': 'author', 'name': '著者'}], 'publisher': None, 'label': None}
+    verified = []
+    def verify(path, digest):
+        verified.append((str(path), digest))
+        if str(path) == str(second.resolve()):
+            raise ValueError('second manifest relative raw is invalid')
+        return [group]
+    monkeypatch.setattr(earthstar, 'verify_earthstar_series', verify)
+    def artifact(path, expected, cache):
+        raw = __import__('pathlib').Path(path).read_bytes()
+        assert hashlib.sha256(raw).hexdigest() == expected
+        return raw
+    proof = {'frames_path': str(frames), 'frames_sha256': fsha, 'source_root': str(tmp_path),
+             'earthstar_series_path': str(first.resolve()), 'earthstar_series_sha256': sha}
+    cache = {}
+    reference = 'publisher-series:' + hashlib.sha256(group['source_url'].encode()).hexdigest()[:24]
+    adapted = publisher_assertions(proof, artifact, cache)[reference]
+    assert adapted['index_id'] == 'earthstar-explicit-work-group'
+    assert adapted['series_title'] == group['title'] and adapted['authors'] == ['著者']
+    assert adapted['publisher'] is None and adapted['label'] is None
+    with pytest.raises(ValueError, match='relative raw'):
+        publisher_assertions({**proof, 'earthstar_series_path': str(second.resolve())}, artifact, cache)
+    assert len(verified) == 2
+    for key in ('earthstar_series_path', 'earthstar_series_sha256'):
+        incomplete = dict(proof); incomplete.pop(key)
+        with pytest.raises(ValueError, match='required together'):
+            publisher_assertions(incomplete, artifact, cache)
+
+
+@pytest.fixture
+def earthstar_member(publisher_edition_v2, tmp_path, monkeypatch):
+    from test_light_novel_earthstar_match_v1 import assertion
+    cat, record, _ = publisher_edition_v2(publisher='アース・スターエンターテイメント',
+        imprint='EARTH STAR NOVEL', title='巻独自の正式題', volume=None, official_title='巻独自の正式題')
+    group = assertion(title='出版社の正式作品グループ名', member='巻独自の正式題')
+    group['index_author_credits'][0]['name'] = '著者'
+    for role in group['books'][0]['credits'] + group['books'][0]['explicit_role_credit_literals']:
+        if role['role'] == 'author':
+            role['name'] = '著者'
+    import recommend_book.light_novel_earthstar_series_v1 as source
+    monkeypatch.setattr(source, 'verify_earthstar_series', lambda path, sha: [group])
+    frames = tmp_path / 'empty-earth-frames.json'; fsha = write(frames, [])
+    extra = tmp_path / 'earth-proof.json'; esha = write(extra, {})
+    assert cat.import_editions([record])['inserted'] == 1
+    reference = 'publisher-series:' + hashlib.sha256(group['source_url'].encode()).hexdigest()[:24]
+    return cat, record, frames, fsha, extra, esha, reference, group
+
+
+def test_earthstar_group_is_searchable_without_story_series_or_anchor_metadata_inference(earthstar_member):
+    cat, record, frames, sha, extra, esha, reference, group = earthstar_member
+    result = cat.import_ndl_series_from_publishers(frames, sha, source_root=frames.parent,
+        earthstar_series_path=extra, earthstar_series_sha256=esha, reference_ids={reference})
+    assert result['inserted'] == 1 and result['verified_edition_memberships'] == 1
+    row = cat.work_detail('lns:ndl:' + record['id'])
+    assert row['title'] == group['title'] and row['aliases'] == []
+    assert row['publication_label'] is None and row['publishers'] == []
+    assert row['series_title_source'] == 'publisher_explicit_work_group'
+    assert row['series_identity_basis'] == 'publisher_work_group_and_ndl_bibliography'
+    assert row['admission_status'] == 'publisher_work_group_verified'
+    assert not row['story_series_identity_asserted'] and not row['original_work_identity_asserted']
+    assert row['members'][0]['entry_id'] == 'lne:ndl:' + record['id']
+    assert cat.search_catalogue(group['title'], entry_kind='series')['total'] == 1
+    member = cat.work_detail('lne:ndl:' + record['id'])
+    assert member['series_membership_evidence']['rule_version'] == 'earthstar-explicit-ndl-workgroup-membership-v1'
+    assert member['relation_resolution'] == 'publisher_work_group_membership_verified'
+    assert member['admission_status'] == 'publisher_work_group_membership_verified'
+    assert not member['story_series_identity_asserted'] and not member['original_work_identity_asserted']
+    assert member['members'][0]['series_identity_basis'] == 'publisher_work_group_and_ndl_bibliography'
+    stats = cat.catalogue_stats()
+    assert stats['series'] == 0 and stats['publisher_work_groups'] == 1
+    assert stats['verified_edition_series_relations'] == 0 and stats['verified_edition_work_group_relations'] == 1
+
+
+def test_earthstar_canonical_title_rehash_cannot_publish_forged_group(earthstar_member):
+    cat, record, frames, sha, extra, esha, reference, _ = earthstar_member
+    assert cat.import_ndl_series_from_publishers(frames, sha, source_root=frames.parent,
+        earthstar_series_path=extra, earthstar_series_sha256=esha, reference_ids={reference})['inserted'] == 1
+    with cat._connect() as db:
+        old = db.execute('SELECT record_json FROM entries WHERE entry_id=?', ('lns:ndl:' + record['id'],)).fetchone()[0]
+        forged = json.loads(old); forged['title'] = '偽造された作品グループ'
+        encoded = json.dumps(forged, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+        db.execute('UPDATE entries SET record_json=?,record_sha256=? WHERE entry_id=?',
+            (encoded, hashlib.sha256(encoded.encode()).hexdigest(), 'lns:ndl:' + record['id']))
+    with pytest.raises(ValueError, match='search title differs'):
+        cat.search_catalogue('偽造された作品グループ', entry_kind='series')
+
+
+@pytest.mark.parametrize('change', ['canonical_rehash', 'raw_changed', 'typed_identity'])
+def test_scoped_completed_work_group_revalidates_before_reporting_unchanged(earthstar_member, change):
+    from pathlib import Path
+    cat, record, frames, sha, extra, esha, reference, _ = earthstar_member
+    kwargs = dict(source_root=frames.parent, earthstar_series_path=extra,
+                  earthstar_series_sha256=esha, reference_ids={reference})
+    assert cat.import_ndl_series_from_publishers(frames, sha, **kwargs)['inserted'] == 1
+    key = 'lns:ndl:' + record['id']
+    if change == 'raw_changed':
+        raw = Path(record['provenance']['raw_path'])
+        raw.write_bytes(raw.read_bytes() + b' changed')
+    else:
+        with cat._connect() as db:
+            if change == 'typed_identity':
+                db.execute('UPDATE entries SET kind=? WHERE entry_id=?', ('work', key))
+            else:
+                saved = json.loads(db.execute('SELECT record_json FROM entries WHERE entry_id=?', (key,)).fetchone()[0])
+                saved['title'] = '原資料にない作品グループ'
+                encoded = json.dumps(saved, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+                db.execute('UPDATE entries SET record_json=?,record_sha256=? WHERE entry_id=?',
+                           (encoded, hashlib.sha256(encoded.encode()).hexdigest(), key))
+    with pytest.raises(ValueError):
+        cat.import_ndl_series_from_publishers(frames, sha, **kwargs)
+
+
+def test_earthstar_group_holds_wikidata_title_overlap(earthstar_member, setup_catalogue):
+    cat, edition, frames, sha, extra, esha, reference, group = earthstar_member
+    _, records = setup_catalogue
+    records[0]['provenance']['conditions_sha256'] = edition['provenance']['conditions_sha256']
+    group['title'] = group['series_title'] = records[0]['title']
+    assert cat.ingest([records[0]])['inserted'] == 1
+    result = cat.import_ndl_series_from_publishers(frames, sha, source_root=frames.parent,
+        earthstar_series_path=extra, earthstar_series_sha256=esha, reference_ids={reference})
+    assert result['inserted'] == 0
+    assert result['held_reasons'] == {'potential_wikidata_series_overlap_requires_authority_review': 1}
+    stats = cat.catalogue_stats()
+    assert stats['series'] == 1 and stats['publisher_work_groups'] == 0
+
+
+def test_earthstar_group_holds_existing_anchor_owned_by_another_group(earthstar_member):
+    cat, _, frames, sha, extra, esha, reference, group = earthstar_member
+    assert cat.import_ndl_series_from_publishers(frames, sha, source_root=frames.parent,
+        earthstar_series_path=extra, earthstar_series_sha256=esha, reference_ids={reference})['inserted'] == 1
+    group['source_url'] = 'https://earthstar-novel.com/book/detail/another-group/'
+    group['official_work_reference_id'] = 'another-group'
+    group['reference_id'] = 'earthstar-work:another-group'
+    group['title'] = group['series_title'] = '別の公式作品グループ'
+    group['source_evidence'][-1]['source_url'] = group['source_url']
+    group['books'][0]['source_evidence']['source_url'] = group['source_url']
+    second = 'publisher-series:' + hashlib.sha256(group['source_url'].encode()).hexdigest()[:24]
+    result = cat.import_ndl_series_from_publishers(frames, sha, source_root=frames.parent,
+        earthstar_series_path=extra, earthstar_series_sha256=esha, reference_ids={second})
+    assert result['inserted'] == 0
+    assert result['held_reasons'] == {'ambiguous_publisher_series_for_same_ndl_anchor': 1}
+
+
+def test_earthstar_scoped_group_rejects_candidate_typed_identity_mismatch(earthstar_member):
+    cat, record, frames, sha, extra, esha, reference, _ = earthstar_member
+    with cat._connect() as db:
+        db.execute('UPDATE entries SET kind=? WHERE entry_id=?', ('work', 'lne:ndl:' + record['id']))
+    with pytest.raises(ValueError, match='typed identity'):
+        cat.import_ndl_series_from_publishers(frames, sha, source_root=frames.parent,
+            earthstar_series_path=extra, earthstar_series_sha256=esha, reference_ids={reference})
+
+
+@pytest.mark.parametrize('kwargs', [{'earthstar_series_path': 'missing'}, {'earthstar_series_sha256': 'a' * 64}])
+def test_earthstar_supplement_requires_path_sha_pair(publisher_ndl_bundle, kwargs):
+    cat, _, frames, sha, root, _ = publisher_ndl_bundle
+    with pytest.raises(ValueError, match='required together'):
+        cat.import_ndl_series_from_publishers(frames, sha, source_root=root, **kwargs)
+
+
 def test_explicit_cobalt_member_adds_searchable_series_and_unnumbered_membership(cobalt_member):
     cat, record, frames, sha, extra, esha, reference, group = cobalt_member
     result = cat.import_ndl_series_from_publishers(frames, sha, source_root=frames.parent,
