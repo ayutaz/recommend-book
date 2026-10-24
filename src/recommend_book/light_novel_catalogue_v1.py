@@ -89,6 +89,15 @@ SOURCE_GROUP_PROVIDERS = {
         'public_kind': 'hj_native_index_source_group', 'complete_field': 'native_index_card_complete',
         'credit': '索引掲載グループ名・索引内クレジット: ホビージャパンHJノベルスのシリーズ一覧',
     },
+    'sbcrindex': {
+        'schema': 'light-novel-sbcr-index-source-group-v1', 'record_provider': 'sbcr-index-only',
+        'module': 'light_novel_sbcr_index_groups_v1', 'verifier': 'verify_sbcr_index_groups',
+        'loader': '_sbcr_index_workgroups', 'reference_pattern': r'sbcr-index-group-local:[0-9a-f]{64}',
+        'member_pattern': r'(?!)', 'index_only': True,
+        'source_kind': 'official_publisher_native_index_group_reference',
+        'public_kind': 'sbcr_native_index_source_group', 'complete_field': 'native_index_card_complete',
+        'credit': '索引掲載グループ名: SBクリエイティブの電子書籍シリーズ一覧',
+    },
 }
 
 
@@ -117,7 +126,7 @@ def _qid(value):
 
 
 def _entry(value):
-    if not isinstance(value, str) or not re.fullmatch(r'(?:ln[sw]:wd:Q[1-9][0-9]*|ln[se]:ndl:[A-Za-z0-9._-]+|lng:pub:(?:futaba|orange|ecobalt|sbcr|hj|arian|hjnovels):[0-9a-f]{32}|lnr:pub:ecobalt:[0-9a-f]{32})', value):
+    if not isinstance(value, str) or not re.fullmatch(r'(?:ln[sw]:wd:Q[1-9][0-9]*|ln[se]:ndl:[A-Za-z0-9._-]+|lng:pub:(?:futaba|orange|ecobalt|sbcr|hj|arian|hjnovels|sbcrindex):[0-9a-f]{32}|lnr:pub:ecobalt:[0-9a-f]{32})', value):
         raise ValueError('a typed light-novel entry ID is required')
     return value
 
@@ -575,6 +584,9 @@ class LightNovelCatalogue:
     def _hjnovels_index_workgroups(self, path, sha256, cache):
         return self._publisher_source_groups('hjnovels', path, sha256, cache)
 
+    def _sbcr_index_workgroups(self, path, sha256, cache):
+        return self._publisher_source_groups('sbcrindex', path, sha256, cache)
+
     def _ecobalt_source_frame(self, path, sha256, cache):
         from .light_novel_ecobalt_groups_v1 import verify_ecobalt_frame
         key = ('ecobalt_source_frame', str(_resolved_path(path, cache)), sha256)
@@ -685,12 +697,15 @@ class LightNovelCatalogue:
     @staticmethod
     def _publisher_source_display(provider, group):
         if SOURCE_GROUP_PROVIDERS[provider].get('index_only'):
-            return {'robots_evidence': dict(group['robots_evidence']), 'usage_permissions': dict(group['usage_permissions']),
+            display = {'robots_evidence': dict(group['robots_evidence']), 'usage_permissions': dict(group['usage_permissions']),
                 'native_index_card_complete': group['native_index_card_complete'],
                 'index_frame_pages_complete': group['index_frame_pages_complete'],
                 'frame_membership_complete': group['frame_membership_complete'], 'total_product_count': group['total_product_count'],
                 'index_credit_literals': [{key: credit[key] for key in ('role_literal', 'name', 'role_scope')}
                     for credit in group['index_credit_literals']]}
+            if provider == 'sbcrindex':
+                display['index_name_cautions'] = list(group['index_name_cautions'])
+            return display
         if provider == 'sbcr':
             return {'robots_evidence': dict(group['robots_evidence']),
                     'usage_permissions': dict(group['usage_permissions'])}
@@ -773,6 +788,9 @@ class LightNovelCatalogue:
 
     def import_hjnovels_index_source_groups(self, manifest_path, expected_sha256, *, reference_ids=None):
         return self._import_publisher_source_groups('hjnovels', manifest_path, expected_sha256, reference_ids=reference_ids)
+
+    def import_sbcr_index_source_groups(self, manifest_path, expected_sha256, *, reference_ids=None):
+        return self._import_publisher_source_groups('sbcrindex', manifest_path, expected_sha256, reference_ids=reference_ids)
 
     def _ecobalt_publisher_references(self, path, sha256, cache):
         result = {}

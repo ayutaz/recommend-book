@@ -84,7 +84,10 @@ function visibleText(el){return [el.textContent||'',...(el.children||[]).map(vis
 (async()=>{
   for(const row of [hj,{...hj,entry_id:'lng:pub:arian:'+'c'.repeat(32),
       publisher_work_group_kind:'arian_native_index_source_group'},
-      {...hj,entry_id:'lng:pub:hjnovels:'+'d'.repeat(32)}]){
+      {...hj,entry_id:'lng:pub:hjnovels:'+'d'.repeat(32)},
+      {...hj,entry_id:'lng:pub:sbcrindex:'+'e'.repeat(32),title:'（シリーズ：表示題）',
+        publisher_work_group_kind:'sbcr_native_index_source_group',index_credit_literals:[],
+        index_name_cautions:['wrapped_index_display_title','publication_type_unconfirmed','PRIVATE-SENTINEL']}]){
     context.INDEX=row;
     vm.runInNewContext('state.favorites.clear();state.favorites.set(INDEX.entry_id,{title:INDEX.title})',context);
     assert.equal(vm.runInNewContext('preferencePayload().liked_entry_ids[0]',context),row.entry_id);
@@ -95,6 +98,12 @@ function visibleText(el){return [el.textContent||'',...(el.children||[]).map(vis
     assert.ok(detail.includes('索引のクレジットは各巻の担当役割を示すものではありません。'));
     assert.ok(!detail.includes('0冊'));
     assert.ok(!detail.includes('出版社の掲載書誌'));
+    if(row.publisher_work_group_kind==='sbcr_native_index_source_group'){
+      assert.ok(detail.includes('（シリーズ：表示題）'));
+      assert.ok(detail.includes('索引に表示された括弧付きの名称です。原作品の正式題は未確認です。'));
+      assert.ok(detail.includes('名称に「マガジン」が含まれます。小説・雑誌等の区分は未確認です。'));
+      assert.ok(!detail.includes('PRIVATE-SENTINEL'));
+    }
   }
 })().catch(error=>{console.error(error);process.exitCode=1;});
 '''

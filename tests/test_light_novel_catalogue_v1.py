@@ -20,7 +20,7 @@ def claim(qid):
     return {'mainsnak': {'snaktype': 'value', 'datavalue': {'value': {'id': qid}}}}
 
 
-@pytest.mark.parametrize('provider', ['hj', 'arian', 'hjnovels'])
+@pytest.mark.parametrize('provider', ['hj', 'arian', 'hjnovels', 'sbcrindex'])
 def test_hj_index_source_group_has_a_distinct_typed_namespace(provider):
     from recommend_book.light_novel_catalogue_v1 import _entry
     identity = 'lng:pub:' + provider + ':' + 'a'*32
@@ -94,6 +94,104 @@ def sbcr_source_group_bundle(tmp_path):
     env = _sbcr_raw_fixture(root)
     path, sha = root / env['pin']['path'], env['pin']['sha256']
     return LightNovelCatalogue(tmp_path / 'sbcr.sqlite'), env, path, sha, verify_sbcr_groups(path, sha)
+
+
+@pytest.fixture
+def sbcrindex_source_group_bundle(tmp_path):
+    from test_light_novel_sbcr_index_groups_v1 import fixture
+    from recommend_book.light_novel_sbcr_index_groups_v1 import verify_sbcr_index_groups
+    root = tmp_path / 'sbcr-index-raw'
+    root.mkdir()
+    env = fixture(root)
+    path, sha = root / 'proof.json', env['pin']['sha256']
+    return LightNovelCatalogue(tmp_path / 'sbcr-index.sqlite'), env, path, sha, verify_sbcr_index_groups(path, sha)
+
+
+def test_sbcrindex_source_group_preserves_literal_title_cautions_and_unknown_membership(sbcrindex_source_group_bundle):
+    cat, _, path, sha, groups = sbcrindex_source_group_bundle
+    result = cat.import_sbcr_index_source_groups(path, sha)
+    assert result['inserted'] == result['source_groups'] == 2 and result['held'] == 0
+    rows = [cat.work_detail(result['reference_entries'][group['reference_id']]) for group in groups]
+    assert [r['title'] for r in rows] == ['（シリーズ：完全な索引題！）', 'ＧＡ文庫マガジン']
+    assert [r['index_name_cautions'] for r in rows] == [['wrapped_index_display_title'], ['publication_type_unconfirmed']]
+    for row in rows:
+        assert row['publisher_work_group_kind'] == 'sbcr_native_index_source_group'
+        assert row['authors'] == row['index_credit_literals'] == row['publisher_product_references'] == row['members'] == []
+        assert row['source_frame_member_count'] == 0 and row['total_product_count'] is row['frame_membership_complete'] is None
+        assert not row['light_novel_confirmed'] and not row['story_series_identity_asserted']
+        assert row['isbn'] == row['genres'] == row['native_features'] == [] and row['publication_label'] is None
+        assert row['robots_evidence']['permission_inferred'] is False and row['usage_permissions']['commercial_reuse'] == 'unknown'
+        assert not any(secret in json.dumps(row, ensure_ascii=False) for secret in ('SECRET', 'MUST_NOT_OPEN', 'source_selector', str(path.parent)))
+    assert cat.search_catalogue('GA文庫マガジン')['total'] == 1
+    assert cat.search_catalogue('UNVERIFIED_PERSON_PROXY')['total'] == 0
+    assert cat.catalogue_stats()['publisher_work_groups'] == 2 and cat.catalogue_stats()['series'] == 0
+
+
+@pytest.mark.parametrize('rename', [False, True])
+def test_sbcrindex_source_group_continuity_requires_complete_literal_title(sbcrindex_source_group_bundle, rename):
+    from test_light_novel_sbcr_index_groups_v1 import fixture, repin, change_raw
+    cat, env, path, sha, _ = sbcrindex_source_group_bundle
+    first = cat.import_sbcr_index_source_groups(path, sha)
+    identity = next(iter(first['reference_entries'].values()))
+    cat.set_read_status(identity, 'reading')
+    assert cat.import_sbcr_index_source_groups(path, sha)['unchanged'] == 2
+    root = env['root'] / 'next'
+    root.mkdir()
+    following = fixture(root)
+    following['proof']['capture_revision'] = 2
+    if rename:
+        title = '（シリーズ：改訂された索引題！）'
+        change_raw(following, '（シリーズ：完全な索引題！）', title)
+        for rows in [following['rows'], following['handoff'], following['candidates']['groups']]:
+            rows[0]['title'] = title
+    repin(following)
+    result = cat.import_sbcr_index_source_groups(root / 'proof.json', following['pin']['sha256'])
+    assert result['inserted'] == 0 and result['updated'] == 2 - int(rename) and result['held'] == int(rename)
+    assert cat.work_detail(identity)['read_status'] == 'reading'
+    with cat._connect() as db:
+        assert {r[0] for r in db.execute('SELECT entry_id FROM entries')} == set(first['reference_entries'].values())
+
+
+@pytest.mark.parametrize('change', ['raw', 'rehash'])
+def test_sbcrindex_source_group_rejects_changed_raw_or_invented_cautions(sbcrindex_source_group_bundle, change):
+    cat, env, path, sha, _ = sbcrindex_source_group_bundle
+    if change == 'raw':
+        (env['root'] / 'coverage' / 'index.html').write_bytes(b'changed held index card')
+        with pytest.raises(ValueError):
+            cat.import_sbcr_index_source_groups(path, sha)
+        with cat._connect() as db:
+            assert db.execute('SELECT count(*) FROM entries').fetchone()[0] == 0
+        return
+    identity = next(iter(cat.import_sbcr_index_source_groups(path, sha)['reference_entries'].values()))
+    with cat._connect() as db:
+        record = json.loads(db.execute('SELECT record_json FROM entries WHERE entry_id=?', (identity,)).fetchone()[0])
+        record['index_name_cautions'] = ['novel_asserted']
+        encoded = json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+        db.execute('UPDATE entries SET record_json=?,record_sha256=? WHERE entry_id=?',
+            (encoded, hashlib.sha256(encoded.encode()).hexdigest(), identity))
+    with pytest.raises(ValueError):
+        cat.work_detail(identity)
+
+
+def test_sbcrindex_source_group_never_replays_or_rewrites_complete_sb_groups(sbcrindex_source_group_bundle, sbcr_source_group_bundle, monkeypatch):
+    _, _, path, sha, _ = sbcrindex_source_group_bundle
+    cat, env, spath, ssha, _ = sbcr_source_group_bundle
+    identity = next(iter(cat.import_sbcr_source_groups(spath, ssha)['reference_entries'].values()))
+    cat.set_read_status(identity, 'read')
+    with cat._connect() as db:
+        before = {r['entry_id']: tuple(r) for r in db.execute('SELECT * FROM entries')}
+        states = [tuple(r) for r in db.execute('SELECT * FROM read_status')]
+    (env['root'] / 'coverage' / 'parent.html').write_bytes(b'complete parent must stay unread')
+    def forbidden(*args, **kwargs):
+        raise AssertionError('SB index-only import cannot replay complete SB or other profiles')
+    for name in ['_sbcr_workgroups', '_hj_index_workgroups', '_hjnovels_index_workgroups', '_arian_index_workgroups',
+                 '_futaba_workgroups', '_orange_workgroups', '_ecobalt_source_frame', '_rows']:
+        monkeypatch.setattr(cat, name, forbidden)
+    assert cat.import_sbcr_index_source_groups(path, sha)['inserted'] == 2
+    with cat._connect() as db:
+        after = {r['entry_id']: tuple(r) for r in db.execute('SELECT * FROM entries')}
+        assert {identity: after[identity] for identity in before} == before
+        assert [tuple(r) for r in db.execute('SELECT * FROM read_status')] == states
 
 
 @pytest.fixture
@@ -1037,11 +1135,15 @@ def test_futaba_source_group_preserves_actual_anchor_bindings_and_reading_states
                 for table in tables} == before
 
 
-@pytest.mark.parametrize('race_kind', ['source', 'anchor', 'orange', 'ecobalt', 'ecobalt_reference', 'sbcr', 'hj', 'arian', 'hjnovels'])
+@pytest.mark.parametrize('race_kind', ['source', 'anchor', 'orange', 'ecobalt', 'ecobalt_reference', 'sbcr', 'hj', 'arian', 'hjnovels', 'sbcrindex'])
 def test_futaba_source_group_new_target_race_is_detected_before_first_write(request, monkeypatch, race_kind):
     from contextlib import contextmanager
     import sqlite3
-    if race_kind == 'ecobalt_reference':
+    if race_kind == 'sbcrindex':
+        cat, _, path, sha, _ = request.getfixturevalue('sbcrindex_source_group_bundle')
+        saved = cat.import_sbcr_index_source_groups(path, sha)
+        identity = next(iter(saved['reference_entries'].values()))
+    elif race_kind == 'ecobalt_reference':
         cat, _, path, sha, _ = request.getfixturevalue('ecobalt_source_group_bundle')
         saved = cat.import_ecobalt_publisher_references(path, sha)
         identity = next(iter(saved['reference_entries'].values()))
@@ -1062,7 +1164,9 @@ def test_futaba_source_group_new_target_race_is_detected_before_first_write(requ
         cat.correlate_publisher_bibliographies('futaba-mnovels', m_path, m_sha)
         cat.import_futaba_mnovels_workgroups(path, sha)
         identity = 'lns:ndl:' + first['id']
-    if race_kind == 'ecobalt_reference':
+    if race_kind == 'sbcrindex':
+        importer = cat.import_sbcr_index_source_groups
+    elif race_kind == 'ecobalt_reference':
         importer = cat.import_ecobalt_publisher_references
     elif race_kind in {'hj', 'arian', 'hjnovels'}:
         importer = getattr(cat, 'import_' + race_kind + '_index_source_groups')

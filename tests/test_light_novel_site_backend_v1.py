@@ -9,7 +9,7 @@ from recommend_book.light_novel_site_backend_v1 import UnifiedCatalogue
 from test_light_novel_catalogue_v1 import (
     futaba_source_group_bundle, futaba_source_raw, membership_bundle, edition_bundle, setup_catalogue,
     orange_source_group_bundle, ecobalt_source_group_bundle, sbcr_source_group_bundle, hj_source_group_bundle,
-    arian_source_group_bundle, hjnovels_source_group_bundle,
+    arian_source_group_bundle, hjnovels_source_group_bundle, sbcrindex_source_group_bundle,
 )
 
 
@@ -506,6 +506,36 @@ def test_hj_index_source_group_typed_history_and_early_similar_keep_index_scope(
     assert result['mode'] == 'insufficient_evidence' and result['classification_scope'] == 'publisher_group'
     assert not world.calls
     (env['root'] / 'coverage' / ('index.html' if provider == 'arian' else 'page1.html')).write_bytes(b'changed own native index card')
+    with pytest.raises(ValueError):
+        combined.similar_works(identity)
+
+
+def test_sbcrindex_source_group_history_and_similarity_keep_index_cautions_without_complete_parent_scan(
+        sbcrindex_source_group_bundle, tmp_path, monkeypatch):
+    cat, env, path, sha, _ = sbcrindex_source_group_bundle
+    world = Store(tmp_path / 'sbcr-index-world.sqlite', [])
+    combined = UnifiedCatalogue(world, cat)
+    identity = next(iter(cat.import_sbcr_index_source_groups(path, sha)['reference_entries'].values()))
+    row = combined.work_detail(identity)
+    assert row['publisher_work_group_kind'] == 'sbcr_native_index_source_group'
+    assert row['index_name_cautions'] == ['wrapped_index_display_title']
+    assert row['title'] == '（シリーズ：完全な索引題！）' and row['total_product_count'] is None
+    combined.set_read_status(identity, 'read')
+    history = combined.export_reading_history()
+    assert history['version'] == 'catalogue-history-export-v3' and history['records'][0]['entry_id'] == identity
+    for invalid in ['lng:pub:sbcrindex:' + 'A'*32, 'lnr:pub:sbcrindex:' + 'a'*32, 'lng:pub:sbcrindex:7']:
+        with pytest.raises(ValueError):
+            combined.work_detail(invalid)
+    def forbidden(*args, **kwargs):
+        raise AssertionError('SB index-only similar cannot scan complete parents or other catalogues')
+    for name in ['_rows', '_sbcr_workgroups', '_hj_index_workgroups', '_hjnovels_index_workgroups',
+                 '_arian_index_workgroups', '_ecobalt_source_frame', '_feature_rows', 'recommend_preferences']:
+        monkeypatch.setattr(cat, name, forbidden)
+    monkeypatch.setattr(world, 'recommend_preferences', forbidden)
+    result = combined.similar_works(identity)
+    assert result['mode'] == 'insufficient_evidence' and result['classification_scope'] == 'publisher_group'
+    assert not world.calls
+    (env['root'] / 'coverage' / 'index.html').write_bytes(b'changed own SB index witness')
     with pytest.raises(ValueError):
         combined.similar_works(identity)
 
