@@ -4,7 +4,7 @@
 
 ## 現在使えるもの
 
-以下は2026年10月24日の作業ブランチで確認した値です。ローカルの試作で、最終監査・利用量集計・推薦画面・実HTTPの確認を完了しています。2万分類版の両OS CIとmain反映は未完了です。mainには前段階の1万分類版を[PR #28](https://github.com/ayutaz/recommend-book/pull/28)で反映済みです。
+以下は2026年10月24日の作業ブランチで確認した値です。ローカルの試作で、最終監査・利用量集計・推薦画面・実HTTPの確認を完了しています。2万分類版の[CI](https://github.com/ayutaz/recommend-book/actions/runs/40093412432)はUbuntu・Windowsとも成功し、mainへの反映が残っています。mainには前段階の1万分類版を[PR #28](https://github.com/ayutaz/recommend-book/pull/28)で反映済みです。
 
 | 項目 | 状況 |
 |---|---|
@@ -40,20 +40,17 @@ uv run python scripts/serve_scale_catalogue_v1.py --database data/autonomous-nex
 
 ## ここから進めること
 
-実行中の計画は[v20](docs/autonomous-next-phase-plan-v20.md)、現在地と残作業は[2万分類の到達状況](docs/scale-classification-v4.md)にまとめています。2万作品の分類・最終監査・利用量集計と、拡張後の実HTTP・推薦画面は確認済みです。最終実装の両OS CIとmain反映が残っています。
+最新の計画は[v21](docs/autonomous-next-phase-plan-v21.md)、現在地は[2万分類の到達状況](docs/scale-classification-v4.md)にまとめています。依頼された18:01の計画1〜3は完了しました。新たな不具合や変更がなければ同じ分類・監査・画面確認を繰り返しません。
 
-依頼された18:01の計画1〜3（残り7作品の追加、検証準備、2万作品の監査・動作確認）は完了しました。同計画4の最終CI・main反映は後続工程です。
-
-1. 過去の分類証跡の検証に必要な旧CLIを、hashが一致する実行ファイルとして別に保存し、検証経路へ接続済みです。
-2. 2万作品の分類・審査・用途条件・DB行と、追加分の利用量集計は完了しました。新しい変更や不具合がなければ同じ監査・画面確認を繰り返しません。
-3. 結果を文書化してコミット・pushし、最終実装の両OS CIを確認してmainへ反映します。反映用`b4464aa`のCIは実行待ちです。
-4. 2万作品の検証・反映後は、無料で使える未処理資料から3万作品、続いて10万作品以上へ差分拡張します。
+1. CI成功済みの2万分類版を、[PR #30](https://github.com/ayutaz/recommend-book/pull/30)からmainへ反映します。現在はdraftです。
+2. 本当に未処理で用途条件と作品対応が成立する資料を一度整理し、日本語などの不足を優先します。
+3. 既存2万分類を保持して3万作品、続いて5万・10万作品以上へ差分拡張します。一般公開・商用提供は用途条件と公開構成が成立した段階で進めます。
 
 既存履歴と確実に結び付く範囲で評価し、追加の試読・採点・履歴入力は依頼しません。
 
 データ購入・外部委託・有料APIへの切替は行わず、無料公開資料と既存のCodex CLIを使います。データのAI入力・表示・再配布・商用利用条件は資料と用途ごとに管理します。
 
-- [次の実行計画：不足を補う詳細分類2万作品と利用準備](docs/autonomous-next-phase-plan-v20.md)
+- [次の実行計画：2万分類の反映と3万作品への差分拡張](docs/autonomous-next-phase-plan-v21.md)
 - [詳細分類2万作品への実行状況と残作業](docs/scale-classification-v4.md)
 - [品質評価仕様](docs/quality-evaluation-protocol-v1.md)
 - [初期設計](docs/world-novel-dataset-plan.md)

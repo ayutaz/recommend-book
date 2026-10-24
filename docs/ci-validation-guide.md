@@ -2,7 +2,14 @@
 
 ## 作業ブランチの検証状況（2026-10-24）
 
-現在の計画・分類件数・稼働状況は[2万分類への実行状況](scale-classification-v4.md)を参照する。以下の過去のCI成功を、拡張中の作業ブランチの成功と読み替えない。
+最終実装`b4464aac32a4d56e89c120c99ad926c9b176c824`の[run 40093412432](https://github.com/ayutaz/recommend-book/actions/runs/40093412432)はUbuntu・WindowsのPython 3.14で成功した。lock確認・依存導入・fixture試験を両OSで通過し、2026-10-24 22:47 JSTに終了した。
+
+| OS | fixture試験の結果 | pytest実時間 |
+|---|---|---:|
+| Ubuntu | 2,690 passed・7 skipped | 68.91秒 |
+| Windows | 2,691 passed・6 skipped | 368.20秒 |
+
+以後の差分はMarkdownのみで、実装・試験・依存・workflowはCI対象と同じである。文書更新のために同じCIを追加しない。現在の計画・分類件数・main未反映の状況は[2万分類の実行状況](scale-classification-v4.md)を参照する。以下は修正とCIの履歴であり、過去の成功を最新実装の成功へ読み替えない。
 
 失敗内容まで確認した[run 40060754593](https://github.com/ayutaz/recommend-book/actions/runs/40060754593)の対象は `1e5216fa88a2f917e32a64f42091e948256acc3a`。Ubuntu・WindowsのPython 3.14で、次の2試験がGit管理外ファイルの不在により失敗した。
 
@@ -21,7 +28,7 @@
 
 分類失敗0でも表示特徴の採用率で停止した区間を、認証済みの停止gate・隔離条件・件数一致を保って別集計する修正`12f2c84915de9cd210d8e9ad07c6c1c95ac75c59`をpushした。集計関連22試験と実際の利用量集計は成功し、このrunは未実行の待機中に取消し、下記の反映用commitへ切り替えた。固定済みv1・v2集計コードと過去の証跡は変更していない。
 
-反映用ブランチの`b4464aac32a4d56e89c120c99ad926c9b176c824`は、検証結果を含む`5a22c94`とGit treeが完全一致する。元の履歴は別に保存し、実装・試験・データのbytesは変更していない。このcommitに対する[run 40093412432](https://github.com/ayutaz/recommend-book/actions/runs/40093412432)をworkflow dispatchで一組だけ実行し、現在は実行待ち。以後の文書差分では全CIを追加しない。
+反映用ブランチの`b4464aac32a4d56e89c120c99ad926c9b176c824`は、検証結果を含む`5a22c94`とGit treeが完全一致する。元の履歴は別に保存し、実装・試験・データのbytesは変更していない。このcommitに対するrun 40093412432をworkflow dispatchで一組だけ実行し、冒頭のとおり両OSで成功した。以後の文書差分では全CIを追加しない。
 
 先行する監査API接続修正後の関連42試験、実DBの採用済み117区間のcontrol検証、分類・台帳・推薦・archive関連70試験、archive・監査・利用量33試験、監査の4並列制御2試験も各時点で成功している。重複する試験があるため、これらを足した値を全件試験数としない。2万作品の実監査は221 manifest・追加117区間の採用条件を照合してexit 0で完了し、[結果](scale-catalogue-v4.md)へ記録した。これを両OSのfixture CI成功とは分ける。
 

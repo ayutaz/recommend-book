@@ -1,14 +1,14 @@
-# ToC候補 v1（v20 stage 4 前の更新）
+# ToC候補 v1（2万分類完了後のローカル利用状況）
 
-更新: 2026-10-23（JST）。公式条件の確認日は2026-10-22のまま。
+更新: 2026-10-24（JST）。公式条件の確認日は2026-10-22のまま。今回は作業結果と次の計画を反映し、新しい許諾判断は行っていない。
 
-これは、v20 stage 4 に向けた利用条件の候補表である。公開版の利用規約や公開準備完了の判定ではない。現在の公開構成は未デプロイで、20,000分類完了後に評価と内容を更新する。
+これは、ローカル試作からToC提供へ進むための利用条件の候補表である。公開版の利用規約や公開準備完了の判定ではない。2万作品の分類・監査・推薦動作確認と両OS CIは完了し、main反映が残っている。公開構成は未デプロイである。次の工程は[計画v21](autonomous-next-phase-plan-v21.md)を参照する。
 
 ## 対象と前提
 
 検索・詳細分類・推薦画面で扱う product data と、分類に入力する source data を分ける。ライセンス、サービス条件、適用法、プロジェクトの採用条件も分けて記録する。`unknown` は拒否ではないが、用途に対応する受領証がないものを許可済みとは扱わない。本文、画像、音声、レビュー、人物の個人情報を、書誌メタデータの許可から推定しない。
 
-以下で参照する v19 完了時の保存値は、検索可能作品 100,368、資料ジャンル候補 26,079、詳細分類済みの異なる作品 10,000、表示可能な詳細特徴あり 9,375 である。拡張中の最新件数は[2万分類への実行状況](scale-classification-v4.md)で管理する。いずれも ToC の許諾済み作品数を意味しない。
+現在の作業ブランチは検索可能100,370作品、詳細分類20,000作品、表示特徴あり18,456作品で、[結果文書](scale-catalogue-v4.md)に最終監査・利用量・実HTTP・画面の確認範囲をまとめた。以下で参照するv19の保存値（検索可能100,368、資料ジャンル候補26,079、詳細分類10,000、表示特徴あり9,375）は前段階の記録である。いずれもToCの許諾済み作品数を意味しない。
 
 ## 目的別の候補
 
@@ -32,7 +32,7 @@ local / free operation は、取得元のライセンス、依存ライブラリ
 
 保存先はローカル台帳の `read_status` table である。この持ち出しと削除は、既存335評価、好きな作品、推薦条件、全設定をまとめて扱う機能ではない。好きな作品と推薦条件は現在の画面内での一時保持である。利用手順は[README](../README.md#ローカルで開く)を参照。
 
-確認記録は `data/autonomous-next-v3/scale-20000-classifications-v1/stage3/history-process-restart-v1/report.json` と、同 `stage3/history-browser-download-v1/report.json` に保存した。両試験は外部通信・モデル呼出し0である。2万分類時の再確認では入口と履歴管理モジュールのhashが一致し、画面のPythonハンドラーと持ち出し・削除・読書状態変更のJavaScriptも同一だった。画面ファイル全体は検索カードの説明文が変わっており、全体のhashが同一とはしない。対応は `stage3/final20000-http-v1/history-implementation-continuity.json` に記録した。2万分類での推薦・作品詳細・出典表示と履歴JSONの実HTTP確認も完了し、全体の最終監査は実行中である。
+確認記録は `data/autonomous-next-v3/scale-20000-classifications-v1/stage3/history-process-restart-v1/report.json` と、同 `stage3/history-browser-download-v1/report.json` に保存した。両試験は外部通信・モデル呼出し0である。2万分類時の再確認では入口と履歴管理モジュールのhashが一致し、画面のPythonハンドラーと持ち出し・削除・読書状態変更のJavaScriptも同一だった。画面ファイル全体は検索カードの説明文が変わっており、全体のhashが同一とはしない。対応は `stage3/final20000-http-v1/history-implementation-continuity.json` に記録した。2万分類での推薦・作品詳細・出典表示と履歴JSONの実HTTP確認、全体の最終監査は完了した。
 
 ## v19 最終成果物で確認できる Wikipedia 抜粋の範囲
 
@@ -57,21 +57,20 @@ cover image、novel full text、未審査の段落はこの receipt の範囲に
 - `data/autonomous-next-v3/scale-100000-v1/preference-ui-final-v1.json`: 100,368件表示、10,000件分類済み、9,375件 feature-bearing、推薦30件、30件すべて source credits・未校正 warning、画面目視確認済み。個人の品質改善や独立正解率は確認していない。
 - `data/autonomous-next-v3/scale-100000-v1/audit/recommendation-http-after-projection-v2.json`: theme weight 0 / 2 の2リクエストが HTTP 200、各30件。先頭項目にも Wikipedia revision、CC BY-SA、screened-paragraphs locator がある。
 
-## v20 stage 4 の評価状態
+## 2万分類完了時の評価状態
 
 ここでは、既存335評価の保存値と、v19完了時の10,000 native artifact の link fields を分けて扱う。`data/autonomous-next-v3/evaluation/phase15-history-v1/report.json` と `data/autonomous-next-v3/evaluation/phase15-independent-reference-v1/report.json` の保存値は、owner observation 335、既存 content-connected 2（2/335、0.597%）、new evaluation-ready sources 0、new gold pairs 0 である。一方、v19完了時の stats artifact は `bibliographic_history_links=0`、`content_history_links=0` である。両者は同じ母数でも同じ測定ではない。
 
-v19 追加分から、上記の保存成果物を範囲・source field・個別 relation evidence まで確認したが、新しい authoritative book correspondence は**確認できなかった**。これは「v19 以降の最終差分が0」とする判定ではない。20,000分類が完了し、現在の全対象と新しい対応根拠を差分評価するまで、stage 4 の fresh denominator と最終 delta は **pending** とする。
+2万分類完了後の追加1万作品との差分照合も完了した。既存335評価はすべて作品範囲の確証不足で保留となり、新台帳への確実な対応は0件、推薦比較の母数は0である。記録は`data/autonomous-next-v3/scale-20000-classifications-v1/stage4-history-delta-v1/report.json`に保存した。従来の内容接続2件を新台帳の接続へ加算しない。
 
-したがって、資料ジャンルだけと内容特徴の比較、独立 accuracy、precision / recall / F1、identity quality、confidence calibration は未測定である。title-only match、翻訳・版・巻・シリーズの類推、LLM の仮ラベルを gold や correspondence に昇格しない。20,000分類後に新しい一次資料と作品関係・著者・識別子等の根拠がある対象だけを個別再照合し、作品・翻訳・著者・シリーズをまたぐ leakage と denominator を記録する。
+したがって、本人向け推薦改善は評価不能で、独立accuracy、precision / recall / F1、identity quality、confidence calibrationも未測定である。title-only match、翻訳・版・巻・シリーズの類推、LLMの仮ラベルをgoldやcorrespondenceに昇格しない。新しい一次資料と作品関係・著者・識別子等の根拠が得られた対象だけ個別に照合し、評価母数が成立した場合に漏洩を確認する。根拠が変わらない335件の全件再照合は繰り返さない。
 
 ## 次に更新する確認
 
-1. 20,000分類の各追加行について、source kind、source condition path + SHA、入力範囲、raw / identity / schema 監査を確認する。
-2. Wikidata 構造化 metadata、個別採用済み Wikipedia 抜粋、未審査の画像・全文を実データ上で分離する。
-3. ローカルの読書状態の持ち出しと合成データでの再起動・削除は確認済み。持ち出し対象の範囲は上記を維持し、2万分類完了後の推薦・画面確認を行う。
-4. 将来配布する場合は、対象のコード、依存ライブラリ、分類データ、source credits、利用者入力経路を release manifest に固定する。現在のローカル利用準備と配布・一般公開は区別する。
-5. 実際の公開構成が成立するまで、一般公開・商用提供・「2万作品が公開可能」といった主張をしない。
+1. 2万分類の追加行の原資料・用途条件・入力範囲・作品対応・分類証跡は最終監査済み。次の差分拡張でも同じ区別と根拠を保持する。
+2. 読書状態の持ち出し、合成データでの再起動・削除と2万分類時の推薦・画面は確認済み。関係する変更がなければ同じ確認を繰り返さない。
+3. 将来配布するコード、依存ライブラリ、分類データ、source credits、利用者入力経路をrelease manifestへ固定する。現在のローカル利用準備と配布・一般公開は区別する。
+4. 実際の公開構成と用途条件が成立するまで、一般公開・商用提供・「2万作品が公開可能」といった主張をしない。
 
 ## 現行の公式条件
 
@@ -84,7 +83,8 @@ v19 追加分から、上記の保存成果物を範囲・source field・個別 
 
 ## 参照した保存成果物
 
-- `docs/autonomous-next-phase-plan-v20.md`
+- `docs/autonomous-next-phase-plan-v21.md`（次の計画。固定済みv20は保持）
+- `docs/scale-catalogue-v4.md`（2万分類の最終結果と証跡の位置）
 - `docs/source-rights-review-scope-v3.md`
 - `docs/personal-recommendation-current-assessment-v1.md`
 - `data/autonomous-next-v3/scale-100000-v1/classification-exports-v3/scale100k-content-5001-5100-v8/manifest.json`
