@@ -511,7 +511,7 @@ def verify_publisher_references(provider, manifest_path, sha256):
     """Return minimum bibliographic references from hash-pinned local evidence.
 
     Providers are ``earthstar``, ``tobooks``, ``gagaga``, ``kodansha``,
-    ``hifumi`` and ``overlap``. No result asserts
+    ``hifumi``, ``overlap`` and ``futaba``. No result asserts
     edition identity or story-series identity. Gagaga's unpinned private roster
     is never read; its manifest and raw sources are the entire replay contract.
     """
@@ -524,6 +524,9 @@ def verify_publisher_references(provider, manifest_path, sha256):
     if provider == 'overlap':
         from .light_novel_overlap_references_v1 import verify_overlap_references
         return verify_overlap_references(manifest_path, sha256)
+    if provider == 'futaba':
+        from .light_novel_futaba_references_v1 import verify_futaba_references
+        return verify_futaba_references(manifest_path, sha256)
     if provider not in {'earthstar', 'tobooks', 'gagaga'}:
         raise ValueError('unsupported publisher reference provider')
     path = Path(manifest_path).resolve()

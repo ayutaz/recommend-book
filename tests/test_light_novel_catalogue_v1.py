@@ -867,7 +867,8 @@ def publisher_edition_v2(edition_bundle):
 
     def build(*, title='主書名 : 副書名', volume='3', official_title='主書名３ 副書名',
               imprint='角川スニーカー文庫', label='角川スニーカー文庫', label_id=339,
-              publisher='KADOKAWA', authority=True, literal='著者 著', extra='', ndc='913.6', publisher_agent=False):
+              publisher='KADOKAWA', authority=True, literal='著者 著', extra='', ndc='913.6', publisher_agent=False,
+              dct_title=None):
         record = json.loads(json.dumps(template))
         raw = Path(record['provenance']['raw_path'])
         url = record['source_url']
@@ -877,7 +878,7 @@ def publisher_edition_v2(edition_bundle):
         xml = f'''<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
           xmlns:d="http://purl.org/dc/terms/" xmlns:c="http://purl.org/dc/elements/1.1/"
           xmlns:n="http://ndl.go.jp/dcndl/terms/" xmlns:f="http://xmlns.com/foaf/0.1/">
-          <n:BibResource rdf:about="{url}#material"><d:title>{escape(title + ('. ' + volume if volume else ''))}</d:title>
+          <n:BibResource rdf:about="{url}#material"><d:title>{escape(dct_title if dct_title is not None else title + ('. ' + volume if volume else ''))}</d:title>
           <c:title><rdf:Description><rdf:value>{escape(title)}</rdf:value></rdf:Description></c:title>
           {('<n:volume>' + escape(volume) + '</n:volume>') if volume else ''}{creator}
           {('<c:creator>' + escape(literal) + '</c:creator>') if literal else ''}
@@ -1022,6 +1023,177 @@ def test_publisher_edition_v3_contents_and_unapproved_writer_roles_remain_held(p
     for role in ('Author', '編者', 'イラスト'):
         book['credits'][0]['role'] = role
         assert cat._publisher_edition_match('kadokawa', book, record, {}) is None
+
+
+def own_part_title(value='完全巻題', *, description_extra='', attributes=''):
+    return ('<n:partInformation' + attributes + '><rdf:Description>'
+        '<d:title>' + value + '</d:title>' + description_extra + '</rdf:Description></n:partInformation>')
+
+
+@pytest.mark.parametrize('volume', ['3', 'ep.5', '不可解02', 'Logic.5'])
+def test_kadokawa_v4_composes_only_the_unique_own_part_information_title(publisher_edition_v2, volume):
+    cat, record, book = publisher_edition_v2(title='正式主題', volume=volume,
+        official_title='正式主題' + volume + ' 完全巻題', extra=own_part_title())
+    cache = {}
+    parts = cat._edition_primary_bibliographic_parts(record, cache)
+    assert [r['value'] for r in parts['titles']] == ['正式主題. ' + volume, '正式主題']
+    assert parts['own_part_information_count'] == 1
+    assert parts['own_part_information_structure_valid'] is True
+    part = parts['own_part_information_titles'][0]
+    assert part['value'] == '完全巻題'
+    assert '/{http://ndl.go.jp/dcndl/terms/}partInformation[' in part['part_information_locator']
+    assert part['description_locator'] == part['part_information_locator'] + '/{http://www.w3.org/1999/02/22-rdf-syntax-ns#}Description[1]'
+    assert part['locator'] == part['description_locator'] + '/{http://purl.org/dc/terms/}title[1]'
+    proof = cat._publisher_edition_match('kadokawa', book, record, cache)
+    assert proof['rule_version'] == 'publisher-ndl-edition-confirmation-v4'
+    assert proof['scope'] == 'edition_only'
+    title = proof['title_match']
+    assert title['main'] == '正式主題' and title['volume'] == volume
+    assert title['part_information_title'] == part
+    assert title['composed_title'] == '正式主題' + volume + '完全巻題'
+    assert title['scope'] == 'own_primary_and_unique_contained_part_title_to_official_edition_title'
+    assert part['locator'] in title['locators']
+    assert parts['titles'][0]['locator'] in title['locators']
+    assert parts['titles'][1]['locator'] in title['locators']
+    assert parts['volume']['locator'] in title['locators']
+    assert not proof['part_title_is_volume_title_asserted']
+    assert not proof['product_sku_identity_asserted']
+    assert not proof['original_work_identity_asserted']
+    assert not proof['story_series_identity_asserted']
+
+
+@pytest.mark.parametrize('extra', [
+    own_part_title() + own_part_title('別の短編'),
+    own_part_title() * 7,
+    '<d:tableOfContents>' + own_part_title() + '</d:tableOfContents>',
+    '<d:hasPart><n:BibResource rdf:about="https://example.com/other">' + own_part_title() + '</n:BibResource></d:hasPart>',
+    own_part_title(attributes=' rdf:resource="https://example.com/other"'),
+    '<n:partInformation><rdf:Description rdf:about="https://example.com/other"><d:title>完全巻題</d:title></rdf:Description></n:partInformation>',
+    '<n:partInformation><rdf:Description><d:title>完全巻題</d:title></rdf:Description><rdf:Description><d:title>別題</d:title></rdf:Description></n:partInformation>',
+    own_part_title(description_extra='<d:title>別題</d:title>'),
+    '<n:partInformation><rdf:Description><d:tableOfContents><d:title>完全巻題</d:title></d:tableOfContents></rdf:Description></n:partInformation>',
+    '<n:partInformation><rdf:Description><c:title>完全巻題</c:title></rdf:Description></n:partInformation>',
+    '<d:partInformation><rdf:Description><d:title>完全巻題</d:title></rdf:Description></d:partInformation>',
+    '<n:partInformation><rdf:Description><d:title rdf:resource="https://example.com/other">完全巻題</d:title></rdf:Description></n:partInformation>',
+    '<n:partInformation><rdf:Description><d:title><n:BibResource><d:title>完全巻題</d:title></n:BibResource></d:title></rdf:Description></n:partInformation>',
+    '<n:partInformation>不明な追加語<rdf:Description><d:title>完全巻題</d:title></rdf:Description></n:partInformation>',
+    '<n:partInformation><rdf:Description>不明な追加語<d:title>完全巻題</d:title></rdf:Description></n:partInformation>',
+    '<n:partInformation><rdf:Description><d:title>完全巻題</d:title>不明な追加語</rdf:Description></n:partInformation>',
+])
+def test_kadokawa_v4_holds_multiple_nested_external_and_untyped_part_titles(publisher_edition_v2, extra):
+    cat, record, book = publisher_edition_v2(title='正式主題', official_title='正式主題３ 完全巻題', extra=extra)
+    assert cat._publisher_edition_match('kadokawa', book, record, {}) is None
+
+
+@pytest.mark.parametrize('official', ['正式主題２ 完全巻題', '正式主題３', '正式主題 完全巻題',
+    '正式主題３ 別の巻題', '正式主題３ 完全巻題 特装版', '別主題３ 完全巻題'])
+def test_kadokawa_v4_never_drops_title_words_volume_or_edition_markers(publisher_edition_v2, official):
+    # An exact old primary title remains an old success, so use a non-primary
+    # bare-volume variant for this fallback-specific missing-word negative.
+    cat, record, book = publisher_edition_v2(title='正式主題', official_title=official, extra=own_part_title())
+    proof = cat._publisher_edition_match('kadokawa', book, record, {})
+    if official == '正式主題３':
+        assert proof['rule_version'] != 'publisher-ndl-edition-confirmation-v4'
+    else:
+        assert proof is None
+
+
+@pytest.mark.parametrize('change', ['missing_volume', 'alternate_dc_title', 'alternate_dct_title',
+    'wrong_publisher', 'sales_only_publisher', 'nonfiction', 'foreign_language', 'wrong_isbn',
+    'electronic', 'unknown_writer', 'Author', 'other_provider', 'wrong_imprint'])
+def test_kadokawa_v4_keeps_all_existing_edition_gates(publisher_edition_v2, change):
+    options = dict(title='正式主題', official_title='正式主題３ 完全巻題', extra=own_part_title())
+    if change == 'missing_volume': options['volume'] = None
+    elif change == 'alternate_dc_title': options['extra'] += '<c:title>別の主題</c:title>'
+    elif change == 'alternate_dct_title': options['extra'] += '<d:title>別の主題. 3</d:title>'
+    elif change == 'wrong_publisher': options['publisher'] = '富士見書房'
+    elif change == 'sales_only_publisher':
+        options['extra'] += '<d:publisher><f:Agent><f:name>KADOKAWA</f:name><d:description>発売</d:description></f:Agent></d:publisher>'
+    elif change == 'nonfiction': options['ndc'] = '726.1'
+    elif change == 'foreign_language': options['extra'] += '<d:language>eng</d:language>'
+    elif change == 'unknown_writer': options.update(authority=False, literal='著者 イラスト')
+    elif change == 'wrong_imprint': options['imprint'] = '別レーベル'
+    cat, record, book = publisher_edition_v2(**options)
+    if change == 'foreign_language': record['languages'] = []
+    provider = 'kadokawa'
+    if change == 'wrong_isbn': book['isbn'] = '9784041173701'
+    elif change == 'electronic': book['product_form_id'] = 13
+    elif change == 'Author': book['credits'][0]['role'] = 'Author'
+    elif change == 'other_provider': provider = 'shueisha-dx'
+    assert cat._publisher_edition_match(provider, book, record, {}) is None
+
+
+def test_kadokawa_v4_unknown_authority_stays_unknown_and_fantasia_pair_stays_edition_scoped(publisher_edition_v2):
+    cat, record, book = publisher_edition_v2(title='正式主題', official_title='正式主題３ 完全巻題',
+        authority=False, extra=own_part_title(), imprint='富士見ファンタジア文庫', label='ファンタジア文庫', label_id=344)
+    proof = cat._publisher_edition_match('kadokawa', book, record, {})
+    assert proof['rule_version'].endswith('-v4')
+    assert proof['authors'][0]['authority_status'] == 'unknown'
+    assert proof['imprint_match']['scope'] == 'this_isbn_edition_only'
+    book['official_label_id'] = 330
+    assert cat._publisher_edition_match('kadokawa', book, record, {}) is None
+
+
+def test_kadokawa_v4_space_volume_suffix_is_bound_by_own_dc_and_literal_volume(publisher_edition_v2):
+    cat, record, book = publisher_edition_v2(title='正式主題!?', dct_title='正式主題!? 3',
+        official_title='正式主題!?３ 完全巻題', extra=own_part_title())
+    proof = cat._publisher_edition_match('kadokawa', book, record, {})
+    assert proof['rule_version'].endswith('-v4')
+    assert proof['title_match']['source_value'] == '正式主題!? 3'
+    assert proof['title_match']['volume'] == '3'
+
+
+@pytest.mark.parametrize('complete', ['正式主題. 2', '正式主題 = English title. 3',
+    '正式主題 : 別の副題. 3', '別の主題. 3', '正式主題'])
+def test_kadokawa_v4_own_dc_main_dct_and_explicit_volume_must_agree(publisher_edition_v2, complete):
+    cat, record, book = publisher_edition_v2(title='正式主題', dct_title=complete,
+        official_title='正式主題３ 完全巻題', extra=own_part_title())
+    assert cat._publisher_edition_match('kadokawa', book, record, {}) is None
+
+
+def test_kadokawa_v4_cannot_hide_a_duplicate_own_volume(publisher_edition_v2):
+    cat, record, book = publisher_edition_v2(title='正式主題', official_title='正式主題３ 完全巻題',
+        extra=own_part_title() + '<n:volume>3</n:volume>')
+    assert cat._publisher_edition_match('kadokawa', book, record, {}) is None
+
+
+def test_kadokawa_v4_pure_title_helper_does_not_read_files(publisher_edition_v2, monkeypatch):
+    from recommend_book.light_novel_kadokawa_parts_match_v1 import match_unique_own_part_information_title
+    cat, record, book = publisher_edition_v2(title='正式主題', official_title='正式主題３ 完全巻題', extra=own_part_title())
+    parts = cat._edition_primary_bibliographic_parts(record, {})
+    monkeypatch.setattr('builtins.open', lambda *args, **kwargs: pytest.fail('unexpected I/O'))
+    assert match_unique_own_part_information_title(parts, book['title']) is not None
+    parts['own_part_information_titles'][0]['locator'] = parts['titles'][0]['locator']
+    assert match_unique_own_part_information_title(parts, book['title']) is None
+
+
+def test_v4_optional_parts_cannot_replace_old_v1_v2_v3_proofs(publisher_edition_v2, monkeypatch):
+    from recommend_book import light_novel_kadokawa_parts_match_v1 as matcher
+    monkeypatch.setattr(matcher, 'match_unique_own_part_information_title',
+        lambda *args: pytest.fail('new fallback must not replace an old proof'))
+    for title, official, version in [('主書名', '主書名', 'v1'),
+        ('主書名 : 副書名', '主書名３ 副書名', 'v2'), ('主書名 : 副書名', '副書名 主書名３', 'v3')]:
+        cat, record, book = publisher_edition_v2(title=title, volume=None if version=='v1' else '3',
+            official_title=official, extra=own_part_title())
+        assert cat._publisher_edition_match('kadokawa', book, record, {})['rule_version'].endswith(version)
+
+
+def test_existing_v3_complete_proof_is_unchanged(publisher_edition_v2):
+    cat, record, book = publisher_edition_v2(official_title='副書名 主書名３')
+    base = 'records[1]/recordData/dcndl:BibResource[@rdf:about=' + record['source_url'] + '#material]'
+    assert cat._publisher_edition_match('kadokawa', book, record, {}) == {
+        'rule_version':'publisher-ndl-edition-confirmation-v3','scope':'edition_only','isbn13':'9784798613161',
+        'matched_ndl_title':'主書名 : 副書名. 3', 'title_match':{
+            'rule':'primary_isbd_reverse_title_and_explicit_volume_v1','source_value':'主書名 : 副書名. 3',
+            'main':'主書名','subtitle':'副書名','volume':'3','locators':[
+                base+'/{http://purl.org/dc/terms/}title[1]',base+'/{http://ndl.go.jp/dcndl/terms/}volume[3]']},
+        'authors':[{'official_credit':'著者','ndl_authorities':['http://id.ndl.go.jp/auth/entity/01234567'],
+            'authority_status':'known','ndl_literal_credit':'著者 著','locator':base+'/{http://purl.org/dc/elements/1.1/}creator[5]'}],
+        'ndl_imprint':'角川スニーカー文庫','official_label':'角川スニーカー文庫',
+        'imprint_match':{'rule':'exact_label','ndl_imprint':'角川スニーカー文庫','official_label':'角川スニーカー文庫'},
+        'ndl_publisher':'KADOKAWA','official_product_form_id':3,'source_raw_sha256':record['provenance']['raw_sha256'],
+        'original_work_identity_asserted':False,'story_series_identity_asserted':False,
+        'sources':[record['source_url'],book['source_url']]}
 
 
 @pytest.fixture
@@ -1412,6 +1584,234 @@ def test_earthstar_supplement_requires_path_sha_pair(publisher_ndl_bundle, kwarg
     cat, _, frames, sha, root, _ = publisher_ndl_bundle
     with pytest.raises(ValueError, match='required together'):
         cat.import_ndl_series_from_publishers(frames, sha, source_root=root, **kwargs)
+
+
+@pytest.fixture
+def bibliography_bundle(publisher_edition_v2, tmp_path, monkeypatch):
+    from recommend_book import light_novel_kodansha_references_v1 as verifier
+    cat, record, _ = publisher_edition_v2(publisher='講談社', imprint='講談社ラノベ文庫')
+    assert cat.import_editions([record])['inserted'] == 1
+    manifest = tmp_path / 'reference-manifest.json'
+    sha = write(manifest, {'fixture': 'formally verified reference rows'})
+    references = [{'publisher_reference_id': 'kodansha-product:0000000001',
+        'source_unit': 'publisher_product_reference', 'source_url': 'https://www.kodansha.co.jp/comic/products/0000000001',
+        'title': '主書名３ 副書名', 'isbn': None, 'publisher': None, 'form': None,
+        'label': '講談社ラノベ文庫', 'label_literals': ['講談社ラノベ文庫'],
+        'credits': [{'role': 'author', 'name': '著者'}], 'official_lightnovel_tag': True,
+        'story_series_asserted': False, 'metadata_conflict': False, 'bibliographic_variants': [],
+        'source_evidence': [{'source_url': 'https://www.kodansha.co.jp/comic/labels/lanove',
+                            'raw_sha256': 'a' * 64, 'locator': 'card[1]'}]}]
+    calls = []
+    def verify(path, expected):
+        calls.append((path, expected))
+        if hashlib.sha256(manifest.read_bytes()).hexdigest() != expected:
+            raise ValueError('fixture source manifest changed')
+        return references
+    monkeypatch.setattr(verifier, 'verify_kodansha_references', verify)
+    return cat, record, references, manifest, sha, calls
+
+
+def test_publisher_bibliographic_correspondence_is_not_same_edition_confirmation(bibliography_bundle):
+    cat, record, _, manifest, sha, _ = bibliography_bundle
+    before = record.copy()
+    result = cat.correlate_publisher_bibliographies('kodansha', manifest, sha)
+    assert result['new_correspondences'] == 1 and result['matched_publisher_references'] == 1
+    row = cat.work_detail('lne:ndl:' + record['id'])
+    assert row['publisher_bibliography_matched'] is True and row['light_novel_confirmed'] is True
+    assert row['bibliographic_correspondence_scope'] == 'publisher_reference_to_ndl_bibliographic_record'
+    assert row['bibliography_source_url'] == 'https://www.kodansha.co.jp/comic/products/0000000001'
+    assert row['admission_status'] == 'publisher_bibliographic_record_verified'
+    assert not row.get('edition_bibliography_confirmed') and 'edition_identity_basis' not in row
+    assert row['original_language'] is None and row['members'] == []
+    assert 'bibliographic_correspondence_evidence' not in row and 'raw_path' not in json.dumps(row)
+    stats = cat.catalogue_stats()
+    assert stats['publisher_bibliographic_correspondences'] == 1 and stats['publisher_confirmed_editions'] == 0
+    assert stats['series'] == stats['individual_works'] == 0
+    with cat._connect() as db:
+        assert db.execute('SELECT count(*) FROM edition_book_confirmations').fetchone()[0] == 0
+        assert json.loads(db.execute('SELECT record_json FROM entries').fetchone()[0]) == before
+    assert cat.correlate_publisher_bibliographies('kodansha', manifest, sha)['unchanged_correspondences'] == 1
+
+
+def test_multiple_publisher_references_do_not_inflate_correspondence_edition_stats(bibliography_bundle):
+    from copy import deepcopy
+    cat, _, refs, manifest, sha, _ = bibliography_bundle
+    other = deepcopy(refs[0])
+    other.update(publisher_reference_id='kodansha-product:0000000002',
+                 source_url='https://www.kodansha.co.jp/comic/products/0000000002')
+    refs.append(other)
+    result = cat.correlate_publisher_bibliographies('kodansha', manifest, sha)
+    assert result['matched_publisher_references'] == 2 and result['new_correspondences'] == 1
+    assert cat.catalogue_stats()['publisher_bibliographic_correspondences'] == 1
+
+
+@pytest.mark.parametrize('change', ['record_sha', 'rehashed_projection', 'kind', 'cached_second_record'])
+def test_bibliographic_correspondence_authenticates_every_selected_record_and_rolls_back(bibliography_bundle, change):
+    cat, record, _, manifest, sha, _ = bibliography_bundle
+    key = 'lne:ndl:' + record['id']
+    with cat._connect() as db:
+        if change == 'record_sha':
+            db.execute('UPDATE entries SET record_sha256=?', ('0' * 64,))
+        elif change == 'kind':
+            db.execute('UPDATE entries SET kind=?', ('work',))
+        elif change == 'cached_second_record':
+            encoded = json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+            db.execute('INSERT INTO entries VALUES(?,?,?,?)', (key + '-second', 'edition', encoded, hashlib.sha256(encoded.encode()).hexdigest()))
+        else:
+            record['source_record']['publisher'] = record['publisher'] = '原資料にない別社'
+            encoded = json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+            db.execute('UPDATE entries SET record_json=?,record_sha256=?', (encoded, hashlib.sha256(encoded.encode()).hexdigest()))
+    with pytest.raises(ValueError):
+        cat.correlate_publisher_bibliographies('kodansha', manifest, sha)
+    with cat._connect() as db:
+        assert db.execute('SELECT count(*) FROM publisher_bibliographic_correspondences').fetchone()[0] == 0
+
+
+def test_bibliographic_correspondence_uses_only_target_raw_and_expires_on_source_change(bibliography_bundle, monkeypatch):
+    from copy import deepcopy
+    from pathlib import Path
+    cat, record, _, manifest, sha, _ = bibliography_bundle
+    other = deepcopy(record)
+    other['source_record']['titles'] = [{'value': '無関係な書名'}]
+    other['provenance']['raw_path'] = str(manifest.parent / 'unrelated-missing-raw')
+    encoded = json.dumps(other, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+    with cat._connect() as db:
+        db.execute('INSERT INTO entries VALUES(?,?,?,?)', ('lne:ndl:unrelated', 'edition', encoded, hashlib.sha256(encoded.encode()).hexdigest()))
+    original = cat._artifact
+    def artifact(path, expected, cache):
+        assert Path(path).name != 'unrelated-missing-raw'
+        return original(path, expected, cache)
+    monkeypatch.setattr(cat, '_artifact', artifact)
+    monkeypatch.setattr(cat, '_rows', lambda **kw: pytest.fail('correlation must not project all entries'))
+    assert cat.correlate_publisher_bibliographies('kodansha', manifest, sha)['new_correspondences'] == 1
+    monkeypatch.undo()
+    manifest.write_text('{}', encoding='utf-8')
+    row = cat.work_detail('lne:ndl:' + record['id'])
+    assert not row.get('publisher_bibliography_matched') and not row['light_novel_confirmed']
+
+
+def test_bibliographic_match_never_downgrades_existing_edition_confirmation_status(bibliography_bundle, monkeypatch):
+    cat, record, _, manifest, sha, _ = bibliography_bundle
+    cat.correlate_publisher_bibliographies('kodansha', manifest, sha)
+    def stronger(rows, stored, cache):
+        for row in rows:
+            row.update(edition_bibliography_confirmed=True, light_novel_confirmed=True,
+                       admission_status='publisher_ndl_edition_verified', edition_identity_basis='existing_isbn_proof')
+    monkeypatch.setattr(cat, '_attach_book_confirmations', stronger)
+    row = cat.work_detail('lne:ndl:' + record['id'])
+    assert row['admission_status'] == 'publisher_ndl_edition_verified'
+    assert row['edition_bibliography_confirmed'] is True and row['edition_identity_basis'] == 'existing_isbn_proof'
+
+
+def test_bibliographic_reference_scope_validation_and_unknown_writer_hold(bibliography_bundle):
+    cat, _, refs, manifest, sha, _ = bibliography_bundle
+    with pytest.raises(ValueError, match='unknown.*reference'):
+        cat.correlate_publisher_bibliographies('kodansha', manifest, sha, reference_ids={'missing'})
+    refs[0]['credits'] = [{'role': 'unknown', 'name': '著者'}]
+    result = cat.correlate_publisher_bibliographies('kodansha', manifest, sha)
+    assert result['new_correspondences'] == 0 and result['candidate_editions_verified'] == 0
+    assert result['held_reference_reasons'] == {'official_writer_role_unknown': 1}
+
+
+def test_rehashed_bibliographic_proof_cannot_claim_a_different_title(bibliography_bundle):
+    cat, record, _, manifest, sha, _ = bibliography_bundle
+    cat.correlate_publisher_bibliographies('kodansha', manifest, sha)
+    with cat._connect() as db:
+        proof = json.loads(db.execute('SELECT proof_json FROM publisher_bibliographic_correspondences').fetchone()[0])
+        proof['matches'][0]['official_title'] = '原資料にない題'
+        encoded = json.dumps(proof, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+        db.execute('UPDATE publisher_bibliographic_correspondences SET proof_json=?,proof_sha256=?',
+                   (encoded, hashlib.sha256(encoded.encode()).hexdigest()))
+    row = cat.work_detail('lne:ndl:' + record['id'])
+    assert not row.get('publisher_bibliography_matched') and not row['light_novel_confirmed']
+
+
+def test_failed_bibliographic_source_is_verified_once_per_request_not_once_per_binding(tmp_path, monkeypatch):
+    cat = LightNovelCatalogue(tmp_path / 'failure-cache.sqlite')
+    encoded_record = '{}'
+    record_sha = hashlib.sha256(encoded_record.encode()).hexdigest()
+    rows = []
+    with cat._connect() as db:
+        for index in range(10):
+            identity = f'lne:ndl:R100000002-I{index + 1}'
+            db.execute('INSERT INTO entries VALUES(?,?,?,?)', (identity, 'edition', encoded_record, record_sha))
+            proof = {'provider': 'kodansha', 'scope': 'publisher_reference_to_ndl_bibliographic_record',
+                'manifest_path': str(tmp_path / 'failed.json'), 'manifest_sha256': 'a' * 64,
+                'edition_record_sha256': record_sha, 'reference_ids': ['kodansha-product:0000000001'], 'matches': []}
+            encoded = json.dumps(proof, sort_keys=True, separators=(',', ':'))
+            db.execute('INSERT INTO publisher_bibliographic_correspondences VALUES(?,?,?,?)',
+                (identity, 'kodansha', encoded, hashlib.sha256(encoded.encode()).hexdigest()))
+            rows.append({'entry_id': identity, 'entry_kind': 'edition'})
+        stored = db.execute('SELECT * FROM entries').fetchall()
+    calls = []
+    def unavailable(*args):
+        calls.append(args)
+        raise ValueError('source proof unavailable')
+    monkeypatch.setattr(cat, '_publisher_bibliography_references', unavailable)
+    cat._attach_bibliographic_correspondences(rows, stored, {})
+    assert len(calls) == 1 and not any(row.get('publisher_bibliography_matched') for row in rows)
+    cat._attach_bibliographic_correspondences(rows, stored, {})
+    assert len(calls) == 2  # failure is not a persistent or TTL cache
+
+
+def test_catalogue_overview_reuses_one_feature_including_projection_for_both_results(setup_catalogue, monkeypatch):
+    cat, records = setup_catalogue
+    cat.ingest(records)
+    original = cat._rows
+    calls = []
+    def project(**kwargs):
+        calls.append(kwargs)
+        rows = original(**kwargs)
+        if kwargs.get('include_features', True):
+            rows[0]['content_features_adopted'] = True
+            rows[0]['llm_features'] = [{'label_id': 'theme.friendship', 'axis': 'theme', 'label': '友情'}]
+        return rows
+    monkeypatch.setattr(cat, '_rows', project)
+    expected = {'stats': cat.catalogue_stats(), 'facets': cat.catalogue_facets()}
+    calls.clear()
+    assert cat.catalogue_overview() == expected
+    assert len(calls) == 1 and calls[0].get('include_features', True) is True
+    assert expected['stats']['content_feature_series'] == 1
+
+
+def test_catalogue_overview_observes_new_read_status_without_a_persistent_cache(setup_catalogue, monkeypatch):
+    cat, records = setup_catalogue
+    cat.ingest(records)
+    assert cat.catalogue_overview()['stats']['read_status_counts']['read'] == 0
+    cat.set_read_status('lns:wd:Q1', 'read')
+    original = cat._rows
+    calls = []
+    def project(**kwargs):
+        calls.append(kwargs)
+        return original(**kwargs)
+    monkeypatch.setattr(cat, '_rows', project)
+    result = cat.catalogue_overview()
+    assert len(calls) == 1 and result['stats']['read_status_counts']['read'] == 1
+    assert result['stats']['read_status_counts']['unknown'] == 2
+
+
+def test_catalogue_overview_still_reauthenticates_its_source_evidence(setup_catalogue):
+    from pathlib import Path
+    cat, records = setup_catalogue
+    cat.ingest(records)
+    assert cat.catalogue_overview()['stats']['works'] == 3
+    Path(records[0]['provenance']['raw_path']).write_text('{}', encoding='utf-8')
+    with pytest.raises(ValueError, match='SHA'):
+        cat.catalogue_overview()
+
+
+def test_preference_facets_reuse_their_already_validated_projection(setup_catalogue, monkeypatch):
+    cat, records = setup_catalogue
+    cat.ingest(records)
+    original = cat._rows
+    calls = []
+    def project(**kwargs):
+        calls.append(kwargs)
+        return original(**kwargs)
+    monkeypatch.setattr(cat, '_rows', project)
+    result = cat.preference_facets()
+    assert len(calls) == 1 and result['features'] == []
+    assert result['genres'] == [{'qid': 'Q100', 'label': 'ファンタジー', 'count': 3}]
 
 
 def test_explicit_cobalt_member_adds_searchable_series_and_unnumbered_membership(cobalt_member):

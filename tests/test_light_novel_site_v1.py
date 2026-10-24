@@ -72,6 +72,42 @@ def fetch(base, path, payload=None, headers=None):
         return json.load(response)
 
 
+def test_publisher_bibliography_exports_correspondence_without_claiming_edition_identity():
+    row = {'entry_id': 'lne:ndl:R100000002-I1', 'entry_kind': 'edition',
+        'title': 'Test', 'light_novel_confirmed': True,
+        'admission_status': 'publisher_bibliographic_record_verified',
+        'publisher_bibliography_matched': True,
+        'bibliographic_correspondence_scope': 'publisher_reference_to_ndl_bibliographic_record',
+        'bibliography_source_url': 'https://publisher.example/book/1',
+        'bibliographic_correspondence_evidence': {'raw_path': 'PRIVATE-SENTINEL'}}
+    row['members'] = [dict(row)]
+    public = public_work(row)
+    for item in [public, public['members'][0]]:
+        assert item['publisher_bibliography_matched'] is True
+        assert item['bibliographic_correspondence_scope'] == 'publisher_reference_to_ndl_bibliographic_record'
+        assert item['bibliography_source_url'] == 'https://publisher.example/book/1'
+        assert item['admission_status'] == 'publisher_bibliographic_record_verified'
+        assert not item.get('edition_bibliography_confirmed')
+        assert 'edition_identity_basis' not in item
+    assert 'PRIVATE-SENTINEL' not in json.dumps(public)
+
+
+@pytest.mark.parametrize(('kind', 'matched', 'scope'), [
+    ('series', True, 'publisher_reference_to_ndl_bibliographic_record'),
+    ('edition', False, 'publisher_reference_to_ndl_bibliographic_record'),
+    ('edition', 'true', 'publisher_reference_to_ndl_bibliographic_record'),
+    ('edition', True, 'same_product'),
+])
+def test_publisher_bibliography_public_scope_requires_verified_bibliographic_record(kind, matched, scope):
+    row = {'entry_id': 'lne:ndl:R100000002-I1', 'entry_kind': kind,
+        'publisher_bibliography_matched': matched, 'bibliographic_correspondence_scope': scope,
+        'bibliography_source_url': 'file:///PRIVATE-SENTINEL'}
+    public = public_work(row)
+    assert 'publisher_bibliography_matched' not in public
+    assert 'bibliographic_correspondence_scope' not in public
+    assert 'bibliography_source_url' not in public
+
+
 def test_typed_search_detail_similarity_status_and_world_compatibility(site):
     base, catalogue = site
     data = fetch(base, '/api/entries?family=light_novel&entry_kind=series')
@@ -87,6 +123,32 @@ def test_typed_search_detail_similarity_status_and_world_compatibility(site):
     assert fetch(base, '/api/works/Q2')['qid'] == 'Q5357270'
     assert fetch(base, '/api/stats')['light_novel_series'] == 1000
     assert fetch(base, '/api/history/export')['records'][0]['entry_id'] == 'lns:wd:Q5357270'
+
+
+def test_overview_http_publishes_only_safe_counts_and_preference_choices(site, monkeypatch):
+    base, catalogue = site
+    calls = []
+    def overview():
+        calls.append('overview')
+        return {'stats': {'works': 20, 'light_novel_publisher_bibliographic_records': 7,
+                          'raw_path': 'PRIVATE-SENTINEL'},
+                'preference_facets': {'genres': [{'qid': 'Q1', 'label': 'Fantasy', 'count': 3}],
+                    'languages': [{'value': 'ja', 'count': 3}], 'raw_path': 'PRIVATE-SENTINEL'}}
+    monkeypatch.setattr(catalogue, 'catalogue_overview', overview, raising=False)
+    data = fetch(base, '/api/overview')
+    assert calls == ['overview']
+    assert data['stats']['works'] == 20
+    assert data['stats']['light_novel_publisher_bibliographic_records'] == 7
+    assert data['preference_facets']['languages'] == [{'value': 'ja', 'count': 3}]
+    assert data['preference_facets']['genres'][0]['qid'] == 'Q1'
+    assert 'PRIVATE-SENTINEL' not in json.dumps(data)
+
+
+def test_overview_http_supports_catalogues_without_a_combined_operation(site):
+    base, _ = site
+    data = fetch(base, '/api/overview')
+    assert data['stats']['works'] == 20
+    assert data['preference_facets']['languages'] == []
 
 
 @pytest.mark.parametrize(('path', 'kind', 'recommendable', 'expected_calls'), [

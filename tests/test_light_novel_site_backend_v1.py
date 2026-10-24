@@ -310,12 +310,35 @@ def test_world_stats_are_not_inflated_by_series_or_editions(stores):
     assert combined.catalogue_facets()['languages'] == [{'value': 'ja', 'count': 5}]
 
 
+def test_overview_uses_one_light_novel_projection_and_preserves_world_counts(stores, monkeypatch):
+    world, light, combined = stores
+    world_stats = {**world.catalogue_stats(), **world.catalogue_facets()}
+    light_stats, light_facets = light.catalogue_stats(), light.catalogue_facets()
+    calls = []
+    def overview():
+        calls.append('light')
+        return {'stats': light_stats, 'facets': light_facets}
+    monkeypatch.setattr(light, 'catalogue_overview', overview, raising=False)
+    monkeypatch.setattr(world, 'catalogue_stats', lambda: world_stats)
+    monkeypatch.setattr(light, 'catalogue_stats', lambda: pytest.fail('duplicate light stats'))
+    monkeypatch.setattr(light, 'catalogue_facets', lambda: pytest.fail('duplicate light facets'))
+    monkeypatch.setattr(world, 'catalogue_facets', lambda: pytest.fail('duplicate world filters'))
+    result = combined.catalogue_overview()
+    assert calls == ['light']
+    assert result['stats']['works'] == result['stats']['searchable_works'] == 2
+    assert result['stats']['light_novel_series'] == 2
+    assert result['preference_facets']['languages'] == [{'value': 'ja', 'count': 5}]
+    assert result['preference_facets']['native_features'][0]['label_id'] == 'theme.growth'
+
+
 def test_publisher_work_group_statistics_are_separate_from_series_and_world(stores, monkeypatch):
     _, light, combined = stores
     stats = light.catalogue_stats()
-    monkeypatch.setattr(light, 'catalogue_stats', lambda: {**stats, 'publisher_work_groups': 7})
+    monkeypatch.setattr(light, 'catalogue_stats', lambda: {**stats, 'publisher_work_groups': 7,
+                                                         'publisher_bibliographic_correspondences': 11})
     values = combined.catalogue_stats()
     assert values['light_novel_publisher_work_groups'] == 7
+    assert values['light_novel_publisher_bibliographic_records'] == 11
     assert values['light_novel_series'] == 2
     assert values['works'] == values['searchable_works'] == 2
 

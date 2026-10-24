@@ -158,10 +158,25 @@ class UnifiedCatalogue:
     def catalogue_stats(self):
         world = self.world.catalogue_stats()
         light = self.light_novels.catalogue_stats()
+        return self._combined_stats(world, light)
+
+    @staticmethod
+    def _combined_stats(world, light):
         return {**world, 'light_novel_series': light['series'],
                 'light_novel_publisher_work_groups': light.get('publisher_work_groups', 0),
+                'light_novel_publisher_bibliographic_records': light.get('publisher_bibliographic_correspondences', 0),
                 'light_novel_featured_series': light['content_feature_series'],
                 'light_novel_works': light['individual_works'], 'light_novel_editions': light['editions']}
+
+    def catalogue_overview(self):
+        light = self.light_novels.catalogue_overview()
+        world_stats = self.world.catalogue_stats()
+        preference = self.world.preference_facets()
+        world_filters = world_stats if 'genres' in world_stats and 'languages' in world_stats else preference
+        if 'genres' not in world_filters or 'languages' not in world_filters:
+            world_filters = self.world.catalogue_facets()
+        return {'stats': self._combined_stats(world_stats, light['stats']),
+                'preference_facets': {**preference, **_facets(world_filters, light['facets'])}}
 
     def catalogue_facets(self):
         return _facets(self.world.catalogue_facets(), self.light_novels.catalogue_facets())

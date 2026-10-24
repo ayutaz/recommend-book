@@ -96,6 +96,8 @@ def test_preference_facets_accept_backend_native_feature_shape():
         {'axis': 'theme', 'label_id': 'theme.growth', 'label': '成長', 'availability': 'verified_on_demand'},
         {'axis': 'style', 'label_id': 'style.first_person', 'label': '一人称'},
     ]})
+    assert data.pop('genres') == []
+    assert data.pop('languages') == []
     assert data == {'axes': {'theme': [{'label_id': 'theme.growth', 'label': '成長'}],
                              'structure': [], 'protagonist': [], 'atmosphere': []},
                     'coverage_note': '分類体系の選択肢です。作品ごとの採用件数は未集計で、推薦時に個別検証します。'}

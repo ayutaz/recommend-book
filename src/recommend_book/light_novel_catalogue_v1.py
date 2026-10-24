@@ -119,6 +119,10 @@ class LightNovelCatalogue:
                     edition_id TEXT NOT NULL REFERENCES entries(entry_id),provider TEXT NOT NULL,
                     proof_json TEXT NOT NULL,proof_sha256 TEXT NOT NULL,
                     PRIMARY KEY(edition_id,provider));
+                CREATE TABLE IF NOT EXISTS publisher_bibliographic_correspondences(
+                    edition_id TEXT NOT NULL REFERENCES entries(entry_id),provider TEXT NOT NULL,
+                    proof_json TEXT NOT NULL,proof_sha256 TEXT NOT NULL,
+                    PRIMARY KEY(edition_id,provider));
             ''')
 
     @contextmanager
@@ -952,6 +956,8 @@ class LightNovelCatalogue:
         match = self._publisher_edition_match_v2(provider, publisher, edition, cache)
         if match is not None:
             return match
+        if provider == 'kadokawa':
+            return self._publisher_edition_match_v2(provider, publisher, edition, cache, _part_information=True)
         match = self._publisher_edition_match_iris_neo(provider, publisher, edition, cache)
         return match if match is not None else self._publisher_edition_match_iris_neo(provider, publisher, edition, cache, _extended=True)
 
@@ -1149,7 +1155,8 @@ class LightNovelCatalogue:
 
         The outer record has already passed its original provider/raw replay.
         Contents, related records, readings and holding resources supply no
-        title variants or literal writer assertions here.
+        primary title variants or literal writer assertions. Optional own
+        partInformation witnesses remain separate for a bounded KAD path.
         """
         from .ingestion.ndl import DC, DCTERMS, DCNDL, RDF, FOAF, _value_text, _contributor
         source = self._source_with_title_parts(edition, cache)
@@ -1166,6 +1173,8 @@ class LightNovelCatalogue:
         edition_statements = []
         identifiers, publishers, languages, imprints, ndc = [], [], [], [], []
         publisher_agents = []
+        own_part_information_titles, part_information_count = [], 0
+        part_information_valid = True
         for position, child in enumerate(primary):
             locator = base + '/' + child.tag + f'[{position + 1}]'
             value = _value_text(child)
@@ -1175,6 +1184,20 @@ class LightNovelCatalogue:
                 volumes.append({'value': value, 'locator': locator})
             elif child.tag == f'{{{DCNDL}}}edition' and value:
                 edition_statements.append({'value': value, 'locator': locator})
+            elif child.tag == f'{{{DCNDL}}}partInformation':
+                part_information_count += 1
+                if (child.attrib or len(child) != 1 or child[0].tag != f'{{{RDF}}}Description'
+                        or child[0].attrib or len(child[0]) != 1
+                        or child[0][0].tag != f'{{{DCTERMS}}}title'
+                        or child[0][0].attrib or len(child[0][0]) != 0 or not _value_text(child[0][0])
+                        or any((value or '').strip() for value in
+                            (child.text, child[0].text, child[0].tail, child[0][0].tail))):
+                    part_information_valid = False
+                    continue
+                description_locator = locator + f'/{{{RDF}}}Description[1]'
+                own_part_information_titles.append({'value': _value_text(child[0][0]),
+                    'part_information_locator': locator, 'description_locator': description_locator,
+                    'locator': description_locator + f'/{{{DCTERMS}}}title[1]'})
             elif child.tag in {f'{{{DC}}}creator', f'{{{DCTERMS}}}creator'} and value:
                 # A default creator role is insufficient when no authority exists.
                 marked = re.fullmatch(r'(.+?)\s*[\[（(]?\s*(著者|著|原作|作)\s*[\]）)]?', value)
@@ -1211,12 +1234,18 @@ class LightNovelCatalogue:
             'language': languages[0] if len(set(languages)) == 1 else None,
             'series': '; '.join(dict.fromkeys(imprints)) or None,
             'extra': {**source['extra'], 'ndc_codes': ndc}}
-        return {'source': direct_source, 'titles': titles, 'volume': volumes[0] if volumes else None,
+        parts = {'source': direct_source, 'titles': titles, 'volume': volumes[0] if volumes else None,
                 'literal_authors': literal_authors, 'publisher_agents': publisher_agents,
                 'edition_statements': edition_statements,
                 'source_raw_sha256': provenance['raw_sha256']}
+        if part_information_count:
+            parts.update(own_part_information_titles=own_part_information_titles,
+                own_part_information_count=part_information_count,
+                own_part_information_structure_valid=part_information_valid,
+                own_volume_count=len(volumes))
+        return parts
 
-    def _publisher_edition_match_v2(self, provider, publisher, edition, cache):
+    def _publisher_edition_match_v2(self, provider, publisher, edition, cache, *, _part_information=False):
         from .normalization import normalize_isbn
         from .light_novel_ndl_series_v1 import person_key
         # This extension is backed by the finite KADOKAWA book frame only.
@@ -1268,6 +1297,9 @@ class LightNovelCatalogue:
         # Append after ALL old candidates so every v2 success selects its old proof.
         candidates.extend(reverse_candidates)
         title_match = next((proof for value, proof in candidates if title_key(value) == title_key(publisher['title'])), None)
+        if _part_information:
+            from .light_novel_kadokawa_parts_match_v1 import match_unique_own_part_information_title
+            title_match = match_unique_own_part_information_title(parts, publisher['title'])
         if title_match is None:
             return None
         imprint = unicodedata.normalize('NFKC', source.get('series') or '').split(';')[0].strip()
@@ -1299,8 +1331,8 @@ class LightNovelCatalogue:
             if literal:
                 author_match.update(ndl_literal_credit=literal['literal'], locator=literal['locator'])
             matched_authors.append(author_match)
-        version = 'v3' if title_match['rule'] == 'primary_isbd_reverse_title_and_explicit_volume_v1' else 'v2'
-        return {'rule_version': 'publisher-ndl-edition-confirmation-' + version, 'scope': 'edition_only',
+        version = 'v4' if _part_information else 'v3' if title_match['rule'] == 'primary_isbd_reverse_title_and_explicit_volume_v1' else 'v2'
+        proof = {'rule_version': 'publisher-ndl-edition-confirmation-' + version, 'scope': 'edition_only',
                 'isbn13': isbn, 'matched_ndl_title': title_match['source_value'], 'title_match': title_match,
                 'authors': matched_authors, 'ndl_imprint': imprint, 'official_label': publisher['label'],
                 'imprint_match': imprint_match, 'ndl_publisher': source['publisher'],
@@ -1308,6 +1340,10 @@ class LightNovelCatalogue:
                 'source_raw_sha256': parts['source_raw_sha256'],
                 'original_work_identity_asserted': False, 'story_series_identity_asserted': False,
                 'sources': [source['source_url'], publisher['source_url']]}
+        if _part_information:
+            proof.update(confirmed_scope='contained_bibliographic_edition_only',
+                part_title_is_volume_title_asserted=False, product_sku_identity_asserted=False)
+        return proof
 
     def confirm_publisher_editions(self, provider, manifest_path, expected_sha256):
         """Confirm existing NDL editions, without making a work or series."""
@@ -1403,6 +1439,146 @@ class LightNovelCatalogue:
                            confirmation_source_url=book['source_url'], edition_confirmation_evidence=match)
                 if row.get('admission_status') not in ('edition_series_membership_verified', 'publisher_work_group_membership_verified'):
                     row['admission_status'] = 'publisher_ndl_edition_verified'
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+
+    @staticmethod
+    def _publisher_bibliography_references(provider, manifest_path, expected_sha256):
+        if provider == 'kodansha':
+            from .light_novel_kodansha_references_v1 import verify_kodansha_references
+            return verify_kodansha_references(manifest_path, expected_sha256)
+        if provider == 'hifumi':
+            from .light_novel_hifumi_references_v1 import verify_hifumi_references
+            return verify_hifumi_references(manifest_path, expected_sha256)
+        if provider == 'overlap':
+            from .light_novel_overlap_references_v1 import verify_overlap_references
+            return verify_overlap_references(manifest_path, expected_sha256)
+        raise ValueError('unknown publisher bibliographic reference provider')
+
+    def correlate_publisher_bibliographies(self, provider, manifest_path, expected_sha256, *, reference_ids=None):
+        """Connect cards to own bibliography, without an ISBN-edition assertion."""
+        from .light_novel_bibliographic_match_v1 import (
+            SCOPE, candidate_title_keys, match_bibliographic_reference, reference_hold_reason,
+        )
+        references = self._publisher_bibliography_references(provider, manifest_path, expected_sha256)
+        indexed = {row['publisher_reference_id']: row for row in references}
+        if len(indexed) != len(references):
+            raise ValueError('duplicate publisher bibliographic reference')
+        selected = set(indexed) if reference_ids is None else set(reference_ids)
+        if selected - indexed.keys():
+            raise ValueError('unknown publisher bibliographic reference')
+        result = {'publisher_references': len(indexed), 'requested_publisher_references': len(selected),
+                  'candidate_editions_verified': 0, 'new_correspondences': 0, 'updated_correspondences': 0,
+                  'unchanged_correspondences': 0, 'matched_publisher_references': 0,
+                  'held_reference_reasons': {}, 'verification_scope': 'complete_title_candidates_only',
+                  'correspondence_scope': SCOPE}
+        eligible, held = {}, {}
+        for identity in selected:
+            reason = reference_hold_reason(provider, indexed[identity])
+            if reason:
+                held[identity] = reason
+            else:
+                eligible[identity] = indexed[identity]
+        by_title = {}
+        from .light_novel_reference_match_v1 import _key
+        for identity, row in eligible.items():
+            by_title.setdefault(_key(row['title']), set()).add(identity)
+        matched, attempted, cache = set(), set(), {}
+        if eligible:
+            with self._connect() as db:
+                stored = db.execute('SELECT * FROM entries').fetchall()
+            candidates = []
+            for entry in stored:
+                if hashlib.sha256(entry['record_json'].encode()).hexdigest() != entry['record_sha256']:
+                    raise ValueError('stored metadata SHA mismatch')
+                record = json.loads(entry['record_json'])
+                # A changed SQL kind must not conceal a same-title edition.
+                if entry['kind'] != 'edition' and record.get('schema_version') not in {
+                        'light-novel-edition-v1', 'light-novel-edition-bulk-v1'}:
+                    continue
+                identities = {identity for title in candidate_title_keys(record['source_record'])
+                              for identity in by_title.get(title, ())}
+                if identities:
+                    candidates.append((entry, record, identities))
+            with self._connect() as db:
+                for entry, record, identities in candidates:
+                    # EACH selected record is checked, including records sharing
+                    # a cached RDF artifact. A cached raw node is not its proof.
+                    row = self._project_edition(record, cache)
+                    if row['entry_id'] != entry['entry_id'] or row['entry_kind'] != entry['kind']:
+                        raise ValueError('stored typed identity differs')
+                    result['candidate_editions_verified'] += 1
+                    parts = self._edition_primary_bibliographic_parts(record, cache)
+                    attempted.update(identities)
+                    matches = [proof for identity in sorted(identities)
+                               if (proof := match_bibliographic_reference(provider, eligible[identity], parts))]
+                    if not matches:
+                        continue
+                    matched.update(proof['publisher_reference_id'] for proof in matches)
+                    proof = {'provider': provider, 'scope': SCOPE,
+                             'manifest_path': str(Path(manifest_path).resolve()),
+                             'manifest_sha256': expected_sha256,
+                             'edition_record_sha256': entry['record_sha256'],
+                             'reference_ids': [match['publisher_reference_id'] for match in matches],
+                             'matches': matches}
+                    encoded = _json(proof)
+                    digest = hashlib.sha256(encoded.encode()).hexdigest()
+                    previous = db.execute('SELECT proof_sha256 FROM publisher_bibliographic_correspondences '
+                        'WHERE edition_id=? AND provider=?', (entry['entry_id'], provider)).fetchone()
+                    if previous and previous['proof_sha256'] == digest:
+                        result['unchanged_correspondences'] += 1
+                    else:
+                        db.execute('INSERT OR REPLACE INTO publisher_bibliographic_correspondences VALUES(?,?,?,?)',
+                                   (entry['entry_id'], provider, encoded, digest))
+                        result['updated_correspondences' if previous else 'new_correspondences'] += 1
+        for identity in eligible.keys() - matched:
+            held[identity] = ('strict_bibliographic_correspondence_unproved' if identity in attempted
+                              else 'no_complete_title_candidate')
+        for reason in held.values():
+            result['held_reference_reasons'][reason] = result['held_reference_reasons'].get(reason, 0) + 1
+        result.update(matched_publisher_references=len(matched), held_publisher_references=len(held))
+        return result
+
+    def _attach_bibliographic_correspondences(self, rows, stored, cache):
+        from .light_novel_bibliographic_match_v1 import SCOPE, match_bibliographic_reference
+        with self._connect() as db:
+            bindings = db.execute('SELECT * FROM publisher_bibliographic_correspondences').fetchall()
+        indexed = {row['entry_id']: row for row in rows}
+        stored = {row['entry_id']: row for row in stored}
+        documents = {}
+        for binding in bindings:
+            try:
+                identity = binding['edition_id']
+                if identity not in indexed or indexed[identity]['entry_kind'] != 'edition':
+                    continue
+                if hashlib.sha256(binding['proof_json'].encode()).hexdigest() != binding['proof_sha256']:
+                    continue
+                proof = json.loads(binding['proof_json'])
+                if (proof['provider'] != binding['provider'] or proof['scope'] != SCOPE
+                        or proof['edition_record_sha256'] != stored[identity]['record_sha256']
+                        or not proof['reference_ids'] or proof['reference_ids'] != sorted(set(proof['reference_ids']))):
+                    continue
+                key = (proof['provider'], proof['manifest_path'], proof['manifest_sha256'])
+                if key not in documents:
+                    try:
+                        documents[key] = {row['publisher_reference_id']: row
+                            for row in self._publisher_bibliography_references(*key)}
+                    except (OSError, ValueError, KeyError, TypeError):
+                        documents[key] = {}  # request-local failures are memoized too
+                if any(reference not in documents[key] for reference in proof['reference_ids']):
+                    continue
+                edition = json.loads(stored[identity]['record_json'])
+                parts = self._edition_primary_bibliographic_parts(edition, cache)
+                matches = [match_bibliographic_reference(proof['provider'], documents[key][reference], parts)
+                           for reference in proof['reference_ids']]
+                if any(match is None for match in matches) or matches != proof['matches']:
+                    continue
+                row = indexed[identity]
+                row.update(publisher_bibliography_matched=True, bibliographic_correspondence_scope=SCOPE,
+                           bibliography_source_url=matches[0]['official_source_url'], light_novel_confirmed=True)
+                if row.get('admission_status') not in {'edition_series_membership_verified',
+                        'publisher_work_group_membership_verified', 'publisher_ndl_edition_verified'}:
+                    row['admission_status'] = 'publisher_bibliographic_record_verified'
             except (OSError, ValueError, KeyError, TypeError):
                 continue
 
@@ -1710,6 +1886,7 @@ class LightNovelCatalogue:
             rows.append(row)
         self._attach_memberships(rows, stored, cache)
         self._attach_book_confirmations(rows, stored, cache)
+        self._attach_bibliographic_correspondences(rows, stored, cache)
         return rows
 
     @staticmethod
@@ -1826,7 +2003,10 @@ class LightNovelCatalogue:
         return {'entry_id': entry_id, 'work_id': entry_id, 'read_status': status}
 
     def catalogue_facets(self):
-        rows = self._rows(include_features=False)
+        return self._facets_from_rows(self._rows(include_features=False))
+
+    @staticmethod
+    def _facets_from_rows(rows):
         genres = {}
         kinds = {}
         languages = {}
@@ -1850,19 +2030,31 @@ class LightNovelCatalogue:
             for label in row['llm_features']:
                 label_id = label['label_id']
                 features.setdefault(label_id, {**taxonomy.get(label_id, {'label_id': label_id, 'axis': label['axis'], 'label': label.get('label', label_id)}), 'count': 0})['count'] += 1
-        return {**self.catalogue_facets(), 'features': list(features.values()), 'axes': list(AXES),
+        return {**self._facets_from_rows(rows), 'features': list(features.values()), 'axes': list(AXES),
                 'classification_scope': 'series', 'calibrated': False}
 
     def catalogue_stats(self):
+        return self._stats_from_rows(self._rows(), *self._failure_counts())
+
+    def catalogue_overview(self):
+        """Produce both aggregates from one fully authenticated projection."""
         rows = self._rows()
-        counts = {k: sum(r['entry_kind'] == k for r in rows) for k in ('series', 'work', 'edition')}
-        work_groups = sum(r.get('series_identity_basis') == 'publisher_work_group_and_ndl_bibliography' for r in rows)
-        counts['series'] -= work_groups
-        statuses = {s: sum(r['read_status'] == s for r in rows) for s in READ_STATUSES}
+        return {'stats': self._stats_from_rows(rows, *self._failure_counts()),
+                'facets': self._facets_from_rows(rows)}
+
+    def _failure_counts(self):
         with self._connect() as db:
             failures = db.execute('SELECT count(*) FROM ingestion_failures').fetchone()[0]
             unresolved_failures = db.execute('''SELECT count(DISTINCT f.source_id) FROM ingestion_failures f
                 WHERE NOT EXISTS(SELECT 1 FROM entries e WHERE json_extract(e.record_json,'$.id')=f.source_id)''').fetchone()[0]
+        return failures, unresolved_failures
+
+    @staticmethod
+    def _stats_from_rows(rows, failures, unresolved_failures):
+        counts = {k: sum(r['entry_kind'] == k for r in rows) for k in ('series', 'work', 'edition')}
+        work_groups = sum(r.get('series_identity_basis') == 'publisher_work_group_and_ndl_bibliography' for r in rows)
+        counts['series'] -= work_groups
+        statuses = {s: sum(r['read_status'] == s for r in rows) for s in READ_STATUSES}
         content = sum(r['entry_kind'] == 'series' and r.get('series_identity_basis') != 'publisher_work_group_and_ndl_bibliography'
                       and r['content_features_adopted'] for r in rows)
         source = sum(r['entry_kind'] == 'series' and r.get('series_identity_basis') != 'publisher_work_group_and_ndl_bibliography'
@@ -1876,6 +2068,9 @@ class LightNovelCatalogue:
                     r.get('relation_resolution') == 'publisher_work_group_membership_verified' for r in rows),
                 'confirmed_light_novel_editions': sum(r['entry_kind'] == 'edition' and r.get('light_novel_confirmed') is True for r in rows),
                 'publisher_confirmed_editions': sum(r.get('edition_bibliography_confirmed') is True for r in rows),
+                # Each projected row is a unique edition, independent of the
+                # number of publisher references or provider bindings it has.
+                'publisher_bibliographic_correspondences': sum(r.get('publisher_bibliography_matched') is True for r in rows),
                 'content_feature_series': content, 'source_genre_series': source,
                 'feature_bearing_works': sum(bool(r['genres'] or r['llm_features']) for r in rows),
                 'recommendable_works': sum(r['recommendable'] for r in rows), 'source_genre_works': sum(bool(r['genres']) for r in rows),
