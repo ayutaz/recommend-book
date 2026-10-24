@@ -493,8 +493,100 @@ class LightNovelCatalogue:
             parts = self._edition_primary_bibliographic_parts(edition_record, cache)
             return match_cobalt_member(assertion, parts) if parts else None
         from .light_novel_ndl_series_v1 import match_bibliography
-        return match_bibliography(assertion, self._source_with_title_parts(edition_record, cache),
-                                  normalize_search, allow_unnumbered=allow_unnumbered)
+        strict = match_bibliography(assertion, self._source_with_title_parts(edition_record, cache),
+                                   normalize_search, allow_unnumbered=allow_unnumbered)
+        if strict is not None:
+            return strict
+        return self._publisher_series_match_dated_author(assertion, edition_record, cache,
+                                                        allow_unnumbered=allow_unnumbered)
+
+    def _publisher_series_match_dated_author(self, assertion, edition_record, cache, *, allow_unnumbered=False):
+        """Apply an own-record author binding without changing existing names.
+
+        All other series gates still run through the legacy matcher, using
+        direct fields of the sole own resource rather than merged metadata.
+        """
+        from .light_novel_explicit_series_match_v1 import dated_own_author_bindings
+        from .light_novel_ndl_series_v1 import match_bibliography, person_key
+        from .light_novel_reference_match_v1 import _parent
+        parts = self._edition_primary_bibliographic_parts(edition_record, cache)
+        if parts is None:
+            return None
+        source = parts['source']
+        agents = parts['publisher_agents']
+        publishers = [row for row in agents if row['description_values'] == []]
+        distributors = [row for row in agents if row['description_values'] == ['頒布']]
+        if (len(publishers) != 1 or normalize_search(publishers[0]['name']) != normalize_search(assertion['publisher'])
+                or len(publishers) + len(distributors) != len(agents)
+                or any(not row['name'] or not row['locator'] for row in agents)
+                or len({_parent(row['locator']) for row in agents}) != 1):
+            return None
+        if distributors and (any(not row['structured_agent'] for row in agents)
+                or any(len(row['description_locators']) != 1 or not row['description_locators'][0] for row in distributors)):
+            return None
+        ndc = source.get('extra', {}).get('ndc_codes', [])
+        if source.get('language') not in ('ja', 'jpn') or not ndc or any(not value.startswith('913') for value in ndc):
+            return None
+        own = _parent(publishers[0]['locator'])
+        titles = [row for row in parts['titles'] if '/{http://purl.org/dc/terms/}title[' in row['locator']]
+        if not titles or any(not row['value'] or _parent(row['locator']) != own for row in titles):
+            return None
+        volume = parts['volume']
+        if volume and (not volume['value'] or _parent(volume['locator']) != own):
+            return None
+        main_titles = []
+        for row in titles:
+            main = re.split(r' (?:=|:) ', row['value'], maxsplit=1)[0].strip()
+            if normalize_search(assertion['title']) not in {normalize_search(row['value']), normalize_search(main)}:
+                return None
+            if main and main != row['value']:
+                main_titles.append({'value': main, 'kind': 'own_primary_rdf_title_isbd_main',
+                                    'locator': row['locator'], 'source_value': row['value']})
+        names = list(assertion['authors'])
+        if not names:
+            # A mixed shop display cannot supply an author role. Only an own
+            # explicit writer literal may intersect that provider's display.
+            literals = {person_key(row['name']) for row in parts['literal_authors']}
+            names = list(dict.fromkeys(name for name in assertion.get('creator_display_names', [])
+                                      if person_key(name) in literals))
+        if not names:
+            return None
+        bindings, contributors = [], []
+        for name in names:
+            direct = [row for row in source['contributors'] if row['role'] == 'author'
+                and person_key(row['name']) == person_key(name) and any(
+                    item['source'] == 'ndl-authority' and re.fullmatch(
+                        r'https?://id\.ndl\.go\.jp/auth/(?:entity|ndlna)/[0-9]{6,12}', item['value'])
+                    for item in row['identifiers'])]
+            if direct:
+                contributors.extend(direct)
+                continue
+            bound = dated_own_author_bindings(parts, name)
+            if not bound:
+                return None
+            bindings.extend(bound)
+            contributors.append({'name': name, 'role': 'author', 'identifiers': [
+                {'source': 'ndl-authority', 'value': uri} for row in bound for uri in row['authority_ids']]})
+        if not bindings:
+            return None
+        adapted = {**source, 'titles': [{'value': row['value']} for row in titles],
+                   '_cataloguing_main_titles': main_titles,
+                   'volume': volume['value'] if volume else None, 'contributors': contributors}
+        matched = match_bibliography({**assertion, 'authors': names}, adapted, normalize_search,
+                                     allow_unnumbered=allow_unnumbered)
+        if matched is None:
+            return None
+        origin = next(({'kind': 'own_primary_dcterms_title', 'locator': row['locator']} for row in titles
+                       if normalize_search(row['value']) == normalize_search(assertion['title'])), None)
+        if origin is None:
+            origin = {key: main_titles[0][key] for key in ('kind', 'locator')}
+        return {**matched, 'rule_version': 'publisher-ndl-dated-own-author-binding-v2',
+                'title_origin': origin, 'source_raw_sha256': parts['source_raw_sha256'],
+                'dated_own_author_bindings': bindings,
+                'own_bibliographic_locators': {'titles': [row['locator'] for row in titles],
+                    'volume': volume['locator'] if volume else None,
+                    'publisher': publishers[0]['locator'],
+                    'distribution': [row['description_locators'][0] for row in distributors]}}
 
     def _ndl_membership_match(self, series, series_record, edition_record, cache):
         from .light_novel_ndl_series_v1 import publisher_assertions, match_bibliography
@@ -519,7 +611,7 @@ class LightNovelCatalogue:
                 'volume': match['volume'], 'volume_number': match['volume_number'],
                 'author_authority_ids': sorted(ids(match)), 'imprint': match['imprint'], 'ndc_codes': match['ndc_codes'],
                 'sources': [source['source_url'], assertion['source_url']], 'explicit_member_match': match}
-        return {'rule_version': 'publisher-ndl-series-membership-v1', 'scope': 'edition_membership_only',
+        result = {'rule_version': 'publisher-ndl-series-membership-v1', 'scope': 'edition_membership_only',
                 'edition_id': 'lne:ndl:' + source['source_id'], 'series_entry_id': series['entry_id'],
                 'matched_title': match['title'], 'volume': match['volume'], 'volume_number': match['volume_number'],
                 'author_authority_ids': sorted(ids(match)), 'imprint': match['imprint'], 'ndc_codes': match['ndc_codes'],
@@ -529,6 +621,10 @@ class LightNovelCatalogue:
                     'imprint': 'recordData/dcndl:seriesTitle;official.series_index.label',
                     'publisher': 'recordData/dcterms:publisher;official.publisher',
                     'volume': 'recordData/dcndl:volume', 'novel_class': 'recordData/subject/NDC913'}}
+        if match.get('dated_own_author_bindings') or anchor_match.get('dated_own_author_bindings'):
+            result.update(rule_version='publisher-ndl-series-membership-v2',
+                          edition_match=match, anchor_match=anchor_match)
+        return result
 
     def _ndl_membership_candidates(self, rows, stored, cache):
         series_rows = [r for r in rows if r['entry_id'].startswith('lns:ndl:')]

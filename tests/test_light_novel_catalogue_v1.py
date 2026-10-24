@@ -447,6 +447,108 @@ def test_publisher_confirmed_ndl_series_is_typed_without_fabricated_work(publish
     assert 'raw_path' not in json.dumps(row)
 
 
+@pytest.fixture
+def dated_legacy_series(publisher_ndl_bundle):
+    from pathlib import Path
+    import xml.etree.ElementTree as ET
+    from recommend_book.ingestion.core import RawArtifact
+    from recommend_book.ingestion.ndl import NDLAdapter
+    cat, original, frames, fsha, root, page = publisher_ndl_bundle
+    original_xml = Path(original['provenance']['raw_path']).read_text(encoding='utf-8')
+    def make(change=None):
+        record = json.loads(json.dumps(original))
+        xml = original_xml.replace('>著者</foaf:name>', '>著, 者, 1965-</foaf:name>')
+        xml = xml.replace('</n:BibResource>', '<d:creator>著者 著</d:creator></n:BibResource>')
+        if change == 'multiple_publishers':
+            xml = xml.replace('</n:BibResource>', '<d:publisher>別出版社</d:publisher></n:BibResource>')
+        elif change == 'other_role': xml = xml.replace('著者 著</d:creator>', '著者 イラスト</d:creator>')
+        elif change == 'unknown_uri': xml = xml.replace('http://id.ndl.go.jp/auth/entity/01234567', 'https://example.org/unknown')
+        elif change == 'wrong_title': xml = xml.replace('<d:title>魔法科高校の劣等生</d:title>', '<d:title>別の作品</d:title>')
+        elif change == 'related_title':
+            xml = xml.replace('<d:title>魔法科高校の劣等生</d:title>', '<d:title>別の作品</d:title><d:relation><n:BibResource><d:title>魔法科高校の劣等生</d:title></n:BibResource></d:relation>')
+        elif change == 'wrong_volume': xml = xml.replace('<n:volume>1</n:volume>', '<n:volume>上巻不明</n:volume>')
+        elif change == 'related_volume':
+            xml = xml.replace('<n:volume>1</n:volume>', '<d:relation><n:BibResource><n:volume>1</n:volume></n:BibResource></d:relation>')
+        elif change == 'wrong_imprint': xml = xml.replace('HJ文庫', '別文庫')
+        elif change == 'wrong_language': xml = xml.replace('>jpn<', '>eng<')
+        elif change == 'wrong_ndc': xml = xml.replace('/913.6', '/726.1')
+        elif change == 'distribution':
+            xml = xml.replace('</n:BibResource>', '<d:publisher><foaf:Agent xmlns:foaf="http://xmlns.com/foaf/0.1/"><foaf:name>頒布会社</foaf:name><d:description>頒布</d:description></foaf:Agent></d:publisher></n:BibResource>')
+            xml = xml.replace('<d:publisher>ホビージャパン</d:publisher>', '<d:publisher><foaf:Agent xmlns:foaf="http://xmlns.com/foaf/0.1/"><foaf:name>ホビージャパン</foaf:name></foaf:Agent></d:publisher>')
+        raw = Path(record['provenance']['raw_path'])
+        raw.write_text(xml, encoding='utf-8')
+        digest = hashlib.sha256(raw.read_bytes()).hexdigest()
+        source = NDLAdapter(None)._normalize(ET.fromstring(xml), RawArtifact(digest, str(raw), raw.stat().st_size,
+            record['source_record']['retrieved_at'], 'https://ndlsearch.ndl.go.jp/api/sru'),
+            'iss-ndl-opac', locator='records[1]/recordData').model_dump(mode='json')
+        record.update(source_record=source, title=source['titles'][0]['value'], volume=source['volume'],
+            authors=[c['name'] for c in source['contributors'] if c['role'] == 'author'],
+            publisher=source['publisher'], label=source['series'], languages=[source['language']] if source['language'] else [],
+            ndc=source['extra']['ndc_codes'], label_candidate=bool(source['series'] and 'HJ文庫' in source['series']))
+        record['provenance']['raw_sha256'] = digest
+        cache = {}
+        cat._project_edition(record, cache)
+        from recommend_book.light_novel_ndl_series_v1 import publisher_assertions
+        proof = {'frames_path': str(frames), 'frames_sha256': fsha, 'source_root': str(root)}
+        assertion = next(iter(publisher_assertions(proof, cat._artifact, cache).values()))
+        return record, assertion, cache, proof
+    return cat, make
+
+
+def test_legacy_dated_author_binding_is_edition_bound_and_membership_v2(dated_legacy_series):
+    cat, make = dated_legacy_series
+    record, assertion, cache, proof = make()
+    before = json.loads(json.dumps(record))
+    match = cat._publisher_series_match(assertion, record, cache, allow_unnumbered=True)
+    assert match is not None
+    assert match['dated_own_author_bindings'][0]['source_raw_sha256'] == record['provenance']['raw_sha256']
+    assert match['dated_own_author_bindings'][0]['edition_bound_corroboration']['literal_credit']['literal'] == '著者 著'
+    assert record == before
+    series_record = {'anchor_edition_record': record, 'publisher_series_proof': dict(proof, reference_id=assertion['reference_id'])}
+    membership = cat._ndl_membership_match({'entry_id': 'lns:ndl:' + record['id']}, series_record, record, cache)
+    assert membership['rule_version'] == 'publisher-ndl-series-membership-v2'
+    assert membership['edition_match']['dated_own_author_bindings'] == match['dated_own_author_bindings']
+
+
+@pytest.mark.parametrize('change', ['multiple_publishers', 'other_role', 'unknown_uri', 'wrong_title',
+    'related_title', 'wrong_volume', 'related_volume', 'wrong_imprint', 'wrong_language', 'wrong_ndc'])
+def test_legacy_dated_author_fallback_keeps_all_own_bibliographic_gates(dated_legacy_series, change):
+    cat, make = dated_legacy_series
+    record, assertion, cache, _ = make(change)
+    assert cat._publisher_series_match(assertion, record, cache, allow_unnumbered=False) is None
+
+
+def test_legacy_dated_author_accepts_only_explicit_distribution_and_own_sb_writer_intersection(dated_legacy_series):
+    cat, make = dated_legacy_series
+    record, assertion, cache, _ = make('distribution')
+    match = cat._publisher_series_match(assertion, record, cache, allow_unnumbered=False)
+    assert match is not None and len(match['own_bibliographic_locators']['distribution']) == 1
+    mixed = {**assertion, 'authors': [], 'creator_display_names': ['著者', '絵担当']}
+    match = cat._publisher_series_match(mixed, record, cache, allow_unnumbered=False)
+    assert match is not None and [author['name'] for author in match['authors']] == ['著者']
+    only_illustrator = {**mixed, 'creator_display_names': ['絵担当']}
+    assert cat._publisher_series_match(only_illustrator, record, cache, allow_unnumbered=False) is None
+
+
+def test_legacy_strict_series_match_and_membership_proof_stay_unchanged(publisher_ndl_bundle, monkeypatch):
+    from recommend_book.light_novel_ndl_series_v1 import publisher_assertions, match_bibliography
+    from recommend_book.light_novel_catalogue_v1 import normalize_search
+    cat, record, frames, sha, root, _ = publisher_ndl_bundle
+    cache = {}
+    cat._project_edition(record, cache)
+    proof = {'frames_path': str(frames), 'frames_sha256': sha, 'source_root': str(root)}
+    assertion = next(iter(publisher_assertions(proof, cat._artifact, cache).values()))
+    expected = match_bibliography(assertion, cat._source_with_title_parts(record, cache), normalize_search, allow_unnumbered=True)
+    def forbidden(*args, **kwargs):
+        raise AssertionError('strict positives must not enter fallback')
+    monkeypatch.setattr(cat, '_edition_primary_bibliographic_parts', forbidden)
+    assert cat._publisher_series_match(assertion, record, cache, allow_unnumbered=True) == expected
+    series_record = {'anchor_edition_record': record, 'publisher_series_proof': dict(proof, reference_id=assertion['reference_id'])}
+    membership = cat._ndl_membership_match({'entry_id': 'lns:ndl:' + record['id']}, series_record, record, cache)
+    assert membership['rule_version'] == 'publisher-ndl-series-membership-v1'
+    assert 'edition_match' not in membership and 'anchor_match' not in membership
+
+
 def test_publisher_ndl_series_holds_missing_author_and_changed_raw(publisher_ndl_bundle):
     cat, _, frames, fsha, root, page = publisher_ndl_bundle
     text = page.read_text(encoding='utf-8')
