@@ -178,6 +178,24 @@ def test_similarity_skips_only_featureless_typed_editions(site, monkeypatch, pat
     assert data['personalized'] is False
 
 
+@pytest.mark.parametrize('provider', ['futaba', 'orange'])
+def test_featureless_source_group_similarity_reuses_authenticated_detail(site, monkeypatch, provider):
+    base, catalogue = site
+    identifier = 'lng:pub:' + provider + ':' + 'a' * 32
+    details = []
+    def detail(key):
+        details.append(key)
+        return {'entry_id': key, 'entry_kind': 'publisher_group', 'recommendable': False,
+                'genres': [], 'llm_features': []}
+    def forbidden_similar(*args, **kwargs):
+        raise AssertionError('already authenticated featureless group must not replay its raw source twice')
+    monkeypatch.setattr(catalogue, 'work_detail', detail)
+    monkeypatch.setattr(catalogue, 'similar_works', forbidden_similar)
+    result = fetch(base, '/api/entries/' + quote(identifier, safe='') + '/similar')
+    assert result == {'mode': 'insufficient_evidence', 'personalized': False, 'items': []}
+    assert details == [identifier]
+
+
 def test_similarity_shortcut_does_not_hide_absent_or_invalid_entries(site, monkeypatch):
     base, catalogue = site
     detail_calls = []
@@ -321,6 +339,43 @@ def test_publisher_source_group_http_keeps_source_references_separate_from_editi
     assert product['form'] is None
     assert product['media_references'][0]['source_url'].endswith('?type=2')
     assert 'entry_id' not in product and 'read_status' not in product
+    assert 'PRIVATE-SENTINEL' not in json.dumps(result)
+    fetch(base, '/api/recommendations', {'liked_entry_ids': [identifier]})
+    assert catalogue.calls[-1]['liked_entry_ids'] == [identifier]
+
+
+def test_orange_source_group_http_preserves_explicit_credit_roles_without_edition_claims(site, monkeypatch):
+    base, catalogue = site
+    identifier = 'lng:pub:orange:' + 'b' * 32
+    row = {'entry_id': identifier, 'entry_kind': 'publisher_group', 'family': 'light_novel',
+        'title': '公式掲載グループ', 'series_identity_basis': 'publisher_source_group',
+        'series_title_source': 'publisher_explicit_work_group',
+        'publisher_work_group_kind': 'orange_native_taxonomy_source_group',
+        'light_novel_confirmed': False, 'authors': [], 'members': [],
+        'source_frame_member_count': 1, 'verified_bibliographic_member_count': 0,
+        'publisher_product_references': [{'publisher_reference_id': 'shueisha-orange-book:example-volume',
+            'title': '掲載書名', 'source_url': 'https://orangebunko.shueisha.co.jp/book/example-volume',
+            'label': None, 'form': None, 'media_references': None,
+            'credits': [{'role': role, 'name': name} for role, name in
+                [('author', '著者例'), ('cover_illustrator', '装画例'),
+                 ('commentary_author', '解説例'), ('screenplay_author', '脚本例')]],
+            'credit_literals': [{'role_literal': '装画', 'name': '装画例', 'source_selector': 'PRIVATE-SENTINEL'},
+                {'role_literal': {'raw_path': 'PRIVATE-SENTINEL'}, 'name': '不正'},
+                {'role_literal': None, 'name': '役割未表示例'}],
+            'source_evidence': {'raw_path': 'PRIVATE-SENTINEL'}}]}
+    monkeypatch.setattr(catalogue, 'work_detail', lambda key: row if key == identifier else None)
+    result = fetch(base, '/api/entries/' + quote(identifier, safe=''))
+    assert result['entry_id'] == identifier and result['entry_kind'] == 'publisher_group'
+    assert result['publisher_work_group_kind'] == 'orange_native_taxonomy_source_group'
+    assert result['authors'] == [] and result['members'] == []
+    assert result['light_novel_confirmed'] is False and result['story_series_identity_asserted'] is False
+    product = result['publisher_product_references'][0]
+    assert product['publisher_reference_id'] == 'shueisha-orange-book:example-volume'
+    assert [c['role'] for c in product['credits']] == ['author', 'cover_illustrator', 'commentary_author', 'screenplay_author']
+    assert product['credit_literals'] == [{'role_literal': '装画', 'name': '装画例'},
+                                         {'role_literal': None, 'name': '役割未表示例'}]
+    assert product['label'] is None and product['form'] is None and product['media_references'] == []
+    assert not {'entry_id', 'isbn', 'read_status'} & product.keys()
     assert 'PRIVATE-SENTINEL' not in json.dumps(result)
     fetch(base, '/api/recommendations', {'liked_entry_ids': [identifier]})
     assert catalogue.calls[-1]['liked_entry_ids'] == [identifier]

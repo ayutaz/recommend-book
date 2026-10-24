@@ -8,6 +8,7 @@ import pytest
 from recommend_book.light_novel_site_backend_v1 import UnifiedCatalogue
 from test_light_novel_catalogue_v1 import (
     futaba_source_group_bundle, futaba_source_raw, membership_bundle, edition_bundle, setup_catalogue,
+    orange_source_group_bundle,
 )
 
 
@@ -337,6 +338,36 @@ def test_source_publisher_group_similar_stops_before_full_catalogue_or_unrelated
     (env['root'] / 'm-page0.json').write_bytes(b'changed own group witness')
     with pytest.raises(ValueError):
         combined.similar_works(identity, limit=8)
+
+
+def test_orange_source_group_typed_history_and_early_similar_preserve_other_provider(
+        orange_source_group_bundle, futaba_source_group_bundle, tmp_path, monkeypatch):
+    _, _, path, sha, groups = orange_source_group_bundle
+    cat, env, fpath, fsha, _ = futaba_source_group_bundle
+    fids = cat.import_futaba_source_groups(fpath, fsha)['reference_entries']
+    cat.set_read_status(next(iter(fids.values())), 'reading')
+    world = Store(tmp_path / 'orange-world.sqlite', [])
+    combined = UnifiedCatalogue(world, cat)
+    before = combined.export_reading_history()
+    result = cat.import_orange_source_groups(path, sha)
+    identity = result['reference_entries'][groups[0]['reference_id']]
+    assert combined.work_detail(identity)['publisher_product_references'][0]['credit_literals'][1]['role_literal'] == '装画'
+    combined.set_read_status(identity, 'read')
+    after = combined.export_reading_history()
+    assert after['version'] == 'catalogue-history-export-v3'
+    assert [r for r in after['records'] if r['entry_id'] != identity] == before['records']
+    for invalid in ['lng:pub:other:' + 'a'*32, 'lng:pub:orange:' + 'A'*32, 'lng:pub:orange:Q1']:
+        with pytest.raises(ValueError):
+            combined.work_detail(invalid)
+    def forbidden(*args, **kwargs):
+        raise AssertionError('Orange similar cannot replay Futaba or scan full catalogues')
+    (env['root'] / 'm-page0.json').write_bytes(b'old provider raw must remain unread')
+    monkeypatch.setattr(cat, '_futaba_workgroups', forbidden)
+    monkeypatch.setattr(cat, '_rows', forbidden)
+    monkeypatch.setattr(cat, 'recommend_preferences', forbidden)
+    monkeypatch.setattr(world, 'recommend_preferences', forbidden)
+    assert combined.similar_works(identity)['mode'] == 'insufficient_evidence'
+    assert not world.calls
 
 
 def test_ndl_authority_backed_series_is_not_fabricated_as_a_wikidata_work(stores):

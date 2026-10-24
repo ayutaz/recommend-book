@@ -4,6 +4,7 @@ import json
 import pytest
 
 from test_light_novel_futaba_workgroups_v1 import source as futaba_source_raw
+from test_light_novel_orange_groups_v1 import source as _orange_raw_fixture
 
 from recommend_book.light_novel_catalogue_v1 import LightNovelCatalogue, normalize_search
 
@@ -24,6 +25,169 @@ def futaba_source_group_bundle(futaba_source_raw):
     path = env['root'] / 'proof.json'
     groups = verify_futaba_mnovels_workgroups(path, env['manifest_sha'])
     return LightNovelCatalogue(env['root'] / 'source-groups.sqlite'), env, path, env['manifest_sha'], groups
+
+
+@pytest.fixture
+def orange_source_group_bundle(tmp_path):
+    from recommend_book.light_novel_orange_groups_v1 import verify_orange_groups
+    root = tmp_path / 'orange-raw'
+    root.mkdir()
+    env = _orange_raw_fixture.__wrapped__(root)
+    path = root / 'proof.json'
+    groups = verify_orange_groups(path, env['sha'])
+    return LightNovelCatalogue(tmp_path / 'orange.sqlite'), env, path, env['sha'], groups
+
+
+def _orange_next_snapshot(env, change=None):
+    from copy import deepcopy
+    from test_light_novel_orange_groups_v1 import save
+    following = deepcopy(env)
+    following['root'] = env['root'] / 'next'
+    following['root'].mkdir()
+    for item in env['root'].iterdir():
+        if item.is_file():
+            (following['root'] / item.name).write_bytes(item.read_bytes())
+    following['proof']['capture_revision'] = 2
+    if change:
+        path = following['root'] / 'parent0.html'
+        text = path.read_text(encoding='utf-8')
+        if change in {'title', 'title_and_children'}:
+            text = text.replace('親の正式な題', '変更された親の題')
+            following['handoff'][0]['title'] = '変更された親の題'
+        if change in {'children', 'title_and_children'}:
+            for index, member in enumerate(following['handoff'][0]['explicit_memberships']):
+                old = member['source_url']
+                member['source_url'] = old + '-new'
+                text = text.replace(old, member['source_url'])
+        path.write_text(text, encoding='utf-8')
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        following['receipts'][2].update(sha256=digest, byte_length=path.stat().st_size)
+        following['handoff'][0]['source_evidence']['source_sha256'] = digest
+        for member in following['handoff'][0]['explicit_memberships']:
+            member['evidence']['source_sha256'] = digest
+    save(following)
+    return following['root'] / 'proof.json', following['sha']
+
+
+def test_orange_source_group_formal_raw_preserves_complete_child_roles_and_unknown_identity(orange_source_group_bundle):
+    cat, _, path, sha, groups = orange_source_group_bundle
+    result = cat.import_orange_source_groups(path, sha)
+    assert result['inserted'] == 2 and result['held'] == 0
+    identity = result['reference_entries'][groups[0]['reference_id']]
+    assert identity.startswith('lng:pub:orange:')
+    row = cat.work_detail(identity)
+    assert row['entry_kind'] == 'publisher_group' and row['publisher_work_group_kind'] == 'orange_native_taxonomy_source_group'
+    assert row['aliases'] == row['authors'] == row['members'] == []
+    assert row['qid'] is row['language'] is row['original_language'] is None
+    assert row['isbn'] == [] and not row['light_novel_confirmed'] and not row['story_series_identity_asserted']
+    first, second = row['publisher_product_references']
+    assert first['title'] == '完全な題　２【外伝】'
+    assert first['credits'] == [{'role': 'author', 'name': '架空 著者'}, {'role': 'cover_illustrator', 'name': '架空 絵師'}]
+    assert first['credit_literals'] == [{'role_literal': '著者', 'name': '架空 著者'}, {'role_literal': '装画', 'name': '架空 絵師'}]
+    assert second['credits'][1]['role'] == 'screenplay_author'
+    assert all(child['label'] is child['form'] is None and child['media_references'] == []
+               for child in row['publisher_product_references'])
+    assert cat.search_catalogue('完全な題 2【外伝】')['items'][0]['entry_id'] == identity
+    assert cat.search_catalogue('架空 著者')['total'] == 1
+    assert cat.search_catalogue('架空 絵師')['total'] == cat.search_catalogue('脚本者')['total'] == 0
+    assert cat.search_catalogue(entry_kind='series')['total'] == 2
+    assert cat.catalogue_stats()['publisher_work_groups'] == 2 and cat.catalogue_stats()['series'] == 0
+    assert not any(marker in json.dumps(row) for marker in ('PRIVATE_', 'raw_path', 'source_selector', str(path.parent)))
+
+
+def test_orange_source_group_scoped_import_never_reaudits_or_rewrites_futaba(
+        orange_source_group_bundle, futaba_source_group_bundle, monkeypatch):
+    _, _, path, sha, _ = orange_source_group_bundle
+    cat, _, fpath, fsha, _ = futaba_source_group_bundle
+    first = cat.import_futaba_source_groups(fpath, fsha)
+    cat.set_read_status(next(iter(first['reference_entries'].values())), 'reading')
+    with cat._connect() as db:
+        before = {r['entry_id']: tuple(r) for r in db.execute('SELECT * FROM entries')}
+        statuses = [tuple(r) for r in db.execute('SELECT * FROM read_status')]
+    def forbidden(*args, **kwargs):
+        raise AssertionError('provider-scoped import cannot replay the other provider')
+    with monkeypatch.context() as patch:
+        patch.setattr(cat, '_futaba_workgroups', forbidden)
+        assert cat.import_orange_source_groups(path, sha)['inserted'] == 2
+        assert cat.import_orange_source_groups(path, sha)['unchanged'] == 2
+    with monkeypatch.context() as patch:
+        patch.setattr(cat, '_orange_workgroups', forbidden)
+        assert cat.import_futaba_source_groups(fpath, fsha)['unchanged'] == 4
+    with cat._connect() as db:
+        after = {r['entry_id']: tuple(r) for r in db.execute('SELECT * FROM entries')}
+        assert [tuple(r) for r in db.execute('SELECT * FROM read_status')] == statuses
+    assert {identity: after[identity] for identity in before} == before
+
+
+def test_orange_source_group_snapshot_continuation_keeps_uuid_and_versioned_pin(orange_source_group_bundle):
+    cat, env, path, sha, _ = orange_source_group_bundle
+    first = cat.import_orange_source_groups(path, sha)
+    identity = next(iter(first['reference_entries'].values()))
+    cat.set_read_status(identity, 'read')
+    assert cat.import_orange_source_groups(path, sha)['unchanged'] == 2
+    following, digest = _orange_next_snapshot(env)
+    result = cat.import_orange_source_groups(following, digest)
+    assert result['updated'] == 2 and result['inserted'] == 0
+    assert result['reference_entries'] == first['reference_entries']
+    assert cat.work_detail(identity)['read_status'] == 'read'
+    with cat._connect() as db:
+        record = json.loads(db.execute('SELECT record_json FROM entries WHERE entry_id=?', (identity,)).fetchone()[0])
+    assert record['source_group_assertions'][0]['manifest_sha256'] == sha
+    assert record['source_group_assertions'][1]['manifest_sha256'] == digest
+    assert record['source_group_assertions'][0]['local_reference_key']['literal'] == '親の正式な題'
+
+
+@pytest.mark.parametrize('change', ['title', 'children'])
+def test_orange_source_group_does_not_inherit_a_renamed_or_totally_replaced_group(orange_source_group_bundle, change):
+    cat, env, path, sha, _ = orange_source_group_bundle
+    first = cat.import_orange_source_groups(path, sha)
+    following, digest = _orange_next_snapshot(env, change)
+    result = cat.import_orange_source_groups(following, digest)
+    assert result['held'] == 1 and result['inserted'] == 0 and result['updated'] == 1
+    with cat._connect() as db:
+        assert {r[0] for r in db.execute('SELECT entry_id FROM entries')} == set(first['reference_entries'].values())
+
+
+def test_orange_source_group_stable_url_cannot_mint_new_uuid_after_rename_and_all_child_replacement(orange_source_group_bundle):
+    cat, env, path, sha, groups = orange_source_group_bundle
+    first = cat.import_orange_source_groups(path, sha)
+    identity = first['reference_entries'][groups[0]['reference_id']]
+    cat.set_read_status(identity, 'reading')
+    with cat._connect() as db:
+        previous = tuple(db.execute('SELECT * FROM entries WHERE entry_id=?', (identity,)).fetchone())
+        status = tuple(db.execute('SELECT * FROM read_status WHERE entry_id=?', (identity,)).fetchone())
+    following, digest = _orange_next_snapshot(env, 'title_and_children')
+    result = cat.import_orange_source_groups(following, digest)
+    assert result['held'] == 1 and result['inserted'] == 0
+    assert result['held_reasons'] == {'source_group_scope_or_title_changed': 1}
+    with cat._connect() as db:
+        assert {r[0] for r in db.execute('SELECT entry_id FROM entries')} == set(first['reference_entries'].values())
+        assert tuple(db.execute('SELECT * FROM entries WHERE entry_id=?', (identity,)).fetchone()) == previous
+        assert tuple(db.execute('SELECT * FROM read_status WHERE entry_id=?', (identity,)).fetchone()) == status
+
+
+@pytest.mark.parametrize('change', ['raw', 'rehash', 'typed'])
+def test_orange_source_group_authenticates_source_and_selected_metadata(orange_source_group_bundle, change):
+    cat, env, path, sha, _ = orange_source_group_bundle
+    if change == 'raw':
+        (env['root'] / 'parent1.html').write_bytes(b'changed late source')
+        with pytest.raises(ValueError):
+            cat.import_orange_source_groups(path, sha)
+        with cat._connect() as db:
+            assert db.execute('SELECT count(*) FROM entries').fetchone()[0] == 0
+        return
+    identity = next(iter(cat.import_orange_source_groups(path, sha)['reference_entries'].values()))
+    with cat._connect() as db:
+        if change == 'typed':
+            db.execute('UPDATE entries SET kind=? WHERE entry_id=?', ('series', identity))
+        else:
+            record = json.loads(db.execute('SELECT record_json FROM entries WHERE entry_id=?', (identity,)).fetchone()[0])
+            record['publisher_product_references'][0]['credit_literals'][0]['role_literal'] = '原作'
+            encoded = json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+            db.execute('UPDATE entries SET record_json=?,record_sha256=? WHERE entry_id=?',
+                (encoded, hashlib.sha256(encoded.encode()).hexdigest(), identity))
+    with pytest.raises(ValueError):
+        cat.work_detail(identity)
 
 
 def _futaba_next_source_snapshot(env):
@@ -201,11 +365,15 @@ def test_futaba_source_group_preserves_actual_anchor_bindings_and_reading_states
                 for table in tables} == before
 
 
-@pytest.mark.parametrize('race_kind', ['source', 'anchor'])
+@pytest.mark.parametrize('race_kind', ['source', 'anchor', 'orange'])
 def test_futaba_source_group_new_target_race_is_detected_before_first_write(request, monkeypatch, race_kind):
     from contextlib import contextmanager
     import sqlite3
-    if race_kind == 'source':
+    if race_kind == 'orange':
+        cat, _, path, sha, _ = request.getfixturevalue('orange_source_group_bundle')
+        saved = cat.import_orange_source_groups(path, sha)
+        identity = next(iter(saved['reference_entries'].values()))
+    elif race_kind == 'source':
         cat, _, path, sha, _ = request.getfixturevalue('futaba_source_group_bundle')
         saved = cat.import_futaba_source_groups(path, sha)
         identity = next(iter(saved['reference_entries'].values()))
@@ -214,6 +382,7 @@ def test_futaba_source_group_new_target_race_is_detected_before_first_write(requ
         cat.correlate_publisher_bibliographies('futaba-mnovels', m_path, m_sha)
         cat.import_futaba_mnovels_workgroups(path, sha)
         identity = 'lns:ndl:' + first['id']
+    importer = cat.import_orange_source_groups if race_kind == 'orange' else cat.import_futaba_source_groups
     with cat._connect() as db:
         racing = tuple(db.execute('SELECT * FROM entries WHERE entry_id=?', (identity,)).fetchone())
         db.execute('DELETE FROM edition_series_memberships WHERE series_id=?', (identity,))
@@ -235,7 +404,7 @@ def test_futaba_source_group_new_target_race_is_detected_before_first_write(requ
     with monkeypatch.context() as patch:
         patch.setattr(cat, '_connect', interleaved)
         with pytest.raises(ValueError, match='target set changed'):
-            cat.import_futaba_source_groups(path, sha)
+            importer(path, sha)
     assert writes == []
     with cat._connect() as db:
         after = {r['entry_id']: tuple(r) for r in db.execute('SELECT * FROM entries')}
