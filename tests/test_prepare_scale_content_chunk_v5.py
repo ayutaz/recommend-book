@@ -13,6 +13,10 @@ def load():
 
 def test_new_cli_context_is_passed_to_the_complete_preparer(monkeypatch):
     module = load()
+    from recommend_book import scale_guard_context_v1
+    # This test calls a standalone-child boundary inside pytest. Its process
+    # lifetime cache must not replace UsageGuard's JSON decoder for later tests.
+    monkeypatch.setattr(scale_guard_context_v1, "enable_process_cache", lambda: None)
     calls = []
     def prepare_chunk(*args, **kwargs):
         calls.append((args, kwargs)); return "prepared"
