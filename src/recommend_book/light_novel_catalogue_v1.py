@@ -2706,15 +2706,45 @@ class LightNovelCatalogue:
     def import_features(self, manifest_path, expected_sha256):
         from .light_novel_classification_v1 import verify_feature_export
         document = verify_feature_export(manifest_path, expected_sha256)
-        known = {r['entry_id']: r for r in self._rows(include_features=False)}
-        result = {'imported': 0, 'held': 0}
+        targets = [(row, _entry(row.get('entry_id', row.get('series_id')))) for row in document['rows']]
+        identities = sorted({identity for _, identity in targets})
+
+        def selected_entries(db):
+            selected = {}
+            for start in range(0, len(identities), 400):
+                batch = identities[start:start + 400]
+                selected.update((row['entry_id'], dict(row)) for row in db.execute(
+                    'SELECT * FROM entries WHERE entry_id IN (' + ','.join('?' for _ in batch) + ')', batch))
+            return selected
+
         with self._connect() as db:
-            for row in document['rows']:
-                entry_id = _entry(row.get('entry_id', row.get('series_id')))
-                if entry_id not in known or known[entry_id]['entry_kind'] != 'series' or row.get('scope') != 'series':
-                    result['held'] += 1
-                    continue
-                db.execute('INSERT OR REPLACE INTO features VALUES(?,?,?)', (entry_id, str(Path(manifest_path).resolve()), expected_sha256))
+            stored = selected_entries(db)
+        cache, known = {}, {}
+        for identity, entry in stored.items():
+            if hashlib.sha256(entry['record_json'].encode()).hexdigest() != entry['record_sha256']:
+                raise ValueError('stored feature target metadata SHA mismatch')
+            row = self._project(json.loads(entry['record_json']), cache)
+            if row['entry_id'] != identity or row['entry_kind'] != entry['kind']:
+                raise ValueError('stored feature target typed identity differs')
+            known[identity] = row
+        result = {'imported': 0, 'held': 0}
+        plans = []
+        for row, entry_id in targets:
+            if entry_id not in known or known[entry_id]['entry_kind'] != 'series' or row.get('scope') != 'series':
+                result['held'] += 1
+            else:
+                plans.append(entry_id)
+        path = str(Path(manifest_path).resolve())
+        with self._connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            current = selected_entries(db)
+            if set(current) != set(stored):
+                raise ValueError('feature target set changed during import')
+            if any((current[identity]['kind'], current[identity]['record_sha256']) !=
+                   (entry['kind'], entry['record_sha256']) for identity, entry in stored.items()):
+                raise ValueError('feature target metadata changed during import')
+            for entry_id in plans:
+                db.execute('INSERT OR REPLACE INTO features VALUES(?,?,?)', (entry_id, path, expected_sha256))
                 result['imported'] += 1
         return result
 

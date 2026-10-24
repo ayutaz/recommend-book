@@ -959,6 +959,164 @@ def test_real_feature_verifier_binding_and_native_mutation(setup_catalogue, tmp_
     assert cat.catalogue_stats()['content_feature_series'] == 0
 
 
+@pytest.fixture
+def scoped_feature_bundle(setup_catalogue, tmp_path, monkeypatch):
+    """Two real export chains; only the external CLI is deterministic."""
+    from pathlib import Path
+    from test_light_novel_classification_v1 import build_verified_export_fixture
+    from recommend_book.light_novel_classification_v1 import (
+        SeriesInput, build_series_article_evidence, digest, run_window, sha)
+    root = tmp_path / 'feature-fixture'
+    root.mkdir()
+    build_verified_export_fixture(root, monkeypatch)
+    manifest = root / 'source-manifest.json'
+    source = json.loads(manifest.read_bytes())
+    first = json.loads((root / 'metadata.jsonl').read_bytes())
+    second = json.loads(json.dumps(first).replace('Q1', 'Q2'))
+    entity_path = root / 'entity2.json'
+    entity_sha = write(entity_path, json.loads((root / 'entity.json').read_text().replace('"Q1"', '"Q2"')))
+    second['provenance'].update(raw_path=str(entity_path), raw_sha256=entity_sha)
+    article = root / 'article2.json'
+    article_sha = write(article, json.loads((root / 'article.json').read_text().replace('Q1', 'Q2')))
+    page = json.loads(article.read_bytes())['query']['pages'][0]
+    evidence, receipts, _ = build_series_article_evidence(second, page, {'path': str(article), 'sha256': article_sha}, 'en')
+    (root / 'metadata.jsonl').write_text('\n'.join(json.dumps(row) for row in [first, second]) + '\n', encoding='utf-8')
+    source['artifact_sha256'].update({str(root / 'metadata.jsonl'): sha(root / 'metadata.jsonl'),
+        str(entity_path): entity_sha, str(article): article_sha})
+    source['series'].append({'series_id': 'lns:wd:Q2', 'metadata_row_sha256': digest(second),
+        'articles': [{'raw_path': str(article), 'raw_sha256': article_sha, 'language': 'en', 'page_id': 1}],
+        'evidence_receipts': receipts})
+    source_sha = write(manifest, source)
+    original = json.loads((root / 'native' / 'inputs.json').read_bytes())[0]
+    first_input = SeriesInput.model_validate({**original, 'source_manifest_sha256': source_sha})
+    second_input = first_input.model_copy(update={'series_id': 'lns:wd:Q2', 'source_record_ids': ['wikidata:Q2'], 'evidence': evidence})
+    result = run_window([first_input, second_input], root / 'two-native', source_manifest=manifest,
+        source_sha256=source_sha, reservations=root / 'two-reservations', concurrency=4)
+    cat, records = setup_catalogue
+    assert cat.ingest(records)['inserted'] == 3
+    return cat, records, Path(result['manifest_path']), result['manifest_sha256']
+
+
+def test_scoped_feature_import_authenticates_only_targets_and_shares_operation_cache(scoped_feature_bundle, monkeypatch):
+    from pathlib import Path
+    import recommend_book.light_novel_classification_v1 as native
+    cat, records, path, sha = scoped_feature_bundle
+    Path(records[2]['provenance']['raw_path']).write_bytes(b'unrelated volume raw must stay unread')
+    original, calls = native.verify_feature_export, []
+    def verified(*args):
+        calls.append(args)
+        return original(*args)
+    monkeypatch.setattr(native, 'verify_feature_export', verified)
+    def forbidden(*args, **kwargs):
+        raise AssertionError('feature binding cannot walk the catalogue or membership graph')
+    for method in ['_rows', '_candidate_ids', '_attach_memberships', '_attach_book_confirmations', '_attach_bibliographic_correspondences']:
+        monkeypatch.setattr(cat, method, forbidden)
+    original_read, reads = Path.read_bytes, []
+    def read_bytes(item):
+        reads.append(str(item))
+        return original_read(item)
+    monkeypatch.setattr(Path, 'read_bytes', read_bytes)
+    assert cat.import_features(path, sha) == {'imported': 2, 'held': 0}
+    assert len(calls) == 1
+    assert str(Path(records[2]['provenance']['raw_path'])) not in reads
+    assert reads.count(str(Path(records[0]['provenance']['conditions_path']))) == 1
+    with cat._connect() as db:
+        assert {r[0] for r in db.execute('SELECT entry_id FROM features')} == {'lns:wd:Q1', 'lns:wd:Q2'}
+
+
+@pytest.mark.parametrize('change', ['raw', 'sha', 'typed'])
+def test_scoped_feature_import_authenticates_all_targets_before_any_binding(scoped_feature_bundle, change):
+    from pathlib import Path
+    cat, records, path, sha = scoped_feature_bundle
+    with cat._connect() as db:
+        db.execute('INSERT INTO features VALUES(?,?,?)', ('lns:wd:Q1', 'old-manifest', 'b'*64))
+        old = [tuple(r) for r in db.execute('SELECT * FROM features')]
+        if change == 'sha':
+            db.execute("UPDATE entries SET record_sha256=? WHERE entry_id='lns:wd:Q2'", ('c'*64,))
+        elif change == 'typed':
+            db.execute("UPDATE entries SET kind='work' WHERE entry_id='lns:wd:Q2'")
+    if change == 'raw':
+        Path(records[1]['provenance']['raw_path']).write_bytes(b'tampered target')
+    with pytest.raises(ValueError):
+        cat.import_features(path, sha)
+    with cat._connect() as db:
+        assert [tuple(r) for r in db.execute('SELECT * FROM features')] == old
+
+
+def test_scoped_feature_import_absent_target_is_held_and_existing_binding_can_update(scoped_feature_bundle):
+    cat, _, path, sha = scoped_feature_bundle
+    with cat._connect() as db:
+        db.execute("DELETE FROM entries WHERE entry_id='lns:wd:Q2'")
+        db.execute('INSERT INTO features VALUES(?,?,?)', ('lns:wd:Q1', 'old-manifest', 'b'*64))
+    assert cat.import_features(path, sha) == {'imported': 1, 'held': 1}
+    with cat._connect() as db:
+        assert tuple(db.execute('SELECT * FROM features').fetchone()) == ('lns:wd:Q1', str(path.resolve()), sha)
+
+
+def test_scoped_feature_import_authenticates_absent_targets_native_chain_before_catalogue_reads(scoped_feature_bundle, monkeypatch):
+    cat, _, path, sha = scoped_feature_bundle
+    with cat._connect() as db:
+        db.execute("DELETE FROM entries WHERE entry_id='lns:wd:Q2'")
+    (path.parent / 'classification' / '001' / 'final.json').write_text('{}', encoding='utf-8')
+    def forbidden(*args, **kwargs):
+        raise AssertionError('all native chains must authenticate before catalogue projection')
+    monkeypatch.setattr(cat, '_project', forbidden)
+    with pytest.raises(ValueError, match='bytes changed'):
+        cat.import_features(path, sha)
+    with cat._connect() as db:
+        assert db.execute('SELECT count(*) FROM features').fetchone()[0] == 0
+
+
+def test_scoped_feature_import_holds_authenticated_nonseries_and_wrong_scope_headers(
+        setup_catalogue, ecobalt_source_group_bundle, monkeypatch, tmp_path):
+    # Header routing boundary only; real native-chain replay is exercised above.
+    import recommend_book.light_novel_classification_v1 as native
+    cat, records = setup_catalogue
+    cat.ingest(records)
+    _, _, path, sha, _ = ecobalt_source_group_bundle
+    group = next(iter(cat.import_ecobalt_source_groups(path, sha)['reference_entries'].values()))
+    leaf = next(iter(cat.import_ecobalt_publisher_references(path, sha)['reference_entries'].values()))
+    document = {'rows': [{'entry_id': identity, 'scope': 'series'} for identity in [group, leaf, 'lnw:wd:Q3']]
+                       + [{'entry_id': 'lns:wd:Q1', 'scope': 'work'}]}
+    monkeypatch.setattr(native, 'verify_feature_export', lambda *args: document)
+    assert cat.import_features(tmp_path / 'header-routing.json', 'a'*64) == {'imported': 0, 'held': 4}
+    with cat._connect() as db:
+        assert db.execute('SELECT count(*) FROM features').fetchone()[0] == 0
+
+
+@pytest.mark.parametrize('race', ['new_target', 'metadata'])
+def test_scoped_feature_import_target_race_aborts_without_changing_old_bindings(scoped_feature_bundle, monkeypatch, race):
+    from contextlib import contextmanager
+    import sqlite3
+    cat, _, path, sha = scoped_feature_bundle
+    with cat._connect() as db:
+        db.execute('INSERT INTO features VALUES(?,?,?)', ('lns:wd:Q1', 'old-manifest', 'b'*64))
+        before = [tuple(r) for r in db.execute('SELECT * FROM features')]
+        target = tuple(db.execute("SELECT * FROM entries WHERE entry_id='lns:wd:Q2'").fetchone())
+        if race == 'new_target':
+            db.execute("DELETE FROM entries WHERE entry_id='lns:wd:Q2'")
+    original, calls, writes = cat._connect, [], []
+    @contextmanager
+    def interleaved():
+        with original() as db:
+            calls.append(True)
+            if len(calls) == 2:
+                with sqlite3.connect(cat.db_path) as other:
+                    if race == 'new_target':
+                        other.execute('INSERT INTO entries VALUES(?,?,?,?)', target)
+                    else:
+                        other.execute("UPDATE entries SET kind='work' WHERE entry_id='lns:wd:Q2'")
+                db.set_trace_callback(lambda sql: writes.append(sql) if sql.startswith(('INSERT', 'UPDATE', 'DELETE')) else None)
+            yield db
+    with monkeypatch.context() as patch:
+        patch.setattr(cat, '_connect', interleaved)
+        with pytest.raises(ValueError, match='target.*changed|metadata changed'):
+            cat.import_features(path, sha)
+    assert writes == []
+    with cat._connect() as db:
+        assert [tuple(r) for r in db.execute('SELECT * FROM features')] == before
+
+
 def test_v2_explicit_japanese_literary_description_preserves_unknown_original_language(setup_catalogue):
     from pathlib import Path
     cat, records = setup_catalogue
