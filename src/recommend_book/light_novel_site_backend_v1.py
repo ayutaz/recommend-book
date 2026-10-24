@@ -77,6 +77,11 @@ class UnifiedCatalogue:
             raise ValueError('invalid catalogue family or kind')
         if type(page) is not int or type(page_size) is not int or page < 1 or not 1 <= page_size <= 100:
             raise ValueError('invalid pagination')
+        if family == 'light_novel':
+            result = self.light_novels.search_catalogue(
+                page=page, page_size=page_size, entry_kind=entry_kind, **filters)
+            return {**result, 'filters': dict(filters, family=family, entry_kind=entry_kind),
+                    'count_unit': 'catalogue_entries', 'partition_order': ['light_novel', 'world']}
         partitions = []
         if family != 'world':
             args = dict(filters, entry_kind=entry_kind)
@@ -158,7 +163,11 @@ class UnifiedCatalogue:
         if family != 'world':
             refs = [{**g, 'source_url': row.get('source_url', ''), 'scope': 'work'}
                     for row in liked_world for g in row.get('genres', [])]
-            data = self.light_novels.recommend_preferences(liked_entry_ids=entries, reference_genres=refs, limit=100, **kwargs)
+            # One catalogue needs only the requested cards. World references
+            # still need the wider pool for the cross-catalogue exclusions below.
+            light_limit = limit if family == 'light_novel' and not qids else 100
+            data = self.light_novels.recommend_preferences(
+                liked_entry_ids=entries, reference_genres=refs, limit=light_limit, **kwargs)
             partitions.append(('light_novel', data))
         if family != 'light_novel':
             data = self.world.recommend_preferences(liked_qids=qids, limit=100, **world_args)

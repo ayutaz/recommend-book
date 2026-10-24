@@ -93,6 +93,59 @@ def test_large_page_boundary_has_no_skipped_or_repeated_rows(tmp_path):
     assert [r['qid'] for r in combined.search_catalogue(page=4, page_size=30)['items']] == [f'Q{i+1}' for i in range(90, 120)]
 
 
+def test_light_novel_page_authenticates_only_the_requested_window(tmp_path, monkeypatch):
+    rows = [{'entry_id': f'lns:wd:Q{i+1}', 'qid': f'Q{i+1}', 'entry_kind': 'series',
+             'title': str(i)} for i in range(210)]
+    world = Store(tmp_path/'world.sqlite', [])
+    light = Store(tmp_path/'light.sqlite', rows, light=True)
+    search = light.search_catalogue
+    verified = []
+
+    def record_window(**kwargs):
+        result = search(**kwargs)
+        verified.extend(row['entry_id'] for row in result['items'])
+        return result
+
+    monkeypatch.setattr(light, 'search_catalogue', record_window)
+    result = UnifiedCatalogue(world, light).search_catalogue(family='light_novel', page=4, page_size=8)
+    expected = [f'lns:wd:Q{i+1}' for i in range(24, 32)]
+    assert [row['entry_id'] for row in result['items']] == expected
+    assert result['total'] == 210 and result['pages'] == 27
+    assert verified == expected
+
+
+def test_light_novel_recommendation_does_not_expand_native_card_validation(stores, monkeypatch):
+    _, light, combined = stores
+    verified = []
+
+    def recommend(**kwargs):
+        # Each returned card stands for its authenticated classification chain.
+        candidates = [dict(light.rows[1], entry_id=f'lns:wd:Q{i+100}', qid=f'Q{i+100}')
+                      for i in range(100)]
+        selected = candidates[:kwargs['limit']]
+        verified.extend(row['entry_id'] for row in selected)
+        return {'items': selected}
+
+    monkeypatch.setattr(light, 'recommend_preferences', recommend)
+    result = combined.recommend_preferences(liked_entry_ids=['lns:wd:Q30'], family='light_novel', limit=8)
+    assert len(result['items']) == len(verified) == 8
+
+
+def test_world_reference_keeps_candidates_for_post_filter_exclusion(stores, monkeypatch):
+    _, light, combined = stores
+
+    def recommend(**kwargs):
+        candidates = [
+            {'entry_id': 'lnw:wd:Q10', 'qid': 'Q10', 'entry_kind': 'work', 'title': 'Liked world work'},
+            light.rows[1],
+        ]
+        return {'items': candidates[:kwargs['limit']]}
+
+    monkeypatch.setattr(light, 'recommend_preferences', recommend)
+    result = combined.recommend_preferences(liked_qids=['Q10'], family='light_novel', limit=1)
+    assert [row['entry_id'] for row in result['items']] == ['lns:wd:Q40']
+
+
 def test_hidden_world_row_does_not_hide_independently_admitted_light_novel(tmp_path):
     world = Store(tmp_path/'world.sqlite', [{'qid': 'Q20', 'title': 'Held', 'display_allowed': 0}])
     light = Store(tmp_path/'light.sqlite', [
