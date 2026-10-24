@@ -1,9 +1,11 @@
 from copy import deepcopy
+import hashlib
+import json
 
 import pytest
 
 from recommend_book.light_novel_explicit_series_match_v1 import (
-    candidate_ndl_title_keys, candidate_title_keys, match_cobalt_member,
+    candidate_ndl_title_keys, candidate_title_keys, dated_own_author_bindings, match_cobalt_member,
 )
 
 
@@ -191,3 +193,109 @@ def test_candidate_keys_preserve_numbers_series_suffixes_and_all_subtitle_words(
 def test_pure_functions_do_not_open_files(monkeypatch):
     monkeypatch.setattr('builtins.open', lambda *a, **k: pytest.fail('unexpected I/O'))
     assert match_cobalt_member(assertion(), parts()) is not None
+
+
+def dated_author_parts(*, heading='架空, 著者, 1965-', literal='架空著者 著',
+                       namespace='http://purl.org/dc/elements/1.1/'):
+    own = parts()
+    own['source']['contributors'][0]['name'] = heading
+    own['source']['contributors'].append({'name': '架空著者', 'role': 'author', 'identifiers': []})
+    own['literal_authors'] = [{'name': '架空著者', 'literal': literal,
+        'locator': BASE + '/{' + namespace + '}creator[4]'}]
+    return own
+
+
+@pytest.mark.parametrize('heading,birth,death', [('架空, 著者, 1965-', '1965', None),
+    ('架空, 著者, 1965-2020', '1965', '2020')])
+def test_edition_bound_dated_author_heading_requires_same_own_writer_literal(heading, birth, death):
+    own = dated_author_parts(heading=heading)
+    before = deepcopy(own)
+    proof = match_cobalt_member(assertion(), own)
+    assert proof['rule_version'] == 'cobalt-explicit-series-member-match-v2'
+    assert proof['authors'][0]['authority_ids'] == ['http://id.ndl.go.jp/auth/entity/01234567']
+    author = proof['ndl_member']['author']['contributors'][0]
+    evidence = author['edition_bound_corroboration']
+    assert evidence['authority_heading'] == heading
+    assert evidence['birth_year'] == birth and evidence['death_year'] == death
+    assert evidence['literal_credit'] == own['literal_authors'][0]
+    assert evidence['authority_projection_pointer'] == '/source/contributors/0'
+    assert evidence['scope'] == 'this_own_bibliographic_record_only'
+    assert proof['global_author_alias_asserted'] is False
+    assert proof['global_author_identity_asserted'] is False
+    assert own == before
+
+
+@pytest.mark.parametrize('literal,namespace', [('架空著者 著者', 'http://purl.org/dc/elements/1.1/'),
+    ('架空著者 作', 'http://purl.org/dc/terms/'), ('架空著者 原作', 'http://purl.org/dc/terms/')])
+def test_dated_heading_accepts_only_explicit_own_writer_roles(literal, namespace):
+    assert match_cobalt_member(assertion(), dated_author_parts(literal=literal, namespace=namespace)) is not None
+
+
+@pytest.mark.parametrize('heading', ['架空著者, 1965-', '架空, 著者, 1965- 小説家',
+    '架空, 著者, 1965年-', '架空, 著者, 1965-?', '架空, 著者, 65-',
+    '架空, 著者, 1965-2020, 別名', '別の姓, 著者, 1965-',
+    ' , 架空著者, 1965-', '架空著者, , 1965-'])
+def test_dated_heading_does_not_strip_other_suffix_or_guess_other_creators(heading):
+    assert match_cobalt_member(assertion(), dated_author_parts(heading=heading)) is None
+
+
+@pytest.mark.parametrize('change', ['no_literal', 'literal_other_name', 'literal_no_role', 'literal_editor',
+    'literal_other_parent', 'literal_other_namespace', 'literal_nested', 'authority_missing',
+    'authority_other_namespace', 'creator_editor', 'multiple_uris', 'multiple_same_name_authorities'])
+def test_dated_heading_corroboration_counterexamples_remain_held(change):
+    own = dated_author_parts()
+    contributor = own['source']['contributors'][0]
+    if change == 'no_literal': own['literal_authors'] = []
+    elif change == 'literal_other_name': own['literal_authors'][0]['name'] = '別の著者'
+    elif change == 'literal_no_role': own['literal_authors'][0]['literal'] = '架空著者'
+    elif change == 'literal_editor': own['literal_authors'][0]['literal'] = '架空著者 編者'
+    elif change == 'literal_other_parent': own['literal_authors'][0]['locator'] = 'other/{http://purl.org/dc/terms/}creator[4]'
+    elif change == 'literal_other_namespace': own['literal_authors'][0]['locator'] = BASE + '/{http://example.com/}creator[4]'
+    elif change == 'literal_nested': own['literal_authors'][0]['locator'] = BASE + '/contents/{http://purl.org/dc/terms/}creator[4]'
+    elif change == 'authority_missing': contributor['identifiers'] = []
+    elif change == 'authority_other_namespace': contributor['identifiers'][0]['value'] = 'https://example.com/auth/entity/01234567'
+    elif change == 'creator_editor': contributor['role'] = 'editor'
+    elif change == 'multiple_uris': contributor['identifiers'].append({'source': 'ndl-authority', 'value': 'http://id.ndl.go.jp/auth/entity/09999999'})
+    else:
+        other = deepcopy(contributor)
+        other['identifiers'][0]['value'] = 'http://id.ndl.go.jp/auth/entity/09999999'
+        own['source']['contributors'].append(other)
+    assert match_cobalt_member(assertion(), own) is None
+
+
+def test_strict_direct_author_proof_is_unchanged_even_when_fallback_would_be_ambiguous():
+    strict = match_cobalt_member(assertion(), parts())
+    assert hashlib.sha256(json.dumps(strict, ensure_ascii=False, sort_keys=True,
+        separators=(',', ':')).encode()).hexdigest() == '6722d827238889fd10644dcda47e2cd909f86ae4e34b39449e4646b9a1064991'
+    own = parts()
+    own['source']['contributors'] += dated_author_parts()['source']['contributors']
+    own['literal_authors'] = dated_author_parts()['literal_authors']
+    second = deepcopy(own['source']['contributors'][1])
+    second['identifiers'][0]['value'] = 'http://id.ndl.go.jp/auth/entity/09999999'
+    own['source']['contributors'].append(second)
+    assert match_cobalt_member(assertion(), own) == strict
+
+
+def test_dated_binding_is_reusable_but_never_supplies_a_provider_publisher_policy():
+    own = dated_author_parts()
+    own['source']['publisher'] = '別出版社'
+    own['publisher_agents'][0]['name'] = '別出版社'
+    before = deepcopy(own)
+    bindings = dated_own_author_bindings(own, '架空著者')
+    assert len(bindings) == 1
+    assert bindings[0]['authority_ids'] == ['http://id.ndl.go.jp/auth/entity/01234567']
+    assert bindings[0]['edition_bound_corroboration']['literal_credit']['name'] == '架空著者'
+    assert bindings[0]['edition_bound_corroboration']['authority_heading'] == '架空, 著者, 1965-'
+    assert bindings[0]['own_primary_resource_locator'] == BASE
+    assert match_cobalt_member(assertion(), own) is None
+    assert own == before
+
+
+@pytest.mark.parametrize('change', ['missing_sha', 'other_resource', 'two_own_parents', 'malformed'])
+def test_generic_dated_bindings_hold_unbound_or_ambiguous_input(change):
+    own = dated_author_parts()
+    if change == 'missing_sha': own['source_raw_sha256'] = ''
+    elif change == 'other_resource': own['titles'][0]['locator'] = 'other/{http://purl.org/dc/terms/}title[1]'
+    elif change == 'two_own_parents': own['publisher_agents'].append({**own['publisher_agents'][0], 'locator': 'other/publisher[3]'})
+    else: own = {}
+    assert dated_own_author_bindings(own, '架空著者') == []

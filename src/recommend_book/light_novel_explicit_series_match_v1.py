@@ -20,6 +20,10 @@ _BOOK = re.compile(r'https://ebooks\.shueisha\.co\.jp/detail\.php\?book=([A-Za-z
 _AUTHORITY = re.compile(r'https?://id\.ndl\.go\.jp/auth/(?:entity|ndlna)/[0-9]{6,12}')
 _SHA = re.compile(r'[0-9a-f]{64}')
 _NDL_ID = re.compile(r'R100000002-[A-Za-z0-9._-]+')
+_DATED_HEADING = re.compile(r'(?P<family>[^,]+),\s*(?P<given>[^,]+),\s*'
+                            r'(?P<birth>[0-9]{4})-(?P<death>[0-9]{4})?')
+_WRITER_LITERAL = re.compile(r'(?P<name>.+?)\s*[\[（(]?\s*'
+                             r'(?P<role>著者|著|原作|作)\s*[\]）)]?')
 
 
 def _broad_key(value):
@@ -119,6 +123,94 @@ def _official_scope(assertion):
         and all(_SHA.fullmatch(row['raw_sha256']) and row['locator'] for row in evidence))
 
 
+def _dated_author_corroboration(parts, author_name, own_locator):
+    """Correlate one existing own authority with an own explicit writer literal.
+
+    This is local to one authenticated bibliographic record, never an author
+    alias. Contributor pointers describe the core's own-creator projection;
+    no individual structured raw creator flag or XPath is invented.
+    """
+    literals = []
+    for row in parts.get('literal_authors', []):
+        locator = row['locator']
+        own_creator = False
+        for namespace in ('http://purl.org/dc/elements/1.1/', 'http://purl.org/dc/terms/'):
+            prefix = own_locator + '/{' + namespace + '}creator['
+            if locator.startswith(prefix) and re.fullmatch(r'[1-9][0-9]*\]', locator[len(prefix):]):
+                own_creator = True
+        marked = _WRITER_LITERAL.fullmatch(row['literal'])
+        if (own_creator and marked and _person_key(row['name']) == _person_key(author_name)
+                and _person_key(marked['name']) == _person_key(author_name)):
+            literals.append(row)
+    if not literals:
+        return []
+    headings, authority_ids = [], set()
+    for index, contributor in enumerate(parts['source']['contributors']):
+        if contributor['role'] != 'author':
+            continue
+        uris = {row['value'] for row in contributor['identifiers']
+                if row['source'] == 'ndl-authority' and _AUTHORITY.fullmatch(row['value'])}
+        if not uris:
+            continue
+        original = contributor['name']
+        normalized = unicodedata.normalize('NFKC', original).strip()
+        heading = _DATED_HEADING.fullmatch(normalized)
+        if (not heading or not _person_key(heading['family']) or not _person_key(heading['given'])
+                or _person_key(heading['family'] + heading['given']) != _person_key(author_name)):
+            continue
+        headings.append((index, original, heading, uris))
+        authority_ids.update(uris)
+    if not headings or len(authority_ids) != 1:
+        return []
+    # Conflicting dated headings on the same authority are also unresolved.
+    if len({(heading['birth'], heading['death']) for _, _, heading, _ in headings}) != 1:
+        return []
+    index, original, heading, _ = headings[0]
+    return [{'name': original, 'role': 'author', 'authority_ids': sorted(authority_ids),
+        'own_primary_resource_locator': own_locator,
+        'projection_pointer': f'/source/contributors/{index}',
+        'locator_scope': 'own_primary_resource_and_normalized_projection_pointer',
+        'edition_bound_corroboration': {
+            'rule': 'dated_own_authority_heading_plus_explicit_own_writer_literal_v1',
+            'scope': 'this_own_bibliographic_record_only', 'authority_heading': original,
+            'family': heading['family'].strip(), 'given': heading['given'].strip(),
+            'birth_year': heading['birth'], 'death_year': heading['death'],
+            'official_series_author': author_name,
+            'authority_projection_pointer': f'/source/contributors/{index}',
+            'authority_evidence_kind': 'authenticated_own_creator_projection',
+            'literal_credit': deepcopy(literals[0])}}]
+
+
+def dated_own_author_bindings(primary_parts, official_name):
+    """Return only edition-bound dated-heading/literal corroborations.
+
+    This reusable helper supplies no title, publisher, membership or admission
+    decision. Callers must preserve their own strict-positive path and apply
+    all other provider gates separately. Unknown/ambiguous evidence yields [].
+    """
+    try:
+        source = primary_parts['source']
+        identity = source['source_id']
+        if (not official_name or not _person_key(official_name)
+                or not _NDL_ID.fullmatch(identity)
+                or source['source_url'] != 'https://ndlsearch.ndl.go.jp/books/' + identity
+                or not _SHA.fullmatch(primary_parts['source_raw_sha256'])):
+            return []
+        parents = {_parent(row['locator']) for row in primary_parts['publisher_agents'] if row['locator']}
+        if len(parents) != 1:
+            return []
+        own_locator = next(iter(parents))
+        complete_titles = [row for row in primary_parts['titles']
+                           if '/{http://purl.org/dc/terms/}title[' in row['locator']]
+        if not complete_titles or any(_parent(row['locator']) != own_locator for row in complete_titles):
+            return []
+        return [{**row, 'source_id': identity, 'source_url': source['source_url'],
+                 'source_raw_sha256': primary_parts['source_raw_sha256']}
+                for row in _dated_author_corroboration(primary_parts, official_name, own_locator)]
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return []
+
+
 def _match(assertion, parts):
     if not _official_scope(assertion):
         return None
@@ -148,8 +240,12 @@ def _match(assertion, parts):
                 'own_primary_resource_locator': own_locator,
                 'projection_pointer': f'/source/contributors/{index}',
                 'locator_scope': 'own_primary_resource_and_normalized_projection_pointer'})
+    dated_author_used = False
     if not own_authors:
-        return None
+        own_authors = dated_own_author_bindings(parts, author_name)
+        dated_author_used = bool(own_authors)
+        if not own_authors:
+            return None
     matches = []
     for book in assertion['books']:
         url_match = _BOOK.fullmatch(book['source_url'])
@@ -171,7 +267,7 @@ def _match(assertion, parts):
     volume = parts['volume']['value'] if parts['volume'] else None
     numeric = unicodedata.normalize('NFKC', volume) if volume else ''
     authorities = sorted({uri for row in own_authors for uri in row['authority_ids']})
-    return {'rule_version': 'cobalt-explicit-series-member-match-v1',
+    proof = {'rule_version': 'cobalt-explicit-series-member-match-v1',
         'scope': 'ndl_bibliographic_member_to_explicit_official_series',
         'title': assertion['series_title'],
         'title_origin': {'kind': 'publisher_explicit_series_title',
@@ -194,6 +290,11 @@ def _match(assertion, parts):
         'ndl_publisher_policy': publisher, 'official_publisher_asserted': False,
         'paper_ebook_same_edition_asserted': False, 'original_work_identity_asserted': False,
         'author_identity_scope': 'known_ndl_authority_on_same_name_own_creator_only'}
+    if dated_author_used:
+        proof.update(rule_version='cobalt-explicit-series-member-match-v2',
+            author_identity_scope='edition_bound_dated_own_heading_and_explicit_writer_literal_only',
+            global_author_alias_asserted=False, global_author_identity_asserted=False)
+    return proof
 
 
 def match_cobalt_member(assertion, primary_parts):
