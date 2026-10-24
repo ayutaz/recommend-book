@@ -40,6 +40,67 @@ def test_validates_all_pre_model_holds_separately():
     assert sum(item["selected"] for item in result) == 266
 
 
+def test_actual_audit_shape_adds_legacy_hold_once():
+    m = module()
+    value = audit_value()
+    legacy = value["excluded_unstarted_windows"].pop(0)
+    legacy["processes"] = {name: {} for name in (
+        "preflight", "controller_worker", "controller_observer", "sequential_queue")}
+    value["legacy_recovery_proofs"] = {"unstarted": legacy}
+    assert [item["window_index"] for item in m.validate_unstarted_windows(value)] == [161, 196, 197]
+
+
+@pytest.mark.parametrize("mismatch", [False, True])
+def test_display_gate_failure_with_zero_native_failures_stays_excluded(tmp_path, mismatch):
+    support_spec = importlib.util.spec_from_file_location(
+        "usage_v2_fixture", Path(__file__).with_name("test_summarize_scale20k_usage_v2.py"))
+    support = importlib.util.module_from_spec(support_spec)
+    support_spec.loader.exec_module(support)
+    base, audit_file, _ = support.fixture(tmp_path)
+    audit = json.loads(audit_file.read_bytes())
+    item = audit["excluded_failed_windows"][0]
+    docs = {name: json.loads(Path(item[name]["path"]).read_bytes()) for name in (
+        "summary", "control", "export", "quarantine", "quarantine_rows")}
+    run_path = Path(docs["export"]["run_manifest"])
+    run = json.loads(run_path.read_bytes())
+    run.update(selected=1, completed=1, failed=0)
+    support.save(run_path, run)
+    gate = {"passed": False, "selected": 1, "accepted": 1, "failure_rate": 0.0,
+            "actual_display_feature_works": 0, "actual_display_adoption_rate": 0.0,
+            "reasons": ["actual_display_feature_adoption_below_70_percent"]}
+    docs["export"]["gate"] = gate
+    docs["export"]["artifact_sha256"][str(run_path)] = support.sha(run_path)
+    for name in ("export", "control", "summary", "quarantine_rows", "quarantine"):
+        doc = docs[name]
+        if name == "control":
+            doc["gate"] = gate
+            doc["control_artifacts"]["run"]["sha256"] = support.sha(run_path)
+            doc["control_artifacts"]["export"] = item["export"].copy()
+        elif name == "summary":
+            doc.update(gate=gate, native_selected=1, native_completed=1,
+                       native_failed=1 if mismatch else 0,
+                       public_manifest_sha256=item["export"]["sha256"],
+                       control_sha256=item["control"]["sha256"])
+        elif name == "quarantine_rows":
+            doc.update(control_sha256=item["control"]["sha256"],
+                       export_sha256=item["export"]["sha256"])
+        elif name == "quarantine":
+            doc.update(failed_gate=gate, rows_before_sha256=item["quarantine_rows"]["sha256"])
+        path = Path(item[name]["path"])
+        support.save(path, doc)
+        item[name]["sha256"] = support.sha(path)
+    item["failed_gate"] = gate
+    frozen = module()._load_v2()
+    if mismatch:
+        with pytest.raises(ValueError, match="counts differ"):
+            frozen._validate_exclusions(audit, base)
+    else:
+        _, excluded = frozen._validate_exclusions(audit, base)
+        assert excluded[0]["counts"]["failed"] == 0
+        assert excluded[0]["counts"]["removed"] == 1
+        assert excluded[0]["counts"]["adopted"] is None
+
+
 @pytest.mark.parametrize("change", ["missing", "model", "catalogue"])
 def test_rejects_incomplete_or_mutated_hold(change):
     m = module()

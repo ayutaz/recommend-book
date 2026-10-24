@@ -25,13 +25,22 @@ def sha256(path: Path) -> str:
 
 
 def _load_v2():
-    if sha256(V2_PATH) != V2_SHA256:
+    raw = V2_PATH.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != V2_SHA256:
         raise ValueError("Frozen v2 usage summarizer changed")
+    # A failed publication gate can have zero native failures (for example,
+    # insufficient display features). Keep its exact failed-gate/quarantine
+    # authentication, count equality and nonnegative-count checks unchanged.
+    source = raw.decode("utf-8")
+    anchor = "                or failed <= 0):"
+    if source.count(anchor) != 1:
+        raise ValueError("Frozen failed-gate count adapter boundary differs")
+    source = source.replace(anchor, "                or failed < 0):", 1)
     spec = importlib.util.spec_from_file_location("scale20k_usage_v2_frozen", V2_PATH)
     if spec is None or spec.loader is None:
         raise ImportError("Unable to load frozen v2 usage summarizer")
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    exec(compile(source, str(V2_PATH), "exec"), module.__dict__)
     return module
 
 
@@ -136,6 +145,7 @@ def summarize(*, audit_path: Path, audit_sha256: str, base_dir: Path,
         },
         "cli212_premodel_hold": audit.get("cli212_premodel_hold"),
         "v2_frozen_sha256": V2_SHA256,
+        "v2_count_adapter": "authenticated_failed_gate_allows_zero_native_failures",
     })
     if output is not None:
         destination = Path(output)
