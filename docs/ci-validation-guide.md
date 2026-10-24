@@ -11,7 +11,7 @@
 | `test_collect_scale20k_content_v1.py::test_preflight_rejects_stale_rights_before_any_selection` | `native-source-registry-v1.json` |
 | `test_scale20k_native_v2.py::test_unknown_genre_import_and_existing_control_constructor_connect_end_to_end` | `content-operational-driver-v2.py` |
 
-この過去のrunはUbuntuが2 failed・2,629 passed・7 skipped、Windowsが2 failed・2,630 passed・6 skippedだった。その後、一時ディレクトリ内の合成fixtureへ切り替え、関連17試験のローカル成功を確認した。修正は`7fdc2d8efaccd75e87af9b1bf07d4ba80cd42c3a`としてpush済み。2026-10-24 18:34 JST時点で、このcommitの[run 40080781445](https://github.com/ayutaz/recommend-book/actions/runs/40080781445)は両OSとも実行待ちであり、CI成功やマージ準備完了とは扱わない。収集済みデータの公開、skipの追加、固定hash確認の緩和は行っていない。
+この過去のrunはUbuntuが2 failed・2,629 passed・7 skipped、Windowsが2 failed・2,630 passed・6 skippedだった。その後、一時ディレクトリ内の合成fixtureへ切り替え、関連17試験のローカル成功を確認した。修正は`7fdc2d8efaccd75e87af9b1bf07d4ba80cd42c3a`としてpush済み。このcommitの[run 40080781445](https://github.com/ayutaz/recommend-book/actions/runs/40080781445)は両OSで成功した。Ubuntuは2,631 passed・7 skipped（68.69秒）、Windowsは2,632 passed・6 skipped（331.28秒）。これはfixture修正のCIであり、後続の最新実装のCI成功へ読み替えない。収集済みデータの公開、skipの追加、固定hash確認の緩和は行っていない。
 
 今後の補助実装についても変更に関係する試験を確認し、確定した実装で両OSのCIを確認する。実データの分類・審査・DB採用、最終監査、実HTTP・画面確認はfixture CIと別に確認する。文書だけの更新では、リンク・差分・保存結果との整合を確認し、分類や全件pytestを追加実行しない。
 

@@ -32,7 +32,7 @@ local / free operation は、取得元のライセンス、依存ライブラリ
 
 保存先はローカル台帳の `read_status` table である。この持ち出しと削除は、既存335評価、好きな作品、推薦条件、全設定をまとめて扱う機能ではない。好きな作品と推薦条件は現在の画面内での一時保持である。利用手順は[README](../README.md#ローカルで開く)を参照。
 
-確認記録は `data/autonomous-next-v3/scale-20000-classifications-v1/stage3/history-process-restart-v1/report.json` と、同 `stage3/history-browser-download-v1/report.json` に保存した。両試験は外部通信・モデル呼出し0であり、再起動試験で使った入口・画面・履歴管理のコードは今回の確認時点でも記録済みhashと一致する。2万分類完了後の推薦・画面確認とは分けて扱う。
+確認記録は `data/autonomous-next-v3/scale-20000-classifications-v1/stage3/history-process-restart-v1/report.json` と、同 `stage3/history-browser-download-v1/report.json` に保存した。両試験は外部通信・モデル呼出し0である。2万分類時の再確認では入口と履歴管理モジュールのhashが一致し、画面のPythonハンドラーと持ち出し・削除・読書状態変更のJavaScriptも同一だった。画面ファイル全体は検索カードの説明文が変わっており、全体のhashが同一とはしない。対応は `stage3/final20000-http-v1/history-implementation-continuity.json` に記録した。2万分類での推薦・作品詳細・出典表示と履歴JSONの実HTTP確認も完了し、全体の最終監査は実行中である。
 
 ## v19 最終成果物で確認できる Wikipedia 抜粋の範囲
 
