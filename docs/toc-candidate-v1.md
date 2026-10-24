@@ -48,18 +48,18 @@ local / free operation は、取得元のライセンス、依存ライブラリ
 
 cover image、novel full text、未審査の段落はこの receipt の範囲に含めない。採用済み記事抜粋の表示実装も未確認扱いにはしない。最終画面では、30件すべてに source credits と未校正 warning があり、最初の source に revision があり、CC BY-SA 表示と attribution を確認した。
 
-## 現行の画面・HTTP成果物
+## v19 完了時の画面・HTTP成果物
 
-保存済みの実測は次のとおりである。
+以下はv19の1万分類時に保存した実測である。拡張中のDB件数や、2万分類後の再検証結果ではない。
 
 - `data/autonomous-next-v3/scale-100000-v1/audit/scale100k-catalogue-audit-v1.json`: searchable 100,368、recommendable 26,079、native total 10,000。
-- `data/autonomous-next-v3/scale-100000-v1/audit/native-10000-stats-http-v1.json`: eligible classified works 10,000、`bibliographic_history_links=0`、`content_history_links=0`。これは現在の10,000 native artifact の stats fields の値であり、既存335評価の追跡結果ではない。
+- `data/autonomous-next-v3/scale-100000-v1/audit/native-10000-stats-http-v1.json`: eligible classified works 10,000、`bibliographic_history_links=0`、`content_history_links=0`。これはv19完了時の10,000 native artifact の stats fields の値であり、既存335評価の追跡結果ではない。
 - `data/autonomous-next-v3/scale-100000-v1/preference-ui-final-v1.json`: 100,368件表示、10,000件分類済み、9,375件 feature-bearing、推薦30件、30件すべて source credits・未校正 warning、画面目視確認済み。個人の品質改善や独立正解率は確認していない。
 - `data/autonomous-next-v3/scale-100000-v1/audit/recommendation-http-after-projection-v2.json`: theme weight 0 / 2 の2リクエストが HTTP 200、各30件。先頭項目にも Wikipedia revision、CC BY-SA、screened-paragraphs locator がある。
 
 ## v20 stage 4 の評価状態
 
-ここでは、既存335評価の保存値と、現在10,000 native artifact の link fields を分けて扱う。`data/autonomous-next-v3/evaluation/phase15-history-v1/report.json` と `data/autonomous-next-v3/evaluation/phase15-independent-reference-v1/report.json` の保存値は、owner observation 335、既存 content-connected 2（2/335、0.597%）、new evaluation-ready sources 0、new gold pairs 0 である。一方、現在の stats artifact は `bibliographic_history_links=0`、`content_history_links=0` である。両者は同じ母数でも同じ測定ではない。
+ここでは、既存335評価の保存値と、v19完了時の10,000 native artifact の link fields を分けて扱う。`data/autonomous-next-v3/evaluation/phase15-history-v1/report.json` と `data/autonomous-next-v3/evaluation/phase15-independent-reference-v1/report.json` の保存値は、owner observation 335、既存 content-connected 2（2/335、0.597%）、new evaluation-ready sources 0、new gold pairs 0 である。一方、v19完了時の stats artifact は `bibliographic_history_links=0`、`content_history_links=0` である。両者は同じ母数でも同じ測定ではない。
 
 v19 追加分から、上記の保存成果物を範囲・source field・個別 relation evidence まで確認したが、新しい authoritative book correspondence は**確認できなかった**。これは「v19 以降の最終差分が0」とする判定ではない。20,000分類が完了し、現在の全対象と新しい対応根拠を差分評価するまで、stage 4 の fresh denominator と最終 delta は **pending** とする。
 

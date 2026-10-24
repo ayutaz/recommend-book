@@ -1,12 +1,27 @@
 # CI 検証ガイド
 
-## 現在のPython・検証（2026-10-20・phase16）
+## 作業ブランチの検証状況（2026-10-24）
+
+現在の計画・分類件数・稼働状況は[2万分類への実行状況](scale-classification-v4.md)を参照する。以下の過去のCI成功を、拡張中の作業ブランチの成功と読み替えない。
+
+失敗内容まで確認した[run 40060754593](https://github.com/ayutaz/recommend-book/actions/runs/40060754593)の対象は `1e5216fa88a2f917e32a64f42091e948256acc3a`。Ubuntu・WindowsのPython 3.14で、次の2試験がGit管理外ファイルの不在により失敗した。
+
+| 試験 | CIにない依存ファイル |
+|---|---|
+| `test_collect_scale20k_content_v1.py::test_preflight_rejects_stale_rights_before_any_selection` | `native-source-registry-v1.json` |
+| `test_scale20k_native_v2.py::test_unknown_genre_import_and_existing_control_constructor_connect_end_to_end` | `content-operational-driver-v2.py` |
+
+Ubuntuは2 failed・2,629 passed・7 skipped、Windowsは2 failed・2,630 passed・6 skipped。この失敗は未修正であり、CI成功やmainへのマージ準備完了とは扱わない。収集済みデータを公開するのではなく、一時ディレクトリ内の合成fixtureで必要な入力を作り、既存の拒否条件と接続を試験できるように修正する。skipの追加や固定hash確認の緩和で通さない。
+
+修正時はまず上記2試験と変更に関係する試験を実行し、確定した実装で両OSのCIを確認する。実データの分類・審査・DB採用、最終監査、実HTTP・画面確認はfixture CIと別に確認する。文書だけの更新では、リンク・差分・保存結果との整合を確認し、分類や全件pytestを追加実行しない。
+
+## 過去のPython移行と検証（2026-10-20・phase16）
 
 Python 3.14系へ設定を統一し、[PR #20](https://github.com/ayutaz/recommend-book/pull/20)でmainへ統合した。依存パッケージのバージョン変更は0。対象head`46e0532`の[run 39346947438](https://github.com/ayutaz/recommend-book/actions/runs/39346947438)はWindows・Ubuntuとも成功、ローカルは1,873 passed。phase16の後続差分はMarkdownのみで、ソース・依存・テストを変更していないため全件試験・CIを重複実行しない。
 
 新規15作品、6用途、表示・撤回復元、実際の中断再開、全工程実測は[別の実データ報告](phase16-flow-measurement-and-delivery-v1.md)。これを独立精度や本人向け改善の証明にしない。以下は各時点の固定記録である。
 
-## 最新の検証と統合（2026-10-20・phase15）
+## 過去の検証と統合（2026-10-20・phase15）
 
 新しいv4 runtime生成時だけJobStoreを1試行に固定し、失敗後の同一入力の自動再送を防ぐ。通信失敗、schema失敗、同じ名前空間での再開を実際の生成schedulerと検査用fixtureで確認し、対象68件成功。過去runtimeと通常runnerの既定は変更していない。
 
