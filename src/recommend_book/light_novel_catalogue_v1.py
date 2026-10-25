@@ -3587,18 +3587,21 @@ class LightNovelCatalogue:
                 authors.extend(c['name'] for child in children for c in child['credits'] if c['role'] == 'author')
                 child_titles = [child['title'] for child in children]
                 if record['schema_version'] == SOURCE_GROUP_PROVIDERS['ecobalt']['schema']:
-                    child_titles.append(record['heading_author_display'])
+                    authors.append(record['heading_author_display'])
                 if record['schema_version'] in {p['schema'] for p in SOURCE_GROUP_PROVIDERS.values() if p.get('index_only')}:
-                    child_titles.extend(credit['name'] for credit in record['index_credit_literals'])
+                    authors.extend(credit['name'] for credit in record['index_credit_literals'])
             elif record.get('schema_version') == ECOBALT_REFERENCE_SCHEMA:
-                child_titles = [record['author_display']]
+                child_titles = []
+                authors.append(record['author_display'])
             elif record.get('schema_version') == FUTABA_REFERENCE_SCHEMA:
-                child_titles = [credit['name'] for credit in record['publisher_product_reference']['credits'] if credit['role'] == 'author']
+                child_titles = []
+                authors.extend(credit['name'] for credit in record['publisher_product_reference']['credits'] if credit['role'] == 'author')
             elif record.get('schema_version') == KADOKAWA_REFERENCE_SCHEMA:
-                child_titles = [credit['name'] for credit in record['publisher_product_reference']['credit_literals']]
+                child_titles = []
+                authors.extend(credit['name'] for credit in record['publisher_product_reference']['credit_literals'])
             else:
                 child_titles = []
-            values[identity] = _search_text([*titles, *child_titles, *authors])
+            values[identity] = (_search_text([*titles, *child_titles]), _search_text(authors))
             title_keys[identity] = {normalize_search(t) for t in titles if t}
             # A possible RDF ISBD main title widens selection only. Its literal
             # source-field structure is checked later by _source_with_title_parts.
@@ -3623,7 +3626,8 @@ class LightNovelCatalogue:
                 edges[a].add(b)
                 edges[b].add(a)
         selected = {entry_id} & records.keys() if entry_id else {
-            identity for identity, text in values.items() if _search_contains(text, key, punctuationless_key, terms)}
+            identity for identity, (title_text, names) in values.items()
+            if _search_contains(title_text, key, punctuationless_key, terms) or key in names}
         pending = list(selected)
         while pending:
             identity = pending.pop()
@@ -3716,22 +3720,23 @@ class LightNovelCatalogue:
         result = []
         for row in rows:
             children = row.get('publisher_product_references', []) if row['entry_kind'] == 'publisher_group' else []
-            child_terms = [child['title'] for child in children]
-            child_terms.extend(c['name'] for child in children for c in child['credits'] if c['role'] == 'author')
+            child_titles = [child['title'] for child in children]
+            names = [a['name'] or a['qid'] for a in row['authors']]
+            names.extend(c['name'] for child in children for c in child['credits'] if c['role'] == 'author')
             if row.get('publisher_work_group_kind') == SOURCE_GROUP_PROVIDERS['ecobalt']['public_kind']:
-                child_terms.append(row['heading_author_display'])
+                names.append(row['heading_author_display'])
             if row.get('publisher_work_group_kind') in {p['public_kind'] for p in SOURCE_GROUP_PROVIDERS.values() if p.get('index_only')}:
-                child_terms.extend(credit['name'] for credit in row['index_credit_literals'])
+                names.extend(credit['name'] for credit in row['index_credit_literals'])
             if row['entry_kind'] == 'publisher_reference':
                 if 'author_display' in row:
-                    child_terms.append(row['author_display'])
+                    names.append(row['author_display'])
                 elif row.get('publisher_reference_kind') == PUBLISHER_REFERENCE_PROVIDERS['kadokawa']['public_kind']:
-                    child_terms.extend(credit['name'] for credit in row['publisher_product_reference']['credit_literals'])
+                    names.extend(credit['name'] for credit in row['publisher_product_reference']['credit_literals'])
                 else:
-                    child_terms.extend(credit['name'] for credit in row['publisher_product_reference']['credits'] if credit['role'] == 'author')
-            if key and not _search_contains(_search_text([
-                    row['title'], *row['aliases'], *[a['name'] or a['qid'] for a in row['authors']],
-                    *child_terms]), key, punctuationless_key, terms):
+                    names.extend(credit['name'] for credit in row['publisher_product_reference']['credits'] if credit['role'] == 'author')
+            if key and not (_search_contains(_search_text([
+                    row['title'], *row['aliases'], *child_titles]), key, punctuationless_key, terms)
+                    or key in _search_text(names)):
                 continue
             if genre and genre not in {g['qid'] for g in row['genres']}:
                 continue

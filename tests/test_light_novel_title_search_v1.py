@@ -86,6 +86,12 @@ def test_title_and_reading_alias_do_not_concatenate_their_numbers(title_variants
     assert row['title'] == '架空のかんけい. 4' and row['aliases'] == ['2リノヨミ']
 
 
+def test_author_name_is_not_combined_with_an_unrelated_volume_number(title_variants):
+    cat, records = title_variants
+    assert cat.search_catalogue('著者')['total'] == len(records)
+    assert cat.search_catalogue('著者3')['total'] == 0
+
+
 def test_new_title_match_still_authenticates_candidate_raw(title_variants):
     cat, records = title_variants
     Path(records[2]['provenance']['raw_path']).write_text('<changed/>', encoding='utf-8')
