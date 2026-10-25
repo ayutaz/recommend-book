@@ -686,3 +686,87 @@ def test_overlap_detail_reference_does_not_widen_provider_or_source_scope(mutati
     public = public_work(row)
     assert 'publisher_product_reference' not in public
     assert public['isbn'] == []
+
+
+def shueisha_dx_listing():
+    row = kadokawa_electronic_listing()
+    row.update(entry_id='lnr:pub:shueishadx:' + 'b' * 32,
+               publisher_reference_kind='shueisha_dx_product_reference',
+               source_url='https://dash.shueisha.co.jp/bookDetail/index/978-0-306-40615-7', isbn=['9780306406157'])
+    row['publisher_product_reference'].update(publisher_reference_id='978-0-306-40615-7',
+        source_url=row['source_url'], label='ダッシュエックス文庫', form=None,
+        credits=[{'role': 'unknown', 'name': '掲載名'}],
+        credit_literals=[{'role_literal': '著者・イラスト', 'name': '掲載名', 'locator': 'PRIVATE'}])
+    return row
+
+
+@pytest.mark.parametrize('source_id', ['978-0-306-40615-7', 'XXX-X-XX-XXXXXX-1'])
+def test_shueisha_dx_reference_preserves_compound_roles_but_url_is_not_an_isbn_witness(source_id):
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = shueisha_dx_listing()
+    row['publisher_product_reference']['publisher_reference_id'] = source_id
+    row['source_url'] = row['publisher_product_reference']['source_url'] = 'https://dash.shueisha.co.jp/bookDetail/index/' + source_id
+    public = public_work(row)
+    assert public['entry_id'] == row['entry_id'] and public['publisher_provider'] == 'shueisha-dx'
+    assert public['publisher_reference_kind'] == 'shueisha_dx_product_reference'
+    assert public['isbn'] == [], 'a URL-derived ISBN must not become independent publisher ISBN evidence'
+    assert public['publisher_product_reference']['publisher_reference_id'] == source_id
+    assert public['publisher_product_reference']['credit_literals'] == [{'role_literal': '著者・イラスト', 'name': '掲載名'}]
+    assert public['publisher_product_reference']['credits'] == [{'role': 'unknown', 'name': '掲載名'}]
+    assert public['authors'] == public['members'] == [] and public['recommendable'] is False
+    assert all(public[key] is False for key in ('edition_identity_asserted', 'story_series_identity_asserted',
+        'original_work_identity_asserted', 'light_novel_identity_asserted'))
+    assert public['usage_permissions']['public_display'] == 'unknown'
+    assert 'PRIVATE' not in json.dumps(public)
+
+
+@pytest.mark.parametrize('mutation', ['marker', 'scope', 'comics'])
+def test_shueisha_dx_reference_cannot_widen_profile_purpose_or_novel_label_scope(mutation):
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = shueisha_dx_listing()
+    if mutation == 'marker': row['publisher_reference_kind'] = 'tobooks_product_reference'
+    elif mutation == 'scope': row['reference_scope'] = 'public_display_allowed'
+    else: row['publisher_product_reference']['label'] = 'ダッシュエックスコミックス'
+    public = public_work(row)
+    assert 'publisher_product_reference' not in public and public['isbn'] == []
+
+
+def gc_listing():
+    row = tobooks_listing()
+    row.update(entry_id='lnr:pub:gc:' + 'c' * 32, publisher_reference_kind='gc_product_reference',
+               source_url='https://gcnovels.jp/book/123', source_frame_scope={'private': 'PRIVATE'})
+    row['publisher_product_reference'].update(publisher_reference_id='gc-product:123', source_url=row['source_url'],
+        credits=[{'role': 'author', 'name': '小説の掲載名'}, {'role': 'unknown', 'name': '別の掲載名'}],
+        credit_literals=[{'role_literal': '小説', 'name': '小説の掲載名'},
+            {'role_literal': '企画協力', 'name': '別の掲載名', 'locator': 'PRIVATE'}])
+    return row
+
+
+def test_gc_reference_keeps_source_credit_literals_and_unknown_bibliography_without_promoting_identity():
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = gc_listing()
+    public = public_work(row)
+    assert public['entry_id'] == row['entry_id'] and public['publisher_provider'] == 'gc'
+    assert public['publisher_reference_kind'] == 'gc_product_reference'
+    assert public['isbn'] == public['authors'] == public['members'] == []
+    product = public['publisher_product_reference']
+    assert product['publisher_reference_id'] == 'gc-product:123' and product['source_url'] == row['source_url']
+    assert product['label'] is product['form'] is None
+    assert product['credits'] == row['publisher_product_reference']['credits']
+    assert product['credit_literals'] == [{'role_literal': '小説', 'name': '小説の掲載名'},
+        {'role_literal': '企画協力', 'name': '別の掲載名'}]
+    assert public['recommendable'] is public['light_novel_confirmed'] is False
+    assert all(public[key] is False for key in ('edition_identity_asserted', 'story_series_identity_asserted',
+        'original_work_identity_asserted', 'light_novel_identity_asserted'))
+    assert public['usage_permissions']['public_display'] == 'unknown'
+    assert 'PRIVATE' not in json.dumps(public) and 'source_frame_scope' not in public
+
+
+@pytest.mark.parametrize('mutation', ['marker', 'scope'])
+def test_gc_reference_requires_its_own_profile_and_private_purpose(mutation):
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = gc_listing()
+    if mutation == 'marker': row['publisher_reference_kind'] = 'tobooks_product_reference'
+    else: row['reference_scope'] = 'public_display_allowed'
+    public = public_work(row)
+    assert 'publisher_product_reference' not in public and public['isbn'] == []
