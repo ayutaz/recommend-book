@@ -129,6 +129,25 @@ context.fetch=async path=>({ok:true,json:async()=>path.includes('/similar')?{ite
       assert.ok(!detail.includes('出版社の掲載書誌'));
     }
   }
+  const kadokawa={entry_id:'lnr:pub:kadokawa:'+'a'.repeat(32),entry_kind:'publisher_reference',
+    publisher_reference_kind:'kadokawa_product_reference',title:'公式の電子専売掲載題',isbn:[],members:[],
+    publisher_product_reference:{title:'公式の電子専売掲載題',source_url:'https://www.kadokawa.co.jp/product/322401000001/',
+      label:'電撃文庫',form:'電子専売',credit_literals:[{role_literal:'著者',name:'公式表示名'}]}};
+  context.KAD=kadokawa;
+  const kadRequests=[];
+  context.fetch=async path=>{kadRequests.push(path);return {ok:true,json:async()=>path.includes('/similar')?{items:[]}:kadokawa};};
+  await vm.runInNewContext('showDetail(KAD.entry_id)',context);
+  const kadDetail=visibleText(elements.get('detail-body'));
+  assert.ok(kadDetail.includes('ISBN：未確認'));
+  assert.ok(kadDetail.includes('電撃文庫 / 電子専売') && kadDetail.includes('著者：公式表示名'));
+  assert.ok(kadDetail.includes('原作品・物語シリーズやNDLの版との対応は未確認'));
+  assert.ok(kadDetail.includes('ローカルの書誌参照です。公開・商用利用などの許諾は未確認です。'));
+  assert.ok(visibleLinks(elements.get('detail-body')).includes(kadokawa.publisher_product_reference.source_url));
+  assert.equal(vm.runInNewContext('favoriteControl(KAD).listeners.click',context),undefined);
+  vm.runInNewContext('state.favorites.clear();state.favorites.set(KAD.entry_id,{title:KAD.title})',context);
+  assert.equal(vm.runInNewContext('preferencePayload().liked_entry_ids.length',context),0,
+    'a publisher product reference must not be promoted to recommendation evidence');
+  assert.ok(kadRequests.every(path=>path.startsWith('/api/entries/'+encodeURIComponent(kadokawa.entry_id))));
   const association={scope:'bibliographic_reference_association',group_entry_id:'lng:pub:orange:'+'a'.repeat(32),
     group_title:'掲載グループ名',title:'完全題 <確認用>',source_url:'https://orangebunko.shueisha.co.jp/book/example',
     group_source_url:'https://orangebunko.shueisha.co.jp/series/example',

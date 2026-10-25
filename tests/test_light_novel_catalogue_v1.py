@@ -97,6 +97,246 @@ def futaba_publisher_reference_bundle(tmp_path):
     return LightNovelCatalogue(tmp_path / 'futaba-leaf.sqlite'), env, env['path'], env['sha'], rows
 
 
+@pytest.fixture
+def kadokawa_reference_bundle(tmp_path, monkeypatch):
+    """A scoped source boundary; the source adapter owns its RDF/JSON parser tests."""
+    import copy
+    import sys
+    import types
+    from pathlib import Path
+    module = types.ModuleType('recommend_book.light_novel_kadokawa_references_v1')
+    calls, pages = [], []
+    raw = [tmp_path / ('kadokawa-page-%s.json' % i) for i in range(2)]
+    for path in raw:
+        path.write_bytes(b'authenticated synthetic product page')
+    raw_shas = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in raw}
+    rows = []
+    for index in range(3):
+        item = '%012d' % (202600000001 + index)
+        rows.append({'publisher_reference_id': 'kadokawa-product:' + item,
+            'official_product_id': item, 'publisher_book_id': 'kadokawa:' + item,
+            'source_unit': 'publisher_product_reference', 'title': '電子専売の完全題 ' + str(index + 1),
+            'source_url': 'https://www.kadokawa.co.jp/product/' + item + '/',
+            'label': 'ファンタジア文庫', 'form': '電子専売', 'product_form_id': 13,
+            'isbn': None, 'publisher': None, 'official_lightnovel_tag': None,
+            'reference_scope': 'private_bibliographic_discovery', 'story_series_asserted': False,
+            'credits': [{'role': 'author' if index == 0 else 'unknown', 'name': '明示著者' if index == 0 else '役割不明名'}],
+            'credit_literals': [{'role_literal': '著者' if index == 0 else '協力',
+                'name': '明示著者' if index == 0 else '役割不明名', 'locator': '/PRIVATE_ITEM/disp_author_name/1'}],
+            'usage_permissions': {'purpose': 'private_bibliographic_discovery',
+                'public_display': 'unknown', 'commercial_reuse': 'unknown', 'prose_ai_permission': False,
+                'images_permission': False, 'raw_redistribution_permission': False}})
+    documents = {}
+    def capture(name, selected):
+        path = tmp_path / name
+        digest = write(path, {'capture': name})
+        documents[(str(path.resolve()), digest)] = copy.deepcopy(selected)
+        return path, digest
+    def verify(path, sha, *, reference_ids, cache=None):
+        path = Path(path)
+        calls.append(tuple(reference_ids))
+        cache = {} if cache is None else cache
+        key = ('synthetic-kadokawa-index', str(path), sha)
+        if key not in cache:
+            assert hashlib.sha256(path.read_bytes()).hexdigest() == sha
+            cache[key] = documents[(str(path.resolve()), sha)]
+        selected = [row for row in cache[key] if row['publisher_reference_id'] in reference_ids]
+        for row in selected:
+            page = raw[0 if row['official_product_id'] != rows[2]['official_product_id'] else 1]
+            page_key = ('synthetic-kadokawa-page', str(page))
+            if page_key not in cache:
+                if hashlib.sha256(page.read_bytes()).hexdigest() != raw_shas[str(page)]:
+                    raise ValueError('selected Kadokawa raw differs')
+                pages.append(str(page))
+                cache[page_key] = True
+        return copy.deepcopy(selected)
+    module.verify_kadokawa_references = verify
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    path, sha = capture('initial.json', rows)
+    return LightNovelCatalogue(tmp_path / 'kadokawa.sqlite'), rows, path, sha, capture, calls, pages, raw
+
+
+def test_kadokawa_reference_requires_explicit_exact_scope(kadokawa_reference_bundle):
+    cat, rows, path, sha, _, calls, _, _ = kadokawa_reference_bundle
+    with pytest.raises(TypeError):
+        cat.import_kadokawa_publisher_references(path, sha)
+    for selected in (None, [], 'wrong', ['wrong'], [rows[0]['publisher_reference_id']] * 2):
+        with pytest.raises(ValueError):
+            cat.import_kadokawa_publisher_references(path, sha, reference_ids=selected)
+    assert calls == []
+
+
+def test_kadokawa_reference_real_source_subset_core_and_public_integration(tmp_path, monkeypatch):
+    from test_light_novel_kadokawa_references_v1 import source as real_fixture, IDS
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    import recommend_book.light_novel_kadokawa_references_v1 as source
+    import recommend_book.light_novel_publisher_books_v1 as legacy
+    env = real_fixture.__wrapped__(tmp_path)
+    path, sha = tmp_path / 'scope.json', env['sha']
+    (tmp_path / 'page2.json').write_bytes(b'unselected real source page must not be opened')
+    original_verify, original_bytes, original_scope = source.verify_kadokawa_references, legacy._checked_bytes, source._scope
+    calls, pages, indexes = [], [], []
+    def verified(*args, **kwargs):
+        calls.append(tuple(kwargs['reference_ids']))
+        return original_verify(*args, **kwargs)
+    def checked(path, expected):
+        pages.append(path.name)
+        return original_bytes(path, expected)
+    def indexed(*args):
+        indexes.append(True)
+        return original_scope(*args)
+    monkeypatch.setattr(source, 'verify_kadokawa_references', verified)
+    monkeypatch.setattr(legacy, '_checked_bytes', checked)
+    monkeypatch.setattr(source, '_scope', indexed)
+    cat = LightNovelCatalogue(tmp_path / 'real-kadokawa.sqlite')
+    result = cat.import_kadokawa_publisher_references(path, sha, reference_ids=IDS[:2])
+    assert result['inserted'] == 2 and calls == [tuple(IDS[:2])]
+    assert indexes == [True] and pages == ['page1.json']
+    calls.clear(); pages.clear(); indexes.clear()
+    identity = result['reference_entries'][IDS[0]]
+    row = cat.work_detail(identity)
+    assert calls == [(IDS[0],)] and indexes == [True] and pages == ['page1.json']
+    assert row['title'] == '完全題　2【電子限定】'
+    assert row['publisher_product_reference']['credit_literals'][-1] == {'role_literal': None, 'name': '役割未記載'}
+    shown = public_work(row)
+    assert shown['reference_scope'] == 'private_bibliographic_discovery'
+    assert shown['publisher_product_reference']['form'] == '電子専売'
+    assert shown['usage_permissions']['public_display'] == 'unknown'
+    assert shown['usage_permissions']['prose_ai_permission'] is False
+    assert shown['isbn'] == [] and shown['authors'] == []
+    assert not any(term in json.dumps(shown, ensure_ascii=False) for term in ('PRIVATE_', 'raw_sha256', 'source_selector', str(tmp_path)))
+    assert cat.search_catalogue('架空 著者')['total'] == 2
+    assert cat.search_catalogue('役割未記載')['total'] == 2
+
+
+def test_kadokawa_reference_subset_replay_unknowns_and_literal_author_search(kadokawa_reference_bundle):
+    cat, refs, path, sha, _, calls, pages, raw = kadokawa_reference_bundle
+    raw[1].write_bytes(b'unselected page must remain unread')
+    selected = [r['publisher_reference_id'] for r in refs[:2]]
+    result = cat.import_kadokawa_publisher_references(path, sha, reference_ids=selected)
+    assert result['inserted'] == result['requested_references'] == result['source_references'] == 2
+    assert calls == [tuple(selected)] and pages == [str(raw[0])]
+    identity = result['reference_entries'][selected[0]]
+    assert identity.startswith('lnr:pub:kadokawa:') and len(identity.rsplit(':', 1)[1]) == 32
+    calls.clear(); pages.clear()
+    row = cat.work_detail(identity)
+    assert calls == [(selected[0],)] and pages == [str(raw[0])]
+    assert row['publisher_reference_kind'] == 'kadokawa_product_reference'
+    assert row['reference_scope'] == 'private_bibliographic_discovery'
+    assert row['authors'] == row['isbn'] == row['members'] == row['native_features'] == []
+    assert row['publication_label'] == 'ファンタジア文庫'
+    assert not row['light_novel_confirmed'] and not row['light_novel_identity_asserted']
+    assert not row['edition_identity_asserted'] and not row['story_series_identity_asserted']
+    assert row['usage_permissions']['public_display'] == 'unknown'
+    assert row['usage_permissions']['prose_ai_permission'] is False
+    assert row['publisher_product_reference']['form'] == '電子専売'
+    assert cat.search_catalogue('明示著者')['total'] == 1
+    assert cat.search_catalogue('役割不明名')['total'] == 1  # literal credit search is not author identification
+    assert 'PRIVATE_ITEM' not in json.dumps(cat.work_detail(identity), ensure_ascii=False)
+    stats = cat.catalogue_stats()
+    assert stats['publisher_reference_count'] == 2 and stats['editions'] == stats['series'] == 0
+
+
+@pytest.mark.parametrize('change', [None, 'title', 'source_url', 'label'])
+def test_kadokawa_reference_reimport_or_hold_title_and_scope(kadokawa_reference_bundle, change):
+    import copy
+    cat, rows, path, sha, capture, _, _, _ = kadokawa_reference_bundle
+    selected = [rows[0]['publisher_reference_id']]
+    first = cat.import_kadokawa_publisher_references(path, sha, reference_ids=selected)
+    identity = first['reference_entries'][selected[0]]
+    cat.set_read_status(identity, 'reading')
+    assert cat.import_kadokawa_publisher_references(path, sha, reference_ids=selected)['unchanged'] == 1
+    following = copy.deepcopy(rows)
+    if change:
+        following[0][change] = {'title': '別の完全題', 'source_url': rows[0]['source_url'] + '?changed=1', 'label': 'MF文庫J'}[change]
+    next_path, next_sha = capture('next.json', following)
+    result = cat.import_kadokawa_publisher_references(next_path, next_sha, reference_ids=selected)
+    assert result['inserted'] == 0
+    assert result['updated'] == int(change is None) and result['held'] == int(change is not None)
+    assert cat.work_detail(identity)['read_status'] == 'reading'
+    with cat._connect() as db:
+        record = json.loads(db.execute('SELECT record_json FROM entries WHERE entry_id=?', (identity,)).fetchone()[0])
+    assert len(record['source_reference_assertions']) == (2 if change is None else 1)
+    assert all(a['title'] == rows[0]['title'] for a in record['source_reference_assertions'])
+
+
+@pytest.mark.parametrize('field,value', [('product_form_id', 3), ('isbn', '9784040000000'),
+    ('reference_scope', 'public_display'), ('story_series_asserted', True)])
+def test_kadokawa_reference_rejects_other_source_contracts(kadokawa_reference_bundle, field, value):
+    import copy
+    cat, rows, _, _, capture, _, _, _ = kadokawa_reference_bundle
+    invalid = copy.deepcopy(rows); invalid[0][field] = value
+    path, sha = capture('invalid.json', invalid)
+    with pytest.raises(ValueError):
+        cat.import_kadokawa_publisher_references(path, sha, reference_ids=[rows[0]['publisher_reference_id']])
+    with cat._connect() as db:
+        assert db.execute('SELECT count(*) FROM entries').fetchone()[0] == 0
+
+
+def test_kadokawa_reference_atomic_failure_and_other_rows_preserved(kadokawa_reference_bundle, monkeypatch):
+    cat, rows, path, sha, _, _, _, _ = kadokawa_reference_bundle
+    with cat._connect() as db:
+        unrelated = ('lne:ndl:unrelated', 'edition', '{"schema_version":"unrelated","raw_path":"PRIVATE_OLD_RAW"}', 'a'*64)
+        db.execute('INSERT INTO entries VALUES(?,?,?,?)', unrelated)
+    original = cat._project_publisher_reference
+    def fail_second(provider, record, cache):
+        if record['title'] == rows[1]['title']:
+            raise ValueError('second selected product fails authentication')
+        return original(provider, record, cache)
+    monkeypatch.setattr(cat, '_project_publisher_reference', fail_second)
+    monkeypatch.setattr(cat, '_rows', lambda *a, **k: pytest.fail('whole catalogue cannot be replayed'))
+    with pytest.raises(ValueError, match='second selected'):
+        cat.import_kadokawa_publisher_references(path, sha, reference_ids=[r['publisher_reference_id'] for r in rows[:2]])
+    with cat._connect() as db:
+        assert [tuple(r) for r in db.execute('SELECT * FROM entries')] == [unrelated]
+
+
+def test_kadokawa_reference_public_reauthentication_and_similarity_early_exit(kadokawa_reference_bundle, monkeypatch):
+    cat, refs, path, sha, _, _, _, raw = kadokawa_reference_bundle
+    identity = next(iter(cat.import_kadokawa_publisher_references(path, sha,
+        reference_ids=[refs[0]['publisher_reference_id']])['reference_entries'].values()))
+    for name in ['_rows', '_feature_rows', 'recommend_preferences']:
+        monkeypatch.setattr(cat, name, lambda *a, **k: pytest.fail('no recommendation/whole graph projection'))
+    assert cat.similar_works(identity)['mode'] == 'insufficient_evidence'
+    raw[0].write_bytes(b'changed own source')
+    with pytest.raises(ValueError, match='selected Kadokawa raw'):
+        cat.similar_works(identity)
+
+
+def test_kadokawa_reference_reimport_does_not_replay_unrequested_saved_product(kadokawa_reference_bundle):
+    cat, refs, path, sha, _, calls, pages, raw = kadokawa_reference_bundle
+    cat.import_kadokawa_publisher_references(path, sha, reference_ids=[r['publisher_reference_id'] for r in refs])
+    with cat._connect() as db:
+        before = [tuple(r) for r in db.execute('SELECT * FROM entries ORDER BY entry_id')]
+    calls.clear(); pages.clear(); raw[1].write_bytes(b'unrelated saved source must remain unread')
+    selected = [refs[0]['publisher_reference_id']]
+    assert cat.import_kadokawa_publisher_references(path, sha, reference_ids=selected)['unchanged'] == 1
+    assert calls == [tuple(selected)] and pages == [str(raw[0])]
+    with cat._connect() as db:
+        assert [tuple(r) for r in db.execute('SELECT * FROM entries ORDER BY entry_id')] == before
+
+
+@pytest.mark.parametrize('change', ['typed', 'rehash', 'ancestor-title'])
+def test_kadokawa_reference_rejects_stored_typed_and_rehashed_metadata(kadokawa_reference_bundle, change):
+    cat, refs, path, sha, _, _, _, _ = kadokawa_reference_bundle
+    identity = next(iter(cat.import_kadokawa_publisher_references(path, sha,
+        reference_ids=[refs[0]['publisher_reference_id']])['reference_entries'].values()))
+    with cat._connect() as db:
+        if change == 'typed':
+            db.execute('UPDATE entries SET kind=? WHERE entry_id=?', ('edition', identity))
+        else:
+            record = json.loads(db.execute('SELECT record_json FROM entries WHERE entry_id=?', (identity,)).fetchone()[0])
+            if change == 'ancestor-title':
+                record['source_reference_assertions'][0]['title'] = 'different ancestry title'
+            else:
+                record['publisher_product_reference']['credit_literals'][0]['role_literal'] = 'PRIVATE forged credit'
+            encoded = json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+            db.execute('UPDATE entries SET record_json=?,record_sha256=? WHERE entry_id=?',
+                (encoded, hashlib.sha256(encoded.encode()).hexdigest(), identity))
+    with pytest.raises(ValueError):
+        cat.work_detail(identity)
+
+
 def test_futaba_publisher_references_require_explicit_selection_and_preserve_metadata_unknowns(futaba_publisher_reference_bundle):
     cat, _, path, sha, rows = futaba_publisher_reference_bundle
     selected = [row['publisher_reference_id'] for row in rows[:21]]
@@ -1285,11 +1525,16 @@ def test_futaba_source_group_preserves_actual_anchor_bindings_and_reading_states
                 for table in tables} == before
 
 
-@pytest.mark.parametrize('race_kind', ['source', 'anchor', 'orange', 'ecobalt', 'ecobalt_reference', 'futaba_reference', 'sbcr', 'hj', 'arian', 'hjnovels', 'sbcrindex'])
+@pytest.mark.parametrize('race_kind', ['source', 'anchor', 'orange', 'ecobalt', 'ecobalt_reference', 'futaba_reference', 'kadokawa_reference', 'sbcr', 'hj', 'arian', 'hjnovels', 'sbcrindex'])
 def test_futaba_source_group_new_target_race_is_detected_before_first_write(request, monkeypatch, race_kind):
     from contextlib import contextmanager
     import sqlite3
-    if race_kind == 'futaba_reference':
+    if race_kind == 'kadokawa_reference':
+        cat, rows, path, sha, _, _, _, _ = request.getfixturevalue('kadokawa_reference_bundle')
+        selection = [row['publisher_reference_id'] for row in rows[:2]]
+        saved = cat.import_kadokawa_publisher_references(path, sha, reference_ids=selection)
+        identity = next(iter(saved['reference_entries'].values()))
+    elif race_kind == 'futaba_reference':
         cat, _, path, sha, rows = request.getfixturevalue('futaba_publisher_reference_bundle')
         selection = [row['publisher_reference_id'] for row in rows[:2]]
         saved = cat.import_futaba_publisher_references(path, sha, reference_ids=selection)
@@ -1319,7 +1564,9 @@ def test_futaba_source_group_new_target_race_is_detected_before_first_write(requ
         cat.correlate_publisher_bibliographies('futaba-mnovels', m_path, m_sha)
         cat.import_futaba_mnovels_workgroups(path, sha)
         identity = 'lns:ndl:' + first['id']
-    if race_kind == 'futaba_reference':
+    if race_kind == 'kadokawa_reference':
+        importer = lambda path, sha: cat.import_kadokawa_publisher_references(path, sha, reference_ids=selection)
+    elif race_kind == 'futaba_reference':
         importer = lambda path, sha: cat.import_futaba_publisher_references(path, sha, reference_ids=selection)
     elif race_kind == 'sbcrindex':
         importer = cat.import_sbcr_index_source_groups

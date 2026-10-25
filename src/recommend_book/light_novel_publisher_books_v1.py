@@ -53,29 +53,40 @@ def verify_kadokawa_books(manifest_path: str | Path, sha256: str) -> list[dict]:
     """
     path = Path(manifest_path).resolve()
     manifest = json.loads(_checked_bytes(path, sha256))
+    return _replay_kadokawa_book_pages(manifest, path.parent)
+
+
+def _kadokawa_page_key(receipt):
+    if (receipt.get('http_status') != 200 or receipt.get('http_method') != 'POST'
+            or receipt.get('source_url') != _ENDPOINT or receipt.get('final_url') != _ENDPOINT):
+        raise ValueError('publisher book endpoint/status differs')
+    query = receipt.get('request_data', {})
+    label, page = str(query.get('label', '')), str(query.get('pageno_book', ''))
+    if (set(query) != _QUERY_KEYS or label not in KADOKAWA_LABELS
+            or query.get('releaseDate') != '1' or query.get('size') != '20'
+            or not re.fullmatch(r'[1-9][0-9]*', page) or int(page) > 5_000
+            or any(query.get(key) != page for key in ('pageno', 'pageno_media'))):
+        raise ValueError('publisher book query does not reproduce declared scope')
+    return label, page
+
+
+def _replay_kadokawa_book_pages(manifest, root, *, decoded_pages=None):
+    """Internal read-only replay; callers supply already pinned page selection.
+
+    This retains the legacy matching contract. It grants no additional display
+    usage. Optional decoded pages are consumed privately by scoped adapters.
+    """
     if (manifest.get('schema_version') != 'kadokawa-publisher-books-v1'
             or manifest.get('rights_scope') != 'reference_only_bibliography'):
         raise ValueError('publisher book manifest schema/rights differs')
     pages = manifest.get('pages')
     if not isinstance(pages, list) or len(pages) > 5_000:
         raise ValueError('publisher book pages must be a bounded list')
-    root = path.parent
     rows = {}
     seen_pages = set()
     for receipt in pages:
-        if (receipt.get('http_status') != 200 or receipt.get('http_method') != 'POST'
-                or receipt.get('source_url') != _ENDPOINT
-                or receipt.get('final_url') != _ENDPOINT):
-            raise ValueError('publisher book endpoint/status differs')
+        label, page = _kadokawa_page_key(receipt)
         query = receipt.get('request_data', {})
-        label = str(query.get('label', ''))
-        page = str(query.get('pageno_book', ''))
-        if (set(query) != _QUERY_KEYS or label not in KADOKAWA_LABELS
-                or query.get('releaseDate') != '1' or query.get('size') != '20'
-                or not re.fullmatch(r'[1-9][0-9]*', page)
-                or int(page) > 5_000
-                or any(query.get(key) != page for key in ('pageno', 'pageno_media'))):
-            raise ValueError('publisher book query does not reproduce declared scope')
         page_key = (label, page)
         if page_key in seen_pages:
             raise ValueError('duplicate page in publisher book manifest')
@@ -83,7 +94,10 @@ def verify_kadokawa_books(manifest_path: str | Path, sha256: str) -> list[dict]:
         raw_path = (root / receipt['raw_path']).resolve()
         if not raw_path.is_relative_to(root):
             raise ValueError('publisher raw path escapes manifest root')
-        payload = json.loads(_checked_bytes(raw_path, receipt['sha256']))
+        raw = _checked_bytes(raw_path, receipt['sha256'])
+        payload = json.loads(raw)
+        if decoded_pages is not None:
+            decoded_pages[page_key] = (payload, len(raw))
         items = payload.get('result', {}).get('book')
         total = payload.get('count_raw', {}).get('book')
         if (not isinstance(items, list) or len(items) > 20

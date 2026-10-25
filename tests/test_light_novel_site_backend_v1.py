@@ -150,6 +150,36 @@ def stores(tmp_path):
     return world, light, UnifiedCatalogue(world, light)
 
 
+def test_kadokawa_reference_detail_routes_through_unified_http_without_world_lookup(stores):
+    import threading
+    from urllib.parse import quote
+    from urllib.request import urlopen
+    from recommend_book.recommendation.scale_site_v1 import create_server
+
+    world, light, combined = stores
+    identity = 'lnr:pub:kadokawa:' + 'd' * 32
+    light.rows.append({'entry_id': identity, 'qid': '', 'entry_kind': 'publisher_reference',
+        'title': '電子掲載書誌', 'reference_identity_basis': 'publisher_product_reference',
+        'publisher_reference_kind': 'kadokawa_product_reference',
+        'reference_scope': 'private_bibliographic_discovery',
+        'source_url': 'https://www.kadokawa.co.jp/product/123456789012/'})
+    world.work_detail = lambda key: pytest.fail('KAD reference must not use the world store')
+    server = create_server(catalogue=combined, port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with urlopen(f'http://127.0.0.1:{server.server_port}/api/entries/' + quote(identity, safe=''), timeout=5) as response:
+            result = json.load(response)
+        assert result['entry_id'] == identity
+        assert result['entry_kind'] == 'publisher_reference'
+        assert result['reference_scope'] == 'private_bibliographic_discovery'
+        assert result['title'] == '電子掲載書誌'
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
 def test_partition_pagination_counts_and_no_duplicate_world_work(stores):
     world, light, combined = stores
     first = combined.search_catalogue(page=1, page_size=3)

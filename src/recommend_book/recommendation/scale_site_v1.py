@@ -9,7 +9,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 
 _QID = r'Q[1-9][0-9]*'
-_ENTRY_ID = r'(?:ln[sw]:wd:Q[1-9][0-9]*|ln[se]:ndl:[A-Za-z0-9_-][A-Za-z0-9._-]{0,119}|lng:pub:(?:futaba|orange|ecobalt|sbcr|hj|arian|hjnovels|sbcrindex):[0-9a-f]{32}|lnr:pub:(?:ecobalt|futaba):[0-9a-f]{32})'
+_ENTRY_ID = r'(?:ln[sw]:wd:Q[1-9][0-9]*|ln[se]:ndl:[A-Za-z0-9_-][A-Za-z0-9._-]{0,119}|lng:pub:(?:futaba|orange|ecobalt|sbcr|hj|arian|hjnovels|sbcrindex):[0-9a-f]{32}|lnr:pub:(?:ecobalt|futaba|kadokawa):[0-9a-f]{32})'
 _FAMILIES = ('all', 'world', 'light_novel')
 _ENTRY_KINDS = ('series', 'work', 'edition', 'publisher_group', 'publisher_reference')
 _ADMISSION_STATES = ('bibliographic_candidate_only', 'light_novel_confirmed', 'edition_series_membership_verified',
@@ -381,6 +381,7 @@ def _public_publisher_product_references(values, *, source_kind):
     orange = source_kind == 'orange_native_taxonomy_source_group'
     ecobalt = source_kind == 'ecobalt_author_index_source_group'
     futaba_reference = source_kind == 'futaba_mnovels_product_reference'
+    kadokawa_reference = source_kind == 'kadokawa_product_reference'
     sbcr = source_kind == 'sbcr_ebook_source_group'
     roles = ('author', 'illustrator', 'original_author', 'original_concept', 'supervisor', 'editor')
     if orange:
@@ -390,6 +391,7 @@ def _public_publisher_product_references(values, *, source_kind):
     if sbcr:
         roles = ()
     reference_pattern = (r'shueisha-ebook:[A-Za-z0-9_-]+' if ecobalt else
+                         r'kadokawa-product:[0-9]{12}' if kadokawa_reference else
                          r'sbcr-product:[A-Za-z0-9]+' if sbcr else
                          r'shueisha-orange-book:[^/?#\s]+' if orange else r'futaba-product:[A-Za-z0-9_-]+')
     for row in values:
@@ -425,7 +427,7 @@ def _public_publisher_product_references(values, *, source_kind):
                         and credit.get('role_scope') == 'author_index_display_only'):
                     item['credit_literals'].append({'name': credit['name'], 'entry_role_literal': None,
                         'role_context_literal': credit['role_context_literal'], 'role_scope': credit['role_scope']})
-        if futaba_reference:
+        if futaba_reference or kadokawa_reference:
             item['credit_literals'] = []
             literals = row.get('credit_literals')
             for credit in literals if isinstance(literals, list) else []:
@@ -450,6 +452,8 @@ def _public_publisher_product_references(values, *, source_kind):
             item['media_references'].append(public)
         if sbcr:
             item.update(label=None, form=None, media_references=[])
+        if kadokawa_reference:
+            item['media_references'] = []
         result.append(item)
     return result
 
@@ -465,7 +469,7 @@ def _public_publisher_reference(row):
         'read_status': row.get('read_status') if row.get('read_status') in ('read', 'unread', 'reading') else 'unknown',
         'source_url': _link(row.get('source_url'))}
     identifier = row.get('entry_id')
-    identifier_match = (re.fullmatch(r'lnr:pub:(ecobalt|futaba):[0-9a-f]{32}', identifier)
+    identifier_match = (re.fullmatch(r'lnr:pub:(ecobalt|futaba|kadokawa):[0-9a-f]{32}', identifier)
                         if isinstance(identifier, str) else None)
     if identifier_match:
         result['entry_id'] = identifier
@@ -473,17 +477,19 @@ def _public_publisher_reference(row):
     provider = identifier_match.group(1) if identifier_match else None
     reference_kind = row.get('publisher_reference_kind')
     expected_kind = {'ecobalt': 'ecobalt_author_index_product_reference',
-                     'futaba': 'futaba_mnovels_product_reference'}.get(provider)
+                     'futaba': 'futaba_mnovels_product_reference',
+                     'kadokawa': 'kadokawa_product_reference'}.get(provider)
     if (row.get('reference_identity_basis') != 'publisher_product_reference'
-            or reference_kind != expected_kind):
+            or reference_kind != expected_kind or provider == 'kadokawa'
+            and row.get('reference_scope') != 'private_bibliographic_discovery'):
         return result
     result.update(reference_identity_basis='publisher_product_reference',
                   publisher_reference_kind=reference_kind)
-    if provider == 'futaba':
-        # Futaba's saved product listing does not establish LN status or authorship.
-        result['light_novel_confirmed'] = None
-        result['publisher_provider'] = 'futaba-mnovels'
-        if isinstance(row.get('isbn'), list):
+    if provider in ('futaba', 'kadokawa'):
+        # Saved product listings do not establish LN status or work authorship.
+        result['light_novel_confirmed'] = None if provider == 'futaba' else False
+        result['publisher_provider'] = 'futaba-mnovels' if provider == 'futaba' else 'kadokawa'
+        if provider == 'futaba' and isinstance(row.get('isbn'), list):
             result['isbn'] = [item for item in row['isbn']
                               if isinstance(item, str) and re.fullmatch(r'[0-9Xx-]{10,20}', item)]
         if isinstance(row.get('publication_label'), str):
@@ -492,11 +498,17 @@ def _public_publisher_reference(row):
         expected_permissions = {'bibliographic_reference_only': True, 'commercial_reuse': 'unknown',
                                 'prose_ai_permission': False, 'images_permission': False,
                                 'raw_redistribution_permission': False}
+        if provider == 'kadokawa':
+            result.update(reference_scope='private_bibliographic_discovery', edition_identity_asserted=False,
+                          light_novel_identity_asserted=False)
+            expected_permissions = {'purpose': 'private_bibliographic_discovery', 'public_display': 'unknown',
+                'commercial_reuse': 'unknown', 'prose_ai_permission': False, 'images_permission': False,
+                'raw_redistribution_permission': False}
         if isinstance(permissions, dict) and all(permissions.get(key) == value
                                                   for key, value in expected_permissions.items()):
             result['usage_permissions'] = expected_permissions
         products = _public_publisher_product_references([row.get('publisher_product_reference')],
-            source_kind='futaba_mnovels_product_reference')
+            source_kind=reference_kind)
         if products:
             result['publisher_product_reference'] = products[0]
         return result
@@ -805,8 +817,9 @@ async function showDetail(identifier){
   body.replaceChildren(node('h2',row.title),node('p',entryLabel(row),'muted'),node('p',describe(row)),favoriteControl(row));
   if(row.aliases?.length)body.append(node('p','別題：'+row.aliases.join(' / ')));
   body.append(statusControl(row));
-  if(row.entry_kind==='publisher_reference')body.append(node('p',row.publisher_reference_kind==='futaba_mnovels_product_reference'?'出版社の一覧に掲載された書誌参照です。原作品・物語シリーズやNDLの版との対応は未確認です。保存されたISBN・媒体・掲載クレジットだけを表示します。読書状態はこの掲載参照だけに保存し、他の作品や版へ自動反映しません。':'出版社の一覧に掲載された書誌参照です。原作品・物語シリーズやNDLの版との対応、ISBN・媒体・個別の担当役割は未確認です。読書状態はこの掲載参照だけに保存し、他の作品や版へ自動反映しません。','muted'));
-  if(row.publisher_reference_kind==='futaba_mnovels_product_reference'){const product=row.publisher_product_reference||{},details=section(body,'出版社の掲載書誌');if(row.isbn?.length)details.append(node('p','ISBN：'+row.isbn.join(' / '),'muted'));else details.append(node('p','ISBN：未確認','muted'));const title=node(product.source_url?'a':'span',product.title||'書名不明');if(product.source_url){title.href=product.source_url;title.target='_blank';title.rel='noopener noreferrer';}details.append(title);const facts=[product.label,product.form].filter(Boolean);if(facts.length)details.append(node('p',facts.join(' / '),'muted'));const credits=(product.credit_literals||[]).map(c=>((c.role_literal||'役割未確認')+'：'+c.name));if(credits.length)details.append(node('p',credits.join(' / '),'muted'));}
+  if(row.entry_kind==='publisher_reference')body.append(node('p',['futaba_mnovels_product_reference','kadokawa_product_reference'].includes(row.publisher_reference_kind)?'出版社の一覧に掲載された書誌参照です。原作品・物語シリーズやNDLの版との対応は未確認です。保存されたISBN・媒体・掲載クレジットだけを表示します。読書状態はこの掲載参照だけに保存し、他の作品や版へ自動反映しません。':'出版社の一覧に掲載された書誌参照です。原作品・物語シリーズやNDLの版との対応、ISBN・媒体・個別の担当役割は未確認です。読書状態はこの掲載参照だけに保存し、他の作品や版へ自動反映しません。','muted'));
+  if(row.publisher_reference_kind==='kadokawa_product_reference')body.append(node('p','ローカルの書誌参照です。公開・商用利用などの許諾は未確認です。','muted'));
+  if(['futaba_mnovels_product_reference','kadokawa_product_reference'].includes(row.publisher_reference_kind)){const product=row.publisher_product_reference||{},details=section(body,'出版社の掲載書誌');if(row.isbn?.length)details.append(node('p','ISBN：'+row.isbn.join(' / '),'muted'));else details.append(node('p','ISBN：未確認','muted'));const title=node(product.source_url?'a':'span',product.title||'書名不明');if(product.source_url){title.href=product.source_url;title.target='_blank';title.rel='noopener noreferrer';}details.append(title);const facts=[product.label,product.form].filter(Boolean);if(facts.length)details.append(node('p',facts.join(' / '),'muted'));const credits=(product.credit_literals||[]).map(c=>((c.role_literal||'役割未確認')+'：'+c.name));if(credits.length)details.append(node('p',credits.join(' / '),'muted'));}
   if(row.admission_status==='bibliographic_candidate_only')body.append(node('p','レーベルなどの書誌情報から集めた候補です。ライトノベルであることは未確定です。','muted'));
   if(row.edition_bibliography_confirmed){body.append(node('p','出版社の書籍情報と国立国会図書館の書誌で照合した版です。','muted'));if(row.confirmation_source_url){const p=node('p','照合元：'),a=node('a','出版社の書籍ページ');a.href=row.confirmation_source_url;a.target='_blank';a.rel='noopener noreferrer';p.append(a);body.append(p);}}
   if(row.publisher_bibliography_matched){body.append(node('p','出版社の書名・著者・レーベル情報と対応を確認した書誌です。商品・刷単位の同一性は未確認です。','muted'));if(row.bibliography_source_url){const p=node('p','書誌の対応元：'),a=node('a','出版社の書籍情報');a.href=row.bibliography_source_url;a.target='_blank';a.rel='noopener noreferrer';p.append(a);body.append(p);}}

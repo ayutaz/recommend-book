@@ -376,3 +376,82 @@ def test_unverified_orange_listing_claims_are_not_published(mutation):
     elif mutation == 'group': value['group_entry_id'] = 'PRIVATE_PATH'
     row = public_work({'publisher_listing_associations': [value]})
     assert not row.get('publisher_listing_associations')
+
+
+def kadokawa_electronic_listing():
+    return {'entry_id': 'lnr:pub:kadokawa:' + 'a' * 32, 'entry_kind': 'publisher_reference',
+        'title': '公式の完全題', 'reference_identity_basis': 'publisher_product_reference',
+        'publisher_reference_kind': 'kadokawa_product_reference',
+        'reference_scope': 'private_bibliographic_discovery',
+        'source_url': 'https://www.kadokawa.co.jp/product/322401000001/', 'read_status': 'reading',
+        'publication_label': '電撃文庫', 'isbn': [],
+        'publisher_product_reference': {'publisher_reference_id': 'kadokawa-product:322401000001',
+            'title': '公式の完全題', 'source_url': 'https://www.kadokawa.co.jp/product/322401000001/',
+            'label': '電撃文庫', 'form': '電子専売', 'credits': [],
+            'credit_literals': [{'role_literal': '著者', 'name': '公式表示名', 'raw_path': 'PRIVATE'}],
+            'media_references': [], 'evidence': {'raw_path': 'PRIVATE'}},
+        'usage_permissions': {'purpose': 'private_bibliographic_discovery',
+            'public_display': 'unknown', 'commercial_reuse': 'unknown',
+            'prose_ai_permission': False, 'images_permission': False, 'raw_redistribution_permission': False},
+        'authors': [{'name': '推定しない'}], 'members': [{'title': '推定しない'}],
+        'light_novel_confirmed': True, 'recommendable': True, 'edition_bibliography_confirmed': True,
+        'story_series_identity_asserted': True, 'original_work_identity_asserted': True,
+        'edition_identity_asserted': True, 'light_novel_identity_asserted': True,
+        'source_reference_assertions': [{'manifest_path': 'PRIVATE'}], 'llm_features': [{'label': '推定しない'}]}
+
+
+def test_kadokawa_electronic_listing_is_a_safe_reference_without_identity_or_isbn_inference():
+    from recommend_book.recommendation.scale_site_v1 import _ENTRY_ID, public_work
+    import re
+    row = kadokawa_electronic_listing()
+    assert re.fullmatch(_ENTRY_ID, row['entry_id'])
+    public = public_work(row)
+    assert public['entry_id'] == public['work_id'] == row['entry_id']
+    assert public['publisher_reference_kind'] == 'kadokawa_product_reference'
+    assert public['reference_identity_basis'] == 'publisher_product_reference'
+    assert public['reference_scope'] == 'private_bibliographic_discovery'
+    assert public['entry_kind'] == 'publisher_reference' and public['read_status'] == 'reading'
+    assert public['authors'] == public['members'] == public['isbn'] == []
+    assert public['light_novel_confirmed'] is False and public['recommendable'] is False
+    for flag in ('edition_identity_asserted', 'story_series_identity_asserted',
+                 'original_work_identity_asserted', 'light_novel_identity_asserted'):
+        assert public[flag] is False
+    assert not public.get('edition_bibliography_confirmed') and not public.get('llm_features')
+    product = public['publisher_product_reference']
+    assert product['title'] == row['title'] and product['form'] == '電子専売'
+    assert product['label'] == public['publication_label'] == '電撃文庫'
+    assert product['publisher_reference_id'] == 'kadokawa-product:322401000001'
+    assert product['credit_literals'] == [{'role_literal': '著者', 'name': '公式表示名'}]
+    assert public['usage_permissions']['public_display'] == 'unknown'
+    assert public['usage_permissions']['commercial_reuse'] == 'unknown'
+    assert public['usage_permissions']['prose_ai_permission'] is False
+    assert 'PRIVATE' not in json.dumps(public, ensure_ascii=False)
+
+
+@pytest.mark.parametrize('mutation', ['bad_id', 'wrong_kind', 'wrong_basis', 'wrong_scope'])
+def test_kadokawa_reference_requires_its_typed_identity_and_reference_scope(mutation):
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = kadokawa_electronic_listing()
+    if mutation == 'bad_id': row['entry_id'] = 'lnr:pub:kadokawa:' + 'A' * 32
+    elif mutation == 'wrong_kind': row['publisher_reference_kind'] = 'futaba_mnovels_product_reference'
+    elif mutation == 'wrong_basis': row['reference_identity_basis'] = 'publisher_source_group'
+    else: row['reference_scope'] = 'public_display_allowed'
+    public = public_work(row)
+    assert 'publisher_product_reference' not in public
+    assert 'publisher_reference_kind' not in public
+
+
+def test_kadokawa_reference_drops_nested_proof_and_unknown_permissions_never_become_allowed():
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = kadokawa_electronic_listing()
+    row['isbn'] = ['9780000000000']  # The electronic listing contract has no ISBN.
+    row['publisher_product_reference'].update(source_url='javascript:alert(1)',
+        credits=[{'role': 'author', 'name': {'raw_path': 'PRIVATE'}}],
+        credit_literals=[{'role_literal': {'path': 'PRIVATE'}, 'name': '表示名'}])
+    row['usage_permissions']['prose_ai_permission'] = 'allowed'
+    public = public_work(row)
+    assert public['isbn'] == []
+    assert public['publisher_product_reference']['source_url'] == ''
+    assert public['publisher_product_reference']['credit_literals'] == []
+    assert public.get('usage_permissions', {}).get('prose_ai_permission') != 'allowed'
+    assert 'PRIVATE' not in json.dumps(public)
