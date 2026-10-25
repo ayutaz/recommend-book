@@ -136,14 +136,20 @@ context.fetch=async path=>({ok:true,json:async()=>path.includes('/similar')?{ite
   const kadokawaPrint={...kadokawa,entry_id:'lnr:pub:kadokawaprint:'+'b'.repeat(32),
     publisher_reference_kind:'kadokawa_print_product_reference',title:'公式の紙掲載題',isbn:['978-0-306-40615-7'],
     publisher_product_reference:{...kadokawa.publisher_product_reference,title:'公式の紙掲載題',form:'文庫'}};
-  for(const listing of [kadokawa,kadokawaPrint]){
+  const tobooks={...kadokawa,entry_id:'lnr:pub:tobooks:'+'c'.repeat(32),publisher_reference_kind:'tobooks_product_reference',
+    title:'TOの独立掲載題',isbn:['9780306406157'],publisher_product_reference:{title:'TOの独立掲載題',
+      source_url:'https://www.tobooks.jp/contents/12345',label:null,form:null,credit_literals:[{role_literal:null,name:'掲載名'}]}};
+  for(const listing of [kadokawa,kadokawaPrint,tobooks]){
   context.KAD=listing;
   const kadRequests=[];
   context.fetch=async path=>{kadRequests.push(path);return {ok:true,json:async()=>path.includes('/similar')?{items:[]}:listing};};
   await vm.runInNewContext('showDetail(KAD.entry_id)',context);
   const kadDetail=visibleText(elements.get('detail-body'));
-  assert.ok(kadDetail.includes(listing.isbn.length?'ISBN：978-0-306-40615-7':'ISBN：未確認'));
-  assert.ok(kadDetail.includes('電撃文庫 / '+listing.publisher_product_reference.form) && kadDetail.includes('著者：公式表示名'));
+  assert.ok(kadDetail.includes(listing.isbn.length?'ISBN：'+listing.isbn.join(' / '):'ISBN：未確認'));
+  if(listing===tobooks){
+    assert.ok(kadDetail.includes('役割未確認：掲載名') && !kadDetail.includes('著者：掲載名'));
+    assert.ok(!kadDetail.includes('電撃文庫') && !kadDetail.includes('文庫 /'));
+  }else assert.ok(kadDetail.includes('電撃文庫 / '+listing.publisher_product_reference.form) && kadDetail.includes('著者：公式表示名'));
   assert.ok(kadDetail.includes('原作品・物語シリーズやNDLの版との対応は未確認'));
   assert.ok(kadDetail.includes('ローカルの書誌参照です。公開・商用利用などの許諾は未確認です。'));
   assert.ok(visibleLinks(elements.get('detail-body')).includes(listing.publisher_product_reference.source_url));

@@ -501,3 +501,47 @@ def test_kadokawa_paper_reference_cannot_reuse_a_different_profile_or_purpose(mu
     assert 'publisher_product_reference' not in public
     assert 'publisher_reference_kind' not in public
     assert public['isbn'] == []
+
+
+def tobooks_listing():
+    row = kadokawa_electronic_listing()
+    row.update(entry_id='lnr:pub:tobooks:' + 'c' * 32, publisher_reference_kind='tobooks_product_reference',
+               source_url='https://www.tobooks.jp/contents/12345', isbn=['9780306406157'], publication_label=None)
+    row['publisher_product_reference'].update(publisher_reference_id='tobooks-product:12345',
+        source_url=row['source_url'], label=None, form=None,
+        credits=[{'role': 'unknown', 'name': '掲載名'}],
+        credit_literals=[{'role_literal': None, 'name': '掲載名', 'locator': 'PRIVATE'}])
+    return row
+
+
+def test_tobooks_listing_keeps_source_isbn_and_unknown_roles_without_creating_identity():
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = tobooks_listing()
+    public = public_work(row)
+    assert public['entry_id'] == row['entry_id'] and public['publisher_provider'] == 'tobooks'
+    assert public['publisher_reference_kind'] == 'tobooks_product_reference'
+    assert public['isbn'] == ['9780306406157']
+    assert public['authors'] == public['members'] == [] and public['recommendable'] is False
+    product = public['publisher_product_reference']
+    assert product['source_url'] == row['source_url']
+    assert product['publisher_reference_id'] == 'tobooks-product:12345'
+    assert product['label'] is product['form'] is None
+    assert product['credits'] == [{'role': 'unknown', 'name': '掲載名'}]
+    assert product['credit_literals'] == [{'role_literal': None, 'name': '掲載名'}]
+    assert all(public[key] is False for key in ('edition_identity_asserted', 'story_series_identity_asserted',
+        'original_work_identity_asserted', 'light_novel_identity_asserted'))
+    assert public['usage_permissions']['public_display'] == public['usage_permissions']['commercial_reuse'] == 'unknown'
+    assert 'PRIVATE' not in json.dumps(public)
+
+
+@pytest.mark.parametrize('mutation', ['marker', 'scope', 'isbn'])
+def test_tobooks_reference_rejects_other_profiles_purposes_or_non_source_isbn_values(mutation):
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = tobooks_listing()
+    if mutation == 'marker': row['publisher_reference_kind'] = 'kadokawa_product_reference'
+    elif mutation == 'scope': row['reference_scope'] = 'public_display_allowed'
+    else: row['isbn'] = ['978-0-306-40615-7', '0306406152', '9780306406158', 9780306406157, {'path': 'PRIVATE'}]
+    public = public_work(row)
+    assert public['isbn'] == []
+    if mutation != 'isbn':
+        assert 'publisher_product_reference' not in public

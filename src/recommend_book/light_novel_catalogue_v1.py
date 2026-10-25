@@ -28,6 +28,7 @@ ECOBALT_REFERENCE_SCHEMA = 'light-novel-ecobalt-publisher-reference-v1'
 FUTABA_REFERENCE_SCHEMA = 'light-novel-futaba-publisher-reference-v1'
 KADOKAWA_REFERENCE_SCHEMA = 'light-novel-kadokawa-publisher-reference-v1'
 KADOKAWA_PRINT_REFERENCE_SCHEMA = 'light-novel-kadokawa-print-publisher-reference-v1'
+TOBOOKS_REFERENCE_SCHEMA = 'light-novel-tobooks-publisher-reference-v1'
 PUBLISHER_REFERENCE_PROVIDERS = {
     'ecobalt': {'schema': ECOBALT_REFERENCE_SCHEMA, 'record_provider': 'ecobalt',
         'loader': '_ecobalt_publisher_references', 'fields': '_ecobalt_reference_fields',
@@ -49,6 +50,11 @@ PUBLISHER_REFERENCE_PROVIDERS = {
         'reference_pattern': r'kadokawa-product:[0-9]{12}',
         'public_kind': 'kadokawa_print_product_reference',
         'credit': 'ローカル書誌参照: KADOKAWA公式商品一覧（紙の掲載書誌）'},
+    'tobooks': {'schema': TOBOOKS_REFERENCE_SCHEMA, 'record_provider': 'tobooks',
+        'loader': '_tobooks_publisher_references', 'fields': '_tobooks_reference_fields',
+        'reference_pattern': r'tobooks-product:[0-9]+',
+        'public_kind': 'tobooks_product_reference',
+        'credit': 'ローカル書誌参照: TOブックス公式商品一覧（掲載参照・役割未確認）'},
 }
 SOURCE_GROUP_PROVIDERS = {
     'futaba': {
@@ -185,7 +191,7 @@ def _qid(value):
 
 
 def _entry(value):
-    if not isinstance(value, str) or not re.fullmatch(r'(?:ln[sw]:wd:Q[1-9][0-9]*|ln[se]:ndl:[A-Za-z0-9._-]+|lng:pub:(?:futaba|orange|ecobalt|sbcr|hj|arian|hjnovels|sbcrindex):[0-9a-f]{32}|lnr:pub:(?:ecobalt|futaba|kadokawa|kadokawaprint):[0-9a-f]{32})', value):
+    if not isinstance(value, str) or not re.fullmatch(r'(?:ln[sw]:wd:Q[1-9][0-9]*|ln[se]:ndl:[A-Za-z0-9._-]+|lng:pub:(?:futaba|orange|ecobalt|sbcr|hj|arian|hjnovels|sbcrindex):[0-9a-f]{32}|lnr:pub:(?:ecobalt|futaba|kadokawa|kadokawaprint|tobooks):[0-9a-f]{32})', value):
         raise ValueError('a typed light-novel entry ID is required')
     return value
 
@@ -323,6 +329,8 @@ class LightNovelCatalogue:
             return self._project_publisher_reference('kadokawa', record, cache)
         if record.get('schema_version') == KADOKAWA_PRINT_REFERENCE_SCHEMA:
             return self._project_publisher_reference('kadokawaprint', record, cache)
+        if record.get('schema_version') == TOBOOKS_REFERENCE_SCHEMA:
+            return self._project_publisher_reference('tobooks', record, cache)
         for provider, profile in SOURCE_GROUP_PROVIDERS.items():
             if record.get('schema_version') == profile['schema']:
                 return self._project_publisher_source_group(provider, record, cache)
@@ -879,7 +887,7 @@ class LightNovelCatalogue:
     @staticmethod
     def _publisher_reference_assertion(provider, path, sha256, reference):
         assertion = LightNovelCatalogue._ecobalt_reference_assertion(path, sha256, reference)
-        if provider in {'futaba', 'kadokawa', 'kadokawaprint'}:
+        if provider in {'futaba', 'kadokawa', 'kadokawaprint', 'tobooks'}:
             assertion['title'] = reference['title']
         return assertion
 
@@ -1038,12 +1046,60 @@ class LightNovelCatalogue:
     def _kadokawa_print_reference_fields(reference):
         return {**LightNovelCatalogue._kadokawa_reference_fields(reference), 'isbn': [reference['isbn_literal']]}
 
+    def _tobooks_publisher_references(self, path, sha256, cache):
+        """Reuse the whole finite TO verifier once per pinned frame/operation."""
+        from .light_novel_publisher_references_v1 import verify_publisher_references
+        from .normalization import normalize_isbn
+        key = ('tobooks_product_references', str(_resolved_path(path, cache)), sha256)
+        if key not in cache:
+            references = {}
+            for reference in verify_publisher_references('tobooks', path, sha256):
+                identity, isbn, labels = reference['publisher_reference_id'], reference['isbn'], reference['label_literals']
+                if (not isinstance(identity, str) or not re.fullmatch(PUBLISHER_REFERENCE_PROVIDERS['tobooks']['reference_pattern'], identity)
+                        or identity in references or reference['source_unit'] != 'publisher_product_reference'
+                        or reference['source_url'] != 'https://www.tobooks.jp/contents/' + identity.split(':')[1]
+                        or not isinstance(reference['title'], str) or not reference['title'].strip()
+                        or reference['publisher'] != 'TOブックス'
+                        or isbn is not None and (not isinstance(isbn, str) or not re.fullmatch(r'97[89][0-9]{10}', isbn)
+                                                 or normalize_isbn(isbn) != isbn)
+                        or not isinstance(labels, list) or any(not isinstance(value, str) or not value for value in labels)
+                        or reference['label'] != (labels[0] if len(labels) == 1 else None)
+                        or reference['form'] is not None and (not isinstance(reference['form'], str) or not reference['form'])
+                        or not isinstance(reference['credits'], list)
+                        or any(credit.get('role') != 'unknown' or not isinstance(credit.get('name'), str)
+                               or not credit['name'] for credit in reference['credits'])
+                        or reference['story_series_asserted'] is not False or reference['metadata_conflict'] is not False
+                        or reference['bibliographic_variants'] != []
+                        or reference['official_lightnovel_tag'] is not None and type(reference['official_lightnovel_tag']) is not bool
+                        or not isinstance(reference['source_evidence'], list) or not reference['source_evidence']
+                        or any(not re.fullmatch(r'[0-9a-f]{64}', evidence['raw_sha256'])
+                               or not isinstance(evidence['locator'], str) or not evidence['locator']
+                               for evidence in reference['source_evidence'])):
+                    raise ValueError('TO product reference contract differs')
+                references[identity] = {**reference, 'reference_id': identity,
+                    'reference_scope': 'private_bibliographic_discovery',
+                    # A local discovery boundary, not an upstream reuse grant.
+                    'usage_permissions': {'purpose': 'private_bibliographic_discovery',
+                        'public_display': 'unknown', 'commercial_reuse': 'unknown',
+                        'prose_ai_permission': False, 'images_permission': False, 'raw_redistribution_permission': False},
+                    'credit_literals': [{'role_literal': None, 'name': credit['name']} for credit in reference['credits']],
+                    'local_reference_key': {'provider': 'tobooks', 'source_scope': 'official_product_listing_reference',
+                        'publisher_reference_id': identity, 'official_product_url': reference['source_url']}}
+            cache[key] = references
+        return cache[key]
+
+    @staticmethod
+    def _tobooks_reference_fields(reference):
+        return {**LightNovelCatalogue._kadokawa_reference_fields(reference),
+            'isbn': [reference['isbn']] if reference['isbn'] is not None else [],
+            'isbn_basis': 'source_normalized_isbn13_not_raw_literal'}
+
     def _project_ecobalt_publisher_reference(self, record, cache):
         return self._project_publisher_reference('ecobalt', record, cache)
 
     def _project_publisher_reference(self, provider, record, cache):
         profile = PUBLISHER_REFERENCE_PROVIDERS[provider]
-        provider_name = {'ecobalt': 'eCobalt', 'futaba': 'Futaba', 'kadokawa': 'Kadokawa', 'kadokawaprint': 'Kadokawa print'}[provider]
+        provider_name = {'ecobalt': 'eCobalt', 'futaba': 'Futaba', 'kadokawa': 'Kadokawa', 'kadokawaprint': 'Kadokawa print', 'tobooks': 'TO'}[provider]
         identity = _entry('lnr:pub:' + provider + ':' + record['id'])
         if (record.get('schema_version') != profile['schema'] or record.get('source') != 'publisher'
                 or record.get('provider') != profile['record_provider'] or record.get('kind') != 'publisher_reference'):
@@ -1057,7 +1113,7 @@ class LightNovelCatalogue:
             key = assertion['local_reference_key']
             if (pin in seen or not re.fullmatch(r'[0-9a-f]{64}', assertion['manifest_sha256'])
                     or not re.fullmatch(profile['reference_pattern'], assertion['reference_id'])
-                    or provider in {'futaba', 'kadokawa', 'kadokawaprint'} and assertion['title'] != record['title']
+                    or provider in {'futaba', 'kadokawa', 'kadokawaprint', 'tobooks'} and assertion['title'] != record['title']
                     or previous_key is not None and key != previous_key):
                 raise ValueError(provider_name + ' product reference assertion continuity differs')
             seen.add(pin)
@@ -1092,11 +1148,11 @@ class LightNovelCatalogue:
             row.update(isbn=record['isbn'], publication_label=record['publication_label'],
                 usage_permissions={'bibliographic_reference_only': True, 'commercial_reuse': 'unknown',
                     'prose_ai_permission': False, 'images_permission': False, 'raw_redistribution_permission': False})
-        elif provider in {'kadokawa', 'kadokawaprint'}:
+        elif provider in {'kadokawa', 'kadokawaprint', 'tobooks'}:
             row.update(publication_label=record['publication_label'],
                 reference_scope=record['reference_scope'], usage_permissions=record['usage_permissions'],
                 light_novel_identity_asserted=False)
-            if provider == 'kadokawaprint':
+            if provider in {'kadokawaprint', 'tobooks'}:
                 row['isbn'] = record['isbn']
         return row
 
@@ -1114,11 +1170,21 @@ class LightNovelCatalogue:
     def import_kadokawa_print_publisher_references(self, manifest_path, expected_sha256, *, reference_ids):
         return self._import_publisher_references('kadokawaprint', manifest_path, expected_sha256, reference_ids=reference_ids)
 
+    def import_tobooks_publisher_references(self, manifest_path, expected_sha256, *, reference_ids):
+        if reference_ids is None or isinstance(reference_ids, (str, bytes)):
+            raise ValueError('an explicit TO product reference selection is required')
+        requested = list(reference_ids)
+        if (not requested or any(not isinstance(identity, str) or not re.fullmatch(
+                PUBLISHER_REFERENCE_PROVIDERS['tobooks']['reference_pattern'], identity) for identity in requested)
+                or len(requested) != len(set(requested))):
+            raise ValueError('unique explicit TO product reference IDs are required')
+        return self._import_publisher_references('tobooks', manifest_path, expected_sha256, reference_ids=requested)
+
     def _import_publisher_references(self, provider, manifest_path, expected_sha256, *, reference_ids):
         """Store ungrouped listings with local identity, without asserting a work or edition."""
         cache = {}
         profile = PUBLISHER_REFERENCE_PROVIDERS[provider]
-        provider_name = {'ecobalt': 'eCobalt', 'futaba': 'Futaba', 'kadokawa': 'Kadokawa', 'kadokawaprint': 'Kadokawa print'}[provider]
+        provider_name = {'ecobalt': 'eCobalt', 'futaba': 'Futaba', 'kadokawa': 'Kadokawa', 'kadokawaprint': 'Kadokawa print', 'tobooks': 'TO'}[provider]
         path = str(_resolved_path(manifest_path, cache))
         if provider in {'kadokawa', 'kadokawaprint'}:
             reference_ids = list(reference_ids) if reference_ids is not None and not isinstance(reference_ids, (str, bytes)) else reference_ids
@@ -1166,7 +1232,7 @@ class LightNovelCatalogue:
             reference = references[reference_id]
             assertion = self._publisher_reference_assertion(provider, path, expected_sha256, reference)
             previous_ids = keys.get(_json(assertion['local_reference_key']), [])
-            if provider in {'futaba', 'kadokawa', 'kadokawaprint'} and (not previous_ids and reference_id in stable_references
+            if provider in {'futaba', 'kadokawa', 'kadokawaprint', 'tobooks'} and (not previous_ids and reference_id in stable_references
                     or previous_ids and any(records[identity]['title'] != reference['title'] for identity in previous_ids)):
                 result['held'] += 1
                 reason = 'source_reference_scope_or_title_changed'
@@ -2623,13 +2689,43 @@ class LightNovelCatalogue:
             return title['official_complete_title']
         return None
 
+    @staticmethod
+    def _confirmed_tobooks_search_titles(match):
+        """Replay only the existing TO rule's exact composition vocabulary."""
+        if (not isinstance(match, dict) or match.get('scope') != 'edition_only'
+                or match.get('rule_version') != 'publisher-reference-ndl-contained-edition-tobooks-v1'
+                or match.get('source_unit') != 'publisher_product_reference'):
+            return []
+        title = match.get('title_match')
+        if not isinstance(title, dict) or title.get('rule') != 'own_complete_title_all_parts_and_volume_v1':
+            return []
+        raw, main, subtitle, volume = (title.get(key) for key in ('source_value', 'main', 'subtitle', 'volume'))
+        locators = title.get('locators')
+        if (not isinstance(raw, str) or not raw or not isinstance(main, str) or not main
+                or any(value is not None and (not isinstance(value, str) or not value) for value in (subtitle, volume))
+                or not isinstance(locators, list) or len(locators) != (2 if volume else 1)
+                or any(not isinstance(value, str) or not value for value in locators)
+                or match.get('matched_ndl_title') != raw):
+            return []
+        # These are precisely _titles' existing four composed variants. Round
+        # trip their fields through that rule; no general title parser/alias is added.
+        from .light_novel_reference_match_v1 import _parent, _titles
+        variants = [main + (volume or '') + (subtitle or ''), main + (subtitle or '') + (volume or '')]
+        if subtitle:
+            variants += [main + (volume or '') + '~' + subtitle + '~', main + '~' + subtitle + '~' + (volume or '')]
+        parts = {'titles': [{'value': raw, 'locator': locators[0]}],
+                 'volume': {'value': volume, 'locator': locators[1]} if volume else None}
+        if _titles(parts, variants[0], _parent(locators[0])) != title:
+            return []
+        return list(dict.fromkeys([raw, *variants]))
+
     def _saved_confirmation_search_titles(self, stored, records, cache):
         """Saved proofs widen selection only; attachment must reproduce them raw."""
         entries = {entry['entry_id']: entry for entry in stored}
         titles = {}
         for binding in self._book_confirmation_bindings(cache):
             try:
-                if (binding['provider'] != 'kadokawa'
+                if (binding['provider'] not in {'kadokawa', 'tobooks'}
                         or hashlib.sha256(binding['proof_json'].encode()).hexdigest() != binding['proof_sha256']):
                     continue
                 proof = json.loads(binding['proof_json'])
@@ -2637,23 +2733,40 @@ class LightNovelCatalogue:
                 entry, record = entries.get(identity), records.get(identity)
                 if (not entry or not record or entry['kind'] != 'edition'
                         or record.get('source') != 'ndl'
+                        or (record.get('schema_version'), record.get('provider')) not in {
+                            ('light-novel-edition-v1', 'iss-ndl-opac'),
+                            ('light-novel-edition-bulk-v1', 'iss-ndl-opac-national')}
                         or not re.fullmatch(r'R100000002-[A-Za-z0-9._-]+', record.get('id', ''))
                         or identity != 'lne:ndl:' + record['id']
                         or record.get('source_record', {}).get('source_id') != record['id']
-                        or proof['provider'] != 'kadokawa'
-                        or proof['edition_record_sha256'] != entry['record_sha256']
-                        or not re.fullmatch(r'kadokawa:[0-9]{12}', proof['publisher_book_id'])):
+                        or proof['provider'] != binding['provider']
+                        or proof['edition_record_sha256'] != entry['record_sha256']):
                     continue
-                title = self._confirmed_part_search_title(proof['match'])
-                if not title:
+                provider = binding['provider']
+                if provider == 'kadokawa':
+                    if not re.fullmatch(r'kadokawa:[0-9]{12}', proof['publisher_book_id']):
+                        continue
+                    title = self._confirmed_part_search_title(proof['match'])
+                    candidates = [title] if title else []
+                    official_url = 'https://www.kadokawa.co.jp/product/' + proof['publisher_book_id'].split(':')[1] + '/'
+                else:
+                    if not re.fullmatch(r'tobooks-product:[0-9]+', proof['publisher_book_id']):
+                        continue
+                    candidates = self._confirmed_tobooks_search_titles(proof['match'])
+                    if not candidates:
+                        continue
+                    official_url = 'https://www.tobooks.jp/contents/' + proof['publisher_book_id'].split(':')[1]
+                    if (proof['match'].get('publisher_reference_id') != proof['publisher_book_id']
+                            or proof['match'].get('official_source_url') != official_url):
+                        continue
+                if not candidates:
                     continue
                 ndl_url = 'https://ndlsearch.ndl.go.jp/books/' + record['id']
-                official_url = 'https://www.kadokawa.co.jp/product/' + proof['publisher_book_id'].split(':')[1] + '/'
                 if (record.get('source_url') != ndl_url
                         or record['source_record'].get('source_url') != ndl_url
                         or proof['match'].get('sources') != [ndl_url, official_url]):
                     continue
-                titles.setdefault(identity, []).append(title)
+                titles.setdefault(identity, []).extend(candidates)
             except (ValueError, KeyError, TypeError):
                 continue
         return titles
@@ -2675,7 +2788,14 @@ class LightNovelCatalogue:
                 key = (proof['provider'], proof['manifest_path'], proof['manifest_sha256'])
                 if key not in documents:
                     try:
-                        documents[key] = {book['publisher_book_id']: book for book in self._publisher_books(*key)}
+                        if proof['provider'] == 'tobooks':
+                            # Listings and formal confirmations share one finite
+                            # source replay, while retaining their separate identities.
+                            documents[key] = {identity: {**reference, 'publisher_book_id': identity}
+                                for identity, reference in self._tobooks_publisher_references(
+                                    proof['manifest_path'], proof['manifest_sha256'], cache).items()}
+                        else:
+                            documents[key] = {book['publisher_book_id']: book for book in self._publisher_books(*key)}
                     except (OSError, ValueError, KeyError, TypeError):
                         # A failed proof remains failed for this operation only.
                         documents[key] = {}
@@ -3730,7 +3850,7 @@ class LightNovelCatalogue:
             elif record.get('schema_version') == FUTABA_REFERENCE_SCHEMA:
                 child_titles = []
                 authors.extend(credit['name'] for credit in record['publisher_product_reference']['credits'] if credit['role'] == 'author')
-            elif record.get('schema_version') in {KADOKAWA_REFERENCE_SCHEMA, KADOKAWA_PRINT_REFERENCE_SCHEMA}:
+            elif record.get('schema_version') in {KADOKAWA_REFERENCE_SCHEMA, KADOKAWA_PRINT_REFERENCE_SCHEMA, TOBOOKS_REFERENCE_SCHEMA}:
                 child_titles = []
                 authors.extend(credit['name'] for credit in record['publisher_product_reference']['credit_literals'])
             else:
@@ -3867,7 +3987,7 @@ class LightNovelCatalogue:
             if row['entry_kind'] == 'publisher_reference':
                 if 'author_display' in row:
                     names.append(row['author_display'])
-                elif row.get('publisher_reference_kind') in {PUBLISHER_REFERENCE_PROVIDERS[p]['public_kind'] for p in ('kadokawa', 'kadokawaprint')}:
+                elif row.get('publisher_reference_kind') in {PUBLISHER_REFERENCE_PROVIDERS[p]['public_kind'] for p in ('kadokawa', 'kadokawaprint', 'tobooks')}:
                     names.extend(credit['name'] for credit in row['publisher_product_reference']['credit_literals'])
                 else:
                     names.extend(credit['name'] for credit in row['publisher_product_reference']['credits'] if credit['role'] == 'author')
@@ -3880,6 +4000,11 @@ class LightNovelCatalogue:
                 title = LightNovelCatalogue._confirmed_part_search_title(row.get('edition_confirmation_evidence'))
                 if title:
                     confirmed_titles.append(title)
+            elif (row.get('edition_bibliography_confirmed') is True
+                    and re.fullmatch(r'https://www\.tobooks\.jp/contents/[0-9]+', row.get('confirmation_source_url', ''))):
+                match = row.get('edition_confirmation_evidence')
+                if isinstance(match, dict) and match.get('official_source_url') == row['confirmation_source_url']:
+                    confirmed_titles.extend(LightNovelCatalogue._confirmed_tobooks_search_titles(match))
             if key and not (_search_contains(_search_text([
                     row['title'], *row['aliases'], *child_titles, *confirmed_titles]), key, punctuationless_key, terms)
                     or key in _search_text(names)):

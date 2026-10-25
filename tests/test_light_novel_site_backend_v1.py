@@ -153,6 +153,7 @@ def stores(tmp_path):
 @pytest.mark.parametrize('provider, marker, title', [
     ('kadokawa', 'kadokawa_product_reference', '電子掲載書誌'),
     ('kadokawaprint', 'kadokawa_print_product_reference', '紙掲載書誌'),
+    ('tobooks', 'tobooks_product_reference', 'TO掲載書誌'),
 ])
 def test_kadokawa_reference_detail_routes_through_unified_http_without_world_lookup(stores, provider, marker, title):
     import threading
@@ -166,7 +167,8 @@ def test_kadokawa_reference_detail_routes_through_unified_http_without_world_loo
         'title': title, 'reference_identity_basis': 'publisher_product_reference',
         'publisher_reference_kind': marker,
         'reference_scope': 'private_bibliographic_discovery',
-        'source_url': 'https://www.kadokawa.co.jp/product/123456789012/'})
+        'source_url': 'https://www.tobooks.jp/contents/12345' if provider == 'tobooks'
+                      else 'https://www.kadokawa.co.jp/product/123456789012/'})
     world.work_detail = lambda key: pytest.fail('KAD reference must not use the world store')
     world.set_read_status = lambda *args: pytest.fail('KAD reference read state must not use the world store')
     server = create_server(catalogue=combined, port=0)
