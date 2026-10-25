@@ -455,3 +455,49 @@ def test_kadokawa_reference_drops_nested_proof_and_unknown_permissions_never_bec
     assert public['publisher_product_reference']['credit_literals'] == []
     assert public.get('usage_permissions', {}).get('prose_ai_permission') != 'allowed'
     assert 'PRIVATE' not in json.dumps(public)
+
+
+def kadokawa_paper_listing():
+    row = kadokawa_electronic_listing()
+    row.update(entry_id='lnr:pub:kadokawaprint:' + 'b' * 32,
+               publisher_reference_kind='kadokawa_print_product_reference', isbn=['978-0-306-40615-7'])
+    row['publisher_product_reference']['form'] = '文庫'
+    return row
+
+
+def test_kadokawa_paper_listing_keeps_only_valid_isbn_literals_without_asserting_an_edition():
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = kadokawa_paper_listing()
+    row['isbn'] += ['0-306-40615-2', '978-0-306-40615-8', 9780306406157, None, {'path': 'PRIVATE'}]
+    public = public_work(row)
+    assert public['entry_id'] == public['work_id'] == row['entry_id']
+    assert public['entry_kind'] == 'publisher_reference'
+    assert public['publisher_reference_kind'] == 'kadokawa_print_product_reference'
+    assert public['publisher_provider'] == 'kadokawa-print'
+    assert public['reference_scope'] == 'private_bibliographic_discovery'
+    assert public['isbn'] == ['978-0-306-40615-7', '0-306-40615-2']
+    assert public['publisher_product_reference']['form'] == '文庫'
+    assert public['publisher_product_reference']['credit_literals'] == [{'role_literal': '著者', 'name': '公式表示名'}]
+    assert public['members'] == public['authors'] == [] and public['recommendable'] is False
+    assert public['light_novel_confirmed'] is False
+    assert all(public[key] is False for key in ('edition_identity_asserted', 'story_series_identity_asserted',
+        'original_work_identity_asserted', 'light_novel_identity_asserted'))
+    assert public['usage_permissions']['public_display'] == public['usage_permissions']['commercial_reuse'] == 'unknown'
+    assert 'PRIVATE' not in json.dumps(public)
+    electronic = kadokawa_electronic_listing()
+    electronic['isbn'] = row['isbn']
+    assert public_work(electronic)['isbn'] == [], 'paper ISBN support must not supplement electronic listings'
+
+
+@pytest.mark.parametrize('mutation', ['namespace', 'marker', 'basis', 'scope'])
+def test_kadokawa_paper_reference_cannot_reuse_a_different_profile_or_purpose(mutation):
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = kadokawa_paper_listing()
+    if mutation == 'namespace': row['entry_id'] = 'lnr:pub:kadokawa:' + 'b' * 32
+    elif mutation == 'marker': row['publisher_reference_kind'] = 'kadokawa_product_reference'
+    elif mutation == 'basis': row['reference_identity_basis'] = 'edition'
+    else: row['reference_scope'] = 'public_display_allowed'
+    public = public_work(row)
+    assert 'publisher_product_reference' not in public
+    assert 'publisher_reference_kind' not in public
+    assert public['isbn'] == []

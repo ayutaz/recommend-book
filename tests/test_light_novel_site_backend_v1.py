@@ -150,20 +150,25 @@ def stores(tmp_path):
     return world, light, UnifiedCatalogue(world, light)
 
 
-def test_kadokawa_reference_detail_routes_through_unified_http_without_world_lookup(stores):
+@pytest.mark.parametrize('provider, marker, title', [
+    ('kadokawa', 'kadokawa_product_reference', '電子掲載書誌'),
+    ('kadokawaprint', 'kadokawa_print_product_reference', '紙掲載書誌'),
+])
+def test_kadokawa_reference_detail_routes_through_unified_http_without_world_lookup(stores, provider, marker, title):
     import threading
     from urllib.parse import quote
-    from urllib.request import urlopen
+    from urllib.request import Request, urlopen
     from recommend_book.recommendation.scale_site_v1 import create_server
 
     world, light, combined = stores
-    identity = 'lnr:pub:kadokawa:' + 'd' * 32
+    identity = 'lnr:pub:' + provider + ':' + 'd' * 32
     light.rows.append({'entry_id': identity, 'qid': '', 'entry_kind': 'publisher_reference',
-        'title': '電子掲載書誌', 'reference_identity_basis': 'publisher_product_reference',
-        'publisher_reference_kind': 'kadokawa_product_reference',
+        'title': title, 'reference_identity_basis': 'publisher_product_reference',
+        'publisher_reference_kind': marker,
         'reference_scope': 'private_bibliographic_discovery',
         'source_url': 'https://www.kadokawa.co.jp/product/123456789012/'})
     world.work_detail = lambda key: pytest.fail('KAD reference must not use the world store')
+    world.set_read_status = lambda *args: pytest.fail('KAD reference read state must not use the world store')
     server = create_server(catalogue=combined, port=0)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -173,7 +178,13 @@ def test_kadokawa_reference_detail_routes_through_unified_http_without_world_loo
         assert result['entry_id'] == identity
         assert result['entry_kind'] == 'publisher_reference'
         assert result['reference_scope'] == 'private_bibliographic_discovery'
-        assert result['title'] == '電子掲載書誌'
+        assert result['title'] == title
+        assert result['publisher_reference_kind'] == marker
+        request = Request(f'http://127.0.0.1:{server.server_port}/api/entries/' + quote(identity, safe='') + '/read-status',
+            data=b'{"status":"reading"}', headers={'Content-Type': 'application/json', 'X-Catalogue-Request': '1'})
+        with urlopen(request, timeout=5) as response:
+            assert json.load(response)['entry_id'] == identity
+        assert light.calls == [('status', identity, 'reading')]
     finally:
         server.shutdown()
         server.server_close()
