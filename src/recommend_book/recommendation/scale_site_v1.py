@@ -563,6 +563,29 @@ def public_work(row):
                 'license_url': _link(credit.get('license_url')),
                 'changes': _text(credit.get('changes')),
             }
+    listings = row.get('publisher_listing_associations')
+    if isinstance(listings, list):
+        public_listings = []
+        identity_flags = ('edition_identity_asserted', 'story_series_identity_asserted',
+            'original_work_identity_asserted', 'light_novel_identity_asserted')
+        for listing in listings:
+            if (not isinstance(listing, dict)
+                    or listing.get('rule_version') != 'orange-explicit-child-ndl-bibliographic-reference-association-v1'
+                    or listing.get('scope') != 'bibliographic_reference_association'
+                    or any(listing.get(flag) is not False for flag in identity_flags)
+                    or not re.fullmatch(r'lng:pub:orange:[0-9a-f]{32}', _text(listing.get('group_entry_id')))
+                    or not _link(listing.get('official_child_url')) or not _link(listing.get('official_parent_url'))):
+                continue
+            credits = listing.get('official_credit_literals')
+            public_listings.append({'scope': 'bibliographic_reference_association',
+                'group_entry_id': listing['group_entry_id'], 'group_title': _text(listing.get('source_group_title')),
+                'title': _text(listing.get('official_title')), 'source_url': _link(listing['official_child_url']),
+                'group_source_url': _link(listing['official_parent_url']),
+                'credit_literals': [{'role_literal': _text(credit.get('role_literal')), 'name': _text(credit.get('name'))}
+                    for credit in credits if isinstance(credit, dict)] if isinstance(credits, list) else [],
+                **{flag: False for flag in identity_flags}})
+        if public_listings:
+            result['publisher_listing_associations'] = public_listings
     if row.get('series_identity_basis') in ('publisher_series_and_ndl_bibliography', 'publisher_work_group_and_ndl_bibliography',
                                            'publisher_source_group'):
         result['series_identity_basis'] = row['series_identity_basis']
@@ -793,6 +816,17 @@ async function showDetail(identifier){
   if(row.relation_resolution==='original_work_and_story_series_unresolved')body.append(node('p','原作・物語シリーズとの対応は未確認です。','muted'));
   if(row.relation_resolution==='edition_series_membership_verified')body.append(node('p','物語シリーズへの所属を出典で確認済みです。版と原作品は別の項目として扱います。','muted'));
   if(row.membership_source){const source=row.membership_source,p=node('p','シリーズ所属の照合資料：');for(const [url,label]of [[source.source_url,'Wikipediaの参照版'],[source.history_url,'寄稿者の履歴'],[source.license_url,source.license]]){if(!url||!label)continue;const a=node('a',label);a.href=url;a.target='_blank';a.rel='noopener noreferrer';p.append(a,node('span',' ・ '));}body.append(p,node('p',source.attribution,'muted'),node('p','明示された書誌情報を抽出し、NDL書誌と照合しています。内容分類の根拠とは別に扱います。','muted'));}
+  if(row.publisher_listing_associations?.length){
+   const associations=section(body,'出版社の掲載書誌との対応');
+   associations.append(node('p','完全な書名と著者表示の対応を確認した掲載参照です。原作品・物語シリーズ・版の同一性は未確認です。','muted'));
+   for(const reference of row.publisher_listing_associations){
+    const item=node('div',undefined,'similar-row'),title=node(reference.source_url?'a':'span',reference.title||'書名不明');
+    if(reference.source_url){title.href=reference.source_url;title.target='_blank';title.rel='noopener noreferrer';}item.append(title);
+    const credits=(reference.credit_literals||[]).map(credit=>(credit.role_literal?credit.role_literal+'：':'')+credit.name);if(credits.length)item.append(node('p',credits.join(' / '),'muted'));
+    const parent=node('p','掲載グループ：'),link=node(reference.group_source_url?'a':'span',reference.group_title||'名称未確認');
+    if(reference.group_source_url){link.href=reference.group_source_url;link.target='_blank';link.rel='noopener noreferrer';}parent.append(link);item.append(parent);associations.append(item);
+   }
+  }
   if(row.relation_resolution==='publisher_work_group_membership_verified')body.append(node('p','出版社の作品グループに掲載された書誌との対応を確認済みです。原作品・物語シリーズの同一性は未確認です。','muted'));
   if(row.entry_kind==='series')body.append(node('p',row.series_identity_basis==='publisher_work_group_and_ndl_bibliography'?'出版社がまとめた作品グループです。内容特徴や読書状態は各巻へ自動反映しません。':'シリーズ全体の情報です。内容特徴や読書状態は各巻へ自動反映しません。','muted'));
   if(['futaba_mnovels_grouping','futaba_mnovels_source_group','orange_native_taxonomy_source_group','ecobalt_author_index_source_group','sbcr_ebook_source_group'].includes(row.publisher_work_group_kind)){if(row.entry_kind==='publisher_group')body.append(node('p','出版社がこの保存一覧内でまとめた掲載グループです。グループ共通の著者、原作品・物語シリーズの同一性は未確認です。読書状態は掲載書誌へ自動反映しません。','muted'));if(row.publisher_work_group_kind==='ecobalt_author_index_source_group'&&row.heading_author_display)body.append(node('p','掲載リストの著者表示：'+row.heading_author_display+'（各書誌の担当役割は未確認）','muted'));const products=section(body,'出版社の掲載書誌');products.append(node('p','出版社の掲載参照です。NDLの版や、紙・電子の同一版との対応を意味しません。全媒体・全期間の収録範囲は未確認です。','muted'));for(const product of row.publisher_product_references||[]){const div=node('div',undefined,'similar-row'),title=node(product.source_url?'a':'span',product.title||'書名不明');if(product.source_url){title.href=product.source_url;title.target='_blank';title.rel='noopener noreferrer';}div.append(title);const roles={author:'著者',illustrator:'イラスト',original_author:'原作',original_concept:'原案',supervisor:'監修',editor:'編集',cover_illustrator:'装画',commentary_author:'解説',screenplay_author:'脚本'};const credits=product.credit_literals?.length?product.credit_literals.map(c=>(c.role_scope==='author_index_display_only'?'掲載リストの著者表示':(c.role_literal??c.role)||'役割未確認')+'：'+c.name):(product.credits||[]).map(c=>(roles[c.role]||'役割未確認')+'：'+c.name);if(credits.length)div.append(node('p',credits.join(' / '),'muted'));const facts=[product.label,product.form].filter(Boolean);if(facts.length)div.append(node('p',facts.join(' / '),'muted'));const seen=new Set([product.source_url]);for(const media of product.media_references||[]){if(!media.source_url||seen.has(media.source_url))continue;seen.add(media.source_url);const link=node('a','別の掲載ページ');link.href=media.source_url;link.target='_blank';link.rel='noopener noreferrer';const line=node('p');line.append(link);div.append(line);}products.append(div);}}

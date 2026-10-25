@@ -2187,6 +2187,16 @@ class LightNovelCatalogue:
                 own_volume_count=len(volumes))
         return parts
 
+    def _authenticated_own_primary_resource(self, edition, parts, cache):
+        """Select an own node already authenticated into this operation's cache."""
+        from .ingestion.ndl import DC, DCTERMS, DCNDL, RDF
+        source, provenance = parts['source'], edition['provenance']
+        node, _ = cache[('ndl_nodes', provenance['raw_path'], provenance['raw_sha256'])][source['source_id']]
+        resources = [value for value in node.iter('{' + DCNDL + '}BibResource')
+            if value.get('{' + RDF + '}about', '').split('#')[0] == source['source_url']
+            and any(child.tag in {'{' + DC + '}title', '{' + DCTERMS + '}title'} for child in value)]
+        return resources[0] if len(resources) == 1 else None
+
     def _publisher_edition_match_v2(self, provider, publisher, edition, cache, *, _part_information=False, _publisher_context=False):
         from .normalization import normalize_isbn
         from .light_novel_ndl_series_v1 import person_key
@@ -2552,6 +2562,147 @@ class LightNovelCatalogue:
         result.update(matched_publisher_references=len(matched), held_publisher_references=len(held))
         return result
 
+    def _orange_listing_group_entries(self, cache):
+        key = ('orange_listing_group_entries',)
+        if key not in cache:
+            with self._connect() as db:
+                entries = db.execute("SELECT * FROM entries WHERE "
+                    "json_extract(record_json,'$.schema_version')='light-novel-orange-source-group-v1' "
+                    "OR entry_id LIKE 'lng:pub:orange:%'").fetchall()
+            result = {}
+            for entry in entries:
+                record = json.loads(entry['record_json'])
+                if (hashlib.sha256(entry['record_json'].encode()).hexdigest() != entry['record_sha256']
+                        or entry['kind'] != 'publisher_group' or record.get('kind') != 'publisher_group'
+                        or record.get('schema_version') != 'light-novel-orange-source-group-v1'
+                        or record.get('source') != 'publisher' or record.get('provider') != 'orange'
+                        or entry['entry_id'] != _entry('lng:pub:orange:' + record['id'])):
+                    raise ValueError('Orange listing group metadata differs')
+                result[entry['entry_id']] = dict(entry)
+            cache[key] = result
+        return cache[key]
+
+    def _orange_listing_candidates(self, editions, manifest_path, expected_sha256, cache):
+        from .ingestion.ndl import DC, DCTERMS
+        from .light_novel_bibliographic_match_v1 import candidate_title_keys
+        from .light_novel_reference_match_v1 import _key
+        from .light_novel_orange_groups_v1 import orange_child_candidate_index, verify_orange_child
+        from .light_novel_orange_association_v1 import match_orange_association
+        path = str(_resolved_path(manifest_path, cache))
+        index_key = ('orange_child_candidate_index', path, expected_sha256)
+        if index_key not in cache:
+            index = {}
+            for child in orange_child_candidate_index(path, expected_sha256):
+                pair = (child['group_reference_id'], child['child_reference_id'])
+                index.setdefault(_key(child['title']), set()).add(pair)
+            cache[index_key] = index
+        groups = self._orange_listing_group_entries(cache)
+        group_index = {}
+        for identity, entry in groups.items():
+            record = json.loads(entry['record_json'])
+            active = record['source_group_assertions'][-1]
+            if (active['manifest_sha256'] == expected_sha256
+                    and str(_resolved_path(active['manifest_path'], cache)) == path):
+                group_index.setdefault(active['reference_id'], []).append((identity, entry, record, active))
+        result, ambiguous = {}, set()
+        for identity, entry in editions.items():
+            record = json.loads(entry['record_json'])
+            pairs = set().union(*(cache[index_key].get(title, set())
+                for title in candidate_title_keys(record['source_record'])))
+            if len(pairs) != 1:
+                if len(pairs) > 1:
+                    ambiguous.add(identity)
+                continue
+            group_reference, child_reference = next(iter(pairs))
+            group_entries = group_index.get(group_reference, [])
+            if len(group_entries) != 1:
+                continue
+            group_id, group_entry, group_record, active = group_entries[0]
+            parent_key = ('orange_selected_parent', path, expected_sha256, group_reference)
+            if parent_key not in cache:
+                selected = verify_orange_child(path, expected_sha256,
+                    group_reference_id=group_reference, child_reference_id=child_reference)
+                cache[parent_key] = selected['group']
+            group = cache[parent_key]
+            if (active != self._publisher_source_assertion('orange', active['manifest_path'], expected_sha256, group)
+                    or group_record['title'] != group['title']
+                    or group_record['publisher_product_references'] != self._publisher_product_references('orange', group)):
+                raise ValueError('Orange selected listing group does not reproduce')
+            children = [child for child in group['members'] if child['publisher_reference_id'] == child_reference]
+            if len(children) != 1:
+                raise ValueError('Orange selected child is absent or ambiguous')
+            parts = self._edition_primary_bibliographic_parts(record, cache)
+            own = self._authenticated_own_primary_resource(record, parts, cache) if parts else None
+            if own is None or any(child.tag in {'{' + DC + '}contributor', '{' + DCTERMS + '}contributor'} for child in own):
+                continue
+            association = match_orange_association({'group': group, 'child': children[0],
+                'source_proof_sha256': expected_sha256}, parts) if parts else None
+            if association is not None:
+                result[identity] = {'group_entry_id': group_id,
+                    'group_record_sha256': group_entry['record_sha256'], 'association': association}
+        return result, ambiguous
+
+    def correlate_orange_edition_listings(self, manifest_path, expected_sha256, *, edition_ids):
+        """Associate explicit publisher listings, without story or SKU identity."""
+        if isinstance(edition_ids, (str, bytes)) or edition_ids is None:
+            raise ValueError('an explicit edition ID collection is required')
+        requested = list(edition_ids)
+        if len(requested) != len(set(requested)) or any(
+                not _entry(identity).startswith('lne:ndl:') for identity in requested):
+            raise ValueError('unique typed NDL edition IDs are required')
+        result = {'scope': 'bibliographic_reference_association', 'requested_editions': len(requested),
+            'new_associations': 0, 'unchanged': 0, 'protected_existing': 0,
+            'unresolved_editions': 0, 'ambiguous_editions': 0}
+        if not requested:
+            return result
+        with self._connect() as db:
+            editions = {row['entry_id']: dict(row) for row in db.execute(
+                'SELECT * FROM entries WHERE entry_id IN (' + ','.join('?' for _ in requested) + ')', requested)}
+        if set(editions) != set(requested) or any(entry['kind'] != 'edition' for entry in editions.values()):
+            raise ValueError('requested edition is missing or has a different kind')
+        cache = {}
+        self._membership_base_rows(editions, cache)
+        matches, ambiguous = self._orange_listing_candidates(editions, manifest_path, expected_sha256, cache)
+        result.update(unresolved_editions=len(requested) - len(matches), ambiguous_editions=len(ambiguous))
+        groups = self._orange_listing_group_entries(cache)
+        expected_groups = {identity: (entry['kind'], entry['record_sha256']) for identity, entry in groups.items()}
+        with self._connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            current_groups = {}
+            for row in db.execute("SELECT * FROM entries WHERE "
+                    "json_extract(record_json,'$.schema_version')='light-novel-orange-source-group-v1' "
+                    "OR entry_id LIKE 'lng:pub:orange:%'"):
+                if hashlib.sha256(row['record_json'].encode()).hexdigest() != row['record_sha256']:
+                    raise ValueError('Orange listing group metadata differs')
+                current_groups[row['entry_id']] = (row['kind'], row['record_sha256'])
+            if current_groups != expected_groups:
+                raise ValueError('Orange listing group set changed during resolution')
+            for identity, entry in editions.items():
+                current = db.execute('SELECT kind,record_sha256,record_json FROM entries WHERE entry_id=?', (identity,)).fetchone()
+                if (current is None or (current['kind'], current['record_sha256']) != (entry['kind'], entry['record_sha256'])
+                        or hashlib.sha256(current['record_json'].encode()).hexdigest() != current['record_sha256']):
+                    raise ValueError('selected edition metadata changed during resolution')
+            for identity in requested:
+                match = matches.get(identity)
+                previous = db.execute('SELECT * FROM publisher_bibliographic_correspondences '
+                    'WHERE edition_id=? AND provider=?', (identity, 'orange')).fetchone()
+                if match is None:
+                    result['protected_existing'] += int(previous is not None)
+                    continue
+                proof = {'kind': 'orange_child_listing_association_v1', 'provider': 'orange',
+                    'scope': result['scope'], 'manifest_path': str(_resolved_path(manifest_path, cache)),
+                    'manifest_sha256': expected_sha256, 'edition_record_sha256': editions[identity]['record_sha256'], **match}
+                encoded = _json(proof)
+                digest = hashlib.sha256(encoded.encode()).hexdigest()
+                if previous is not None:
+                    result['unchanged' if previous['proof_json'] == encoded and previous['proof_sha256'] == digest
+                        else 'protected_existing'] += 1
+                    continue
+                db.execute('INSERT INTO publisher_bibliographic_correspondences VALUES(?,?,?,?)',
+                    (identity, 'orange', encoded, digest))
+                result['new_associations'] += 1
+        return result
+
     def _attach_bibliographic_correspondences(self, rows, stored, cache):
         from .light_novel_bibliographic_match_v1 import SCOPE
         with self._connect() as db:
@@ -2567,6 +2718,23 @@ class LightNovelCatalogue:
                 if hashlib.sha256(binding['proof_json'].encode()).hexdigest() != binding['proof_sha256']:
                     continue
                 proof = json.loads(binding['proof_json'])
+                if proof.get('kind') == 'orange_child_listing_association_v1':
+                    if (proof['provider'] != binding['provider'] or proof['provider'] != 'orange'
+                            or proof['scope'] != 'bibliographic_reference_association'
+                            or proof['edition_record_sha256'] != stored[identity]['record_sha256']):
+                        continue
+                    key = ('orange_listing_associations', proof['manifest_path'], proof['manifest_sha256'], identity)
+                    if key not in documents:
+                        documents[key] = {}  # One failed listing cannot hide another edition's association.
+                        documents[key] = self._orange_listing_candidates({identity: stored[identity]},
+                            proof['manifest_path'], proof['manifest_sha256'], cache)[0]
+                    match = documents[key].get(identity)
+                    if (match is None or any(match[field] != proof[field]
+                            for field in ('group_entry_id', 'group_record_sha256', 'association'))):
+                        continue
+                    indexed[identity]['publisher_listing_associations'] = [{
+                        **match['association'], 'group_entry_id': match['group_entry_id']}]
+                    continue
                 if (proof['provider'] != binding['provider'] or proof['scope'] != SCOPE
                         or proof['edition_record_sha256'] != stored[identity]['record_sha256']
                         or not proof['reference_ids'] or proof['reference_ids'] != sorted(set(proof['reference_ids']))):
@@ -2654,6 +2822,60 @@ class LightNovelCatalogue:
                     'imprint': 'recordData/dcndl:seriesTitle;wikidata.claims.P123',
                     'language': 'recordData/dcterms:language', 'novel_class': 'recordData/subject/NDC913'}}
 
+    def _own_role_membership_candidates(self, rows, stored, authorities, cache):
+        """Resolve creator roles only inside each authenticated own resource."""
+        from .ingestion.ndl import DC, DCTERMS
+        from .light_novel_reference_match_v1 import _parent
+        from .light_novel_own_role_v1 import bind_own_direct_credit_roles_v2
+        index = {}
+        for row in rows:
+            if row['entry_kind'] == 'series' and row['entry_id'].startswith('lns:wd:'):
+                for title in [row['title'], *row['aliases']]:
+                    index.setdefault(normalize_search(title), {})[row['entry_id']] = row
+        result = {}
+        for row in rows:
+            if row['entry_kind'] != 'edition':
+                continue
+            record = json.loads(stored[row['entry_id']]['record_json'])
+            parts = self._edition_primary_bibliographic_parts(record, cache)
+            if not parts or not parts['publisher_agents'] or not parts['volume']:
+                continue
+            candidates = {}
+            for title in parts['titles']:
+                candidates.update(index.get(normalize_search(title['value']), {}))
+            if len(candidates) != 1:
+                continue
+            series = next(iter(candidates.values()))
+            expected_authorities = [authorities.get(author['qid'], set()) for author in series['authors']]
+            if (not expected_authorities or any(len(values) != 1 for values in expected_authorities)
+                    or len(set().union(*expected_authorities)) != len(expected_authorities)):
+                continue
+            source = parts['source']
+            ndc = source['extra']['ndc_codes']
+            if not ndc or any(not re.fullmatch(r'913(?:\.[0-9]+)?', value) for value in ndc):
+                continue
+            own = self._authenticated_own_primary_resource(record, parts, cache)
+            if own is None:
+                continue
+            if any(child.tag in {'{' + DC + '}contributor', '{' + DCTERMS + '}contributor'} for child in own):
+                continue
+            own_locator = _parent(parts['publisher_agents'][0]['locator'])
+            bindings = bind_own_direct_credit_roles_v2(own, own_locator, parts)
+            if bindings['status'] != 'bound':
+                continue
+            # This copy changes only the matching input. Persisted source
+            # contributors and their default roles remain immutable.
+            local_source = {**source, 'titles': parts['titles'], 'volume': parts['volume']['value'],
+                'contributors': bindings['writer_contributors']}
+            membership = self._membership_match(series, local_source, authorities)
+            if membership is None:
+                continue
+            result[row['entry_id']] = {**membership,
+                'rule_version': 'ndl-edition-series-membership-own-direct-role-v2',
+                'role_bindings': bindings, 'author_identity_asserted': False,
+                'original_work_identity_asserted': False, 'P50_backfilled': False}
+        return result
+
     def _membership_candidates(self, rows, stored, authorities):
         index = {}
         for series in rows:
@@ -2721,6 +2943,15 @@ class LightNovelCatalogue:
         NDL publisher series/work groups use their separate resolver contract.
         Existing bindings are never replaced or removed by this operation.
         """
+        return self._resolve_scoped_wikidata_memberships(manifest_path, expected_sha256,
+            edition_ids=edition_ids, own_roles=False)
+
+    def resolve_own_role_wikidata_edition_memberships(self, manifest_path, expected_sha256, *, edition_ids):
+        """Use explicit own writer/illustrator credits without rewriting metadata."""
+        return self._resolve_scoped_wikidata_memberships(manifest_path, expected_sha256,
+            edition_ids=edition_ids, own_roles=True)
+
+    def _resolve_scoped_wikidata_memberships(self, manifest_path, expected_sha256, *, edition_ids, own_roles):
         if isinstance(edition_ids, (str, bytes)) or edition_ids is None:
             raise ValueError('an explicit edition ID collection is required')
         requested = list(edition_ids)
@@ -2729,7 +2960,8 @@ class LightNovelCatalogue:
                 raise ValueError('only typed NDL edition IDs may be requested')
         if len(requested) != len(set(requested)):
             raise ValueError('duplicate requested edition ID')
-        result = {'scope': 'wikidata_series_only', 'requested_editions': len(requested),
+        result = {'scope': 'wikidata_series_own_direct_roles_only' if own_roles else 'wikidata_series_only',
+                  'requested_editions': len(requested),
                   'candidate_series': 0, 'linked': 0, 'unchanged': 0,
                   'protected_existing': 0, 'unresolved_editions': 0}
         if not requested:
@@ -2767,13 +2999,30 @@ class LightNovelCatalogue:
         cache = {}
         rows = self._membership_base_rows(selected, cache)
         authorities = self._author_authorities(manifest_path, expected_sha256, cache)
-        candidates = self._membership_candidates(rows, selected, authorities)
+        candidates = (self._own_role_membership_candidates(rows, selected, authorities, cache)
+            if own_roles else self._membership_candidates(rows, selected, authorities))
         result['unresolved_editions'] = len(requested) - len(candidates)
         with self._connect() as db:
+            if own_roles:
+                db.execute('BEGIN IMMEDIATE')
+                current_candidates = {}
+                for current in db.execute("SELECT * FROM entries WHERE "
+                        "json_extract(record_json,'$.schema_version')='light-novel-metadata-v1' "
+                        "AND (kind='series' OR json_extract(record_json,'$.kind')='series')"):
+                    if hashlib.sha256(current['record_json'].encode()).hexdigest() != current['record_sha256']:
+                        raise ValueError('stored metadata SHA mismatch')
+                    record = json.loads(current['record_json'])
+                    if titles & {normalize_search(t) for t in [record['title'], *record['aliases']]}:
+                        current_candidates[current['entry_id']] = (current['kind'], current['record_sha256'])
+                expected_candidates = {identity: (entry['kind'], entry['record_sha256'])
+                    for identity, entry in selected.items() if identity not in editions}
+                if current_candidates != expected_candidates:
+                    raise ValueError('membership candidate set changed during resolution')
             # All selected witnesses must succeed before the first INSERT.
             for identity, entry in selected.items():
-                current = db.execute('SELECT kind,record_sha256 FROM entries WHERE entry_id=?', (identity,)).fetchone()
-                if current is None or (current['kind'], current['record_sha256']) != (entry['kind'], entry['record_sha256']):
+                current = db.execute('SELECT kind,record_sha256,record_json FROM entries WHERE entry_id=?', (identity,)).fetchone()
+                if (current is None or (current['kind'], current['record_sha256']) != (entry['kind'], entry['record_sha256'])
+                        or own_roles and hashlib.sha256(current['record_json'].encode()).hexdigest() != current['record_sha256']):
                     raise ValueError('selected membership metadata changed during resolution')
             for edition_id in requested:
                 membership = candidates.get(edition_id)
@@ -2785,6 +3034,8 @@ class LightNovelCatalogue:
                 proof = {'manifest_path': str(Path(manifest_path).resolve()), 'manifest_sha256': expected_sha256,
                          'edition_record_sha256': selected[edition_id]['record_sha256'],
                          'series_record_sha256': selected[series_id]['record_sha256'], 'membership': membership}
+                if own_roles:
+                    proof['kind'] = 'wikidata_own_direct_role_membership_v2'
                 encoded = _json(proof)
                 digest = hashlib.sha256(encoded.encode()).hexdigest()
                 if previous:
@@ -3052,6 +3303,18 @@ class LightNovelCatalogue:
                             or indexed[series_id].get('light_novel_confirmed') is True)
                     indexed[edition_id].update(series_entry_id=series_id, volume_number=membership['volume_number'],
                         relation_resolution='edition_series_membership_verified', light_novel_confirmed=light_novel_confirmed,
+                        admission_status='edition_series_membership_verified', series_membership_evidence=membership)
+                    continue
+                if proof.get('kind') == 'wikidata_own_direct_role_membership_v2':
+                    key = ('own_direct_roles', proof['manifest_path'], proof['manifest_sha256'])
+                    if key not in plans:
+                        authorities = self._author_authorities(proof['manifest_path'], proof['manifest_sha256'], cache)
+                        plans[key] = self._own_role_membership_candidates(rows, stored, authorities, cache)
+                    membership = plans[key].get(edition_id)
+                    if membership != proof['membership'] or membership.get('series_entry_id') != series_id:
+                        continue
+                    indexed[edition_id].update(series_entry_id=series_id, volume_number=membership['volume_number'],
+                        relation_resolution='edition_series_membership_verified', light_novel_confirmed=True,
                         admission_status='edition_series_membership_verified', series_membership_evidence=membership)
                     continue
                 key = (proof['manifest_path'], proof['manifest_sha256'])

@@ -5411,3 +5411,286 @@ def test_wikipedia_credit_membership_concurrent_title_candidate_is_write_free(wi
         cat.resolve_wikipedia_credit_edition_memberships(path, sha, edition_ids=['lne:ndl:R100000002-I1'])
     with cat._connect() as db:
         assert db.execute('SELECT count(*) FROM edition_series_memberships').fetchone()[0] == 0
+
+
+@pytest.fixture
+def own_role_membership_bundle(membership_bundle, tmp_path, request):
+    from pathlib import Path
+    import xml.etree.ElementTree as ET
+    from recommend_book.ingestion.core import RawArtifact
+    from recommend_book.ingestion.ndl import NDLAdapter, DC, DCTERMS, DCNDL, RDF, FOAF
+    cat, series, edition, _, _ = membership_bundle
+    raw = Path(edition['provenance']['raw_path'])
+    node = ET.fromstring(raw.read_bytes())
+    primary = next(node.iter('{' + DCNDL + '}BibResource'))
+    for child in list(primary):
+        if child.tag in {'{' + DC + '}creator', '{' + DCTERMS + '}creator'}:
+            primary.remove(child)
+    for name, authority, literal in [('床丸, 迷人', '01234567', '床丸迷人 作'),
+                                     ('浜弓場, 双', '07654321', '浜弓場双 絵')]:
+        creator = ET.SubElement(primary, '{' + DCTERMS + '}creator')
+        agent = ET.SubElement(creator, '{' + FOAF + '}Agent',
+            {'{' + RDF + '}about': 'http://id.ndl.go.jp/auth/entity/' + authority})
+        ET.SubElement(agent, '{' + FOAF + '}name').text = name
+        ET.SubElement(primary, '{' + DC + '}creator').text = literal
+    if getattr(request, 'param', None) == 'extra_contributor':
+        ET.SubElement(primary, '{' + DCTERMS + '}contributor').text = '追加作家 著'
+    raw.write_bytes(ET.tostring(node, encoding='utf-8'))
+    digest = hashlib.sha256(raw.read_bytes()).hexdigest()
+    source = NDLAdapter(None)._normalize(node, RawArtifact(digest, str(raw), raw.stat().st_size,
+        '2026-10-25T00:00:00Z', 'https://ndlsearch.ndl.go.jp/api/sru'),
+        'iss-ndl-opac', locator='records[1]/recordData').model_dump(mode='json')
+    edition['source_record'] = source
+    edition['authors'] = list(dict.fromkeys(c['name'] for c in source['contributors'] if c['role'] == 'author'))
+    edition['provenance']['raw_sha256'] = digest
+    assert cat.import_editions([edition])['updated'] == 1
+    authority = tmp_path / 'own-role-authority.json'
+    authority_sha = write(authority, json.loads(Path(series['provenance']['raw_path']).read_text(encoding='utf-8')))
+    manifest = tmp_path / 'own-role-authorities.json'
+    sha = write(manifest, {'version': 'light-novel-author-authorities-v1', 'authors': [{
+        'author_qid': 'Q500', 'raw_path': str(authority), 'raw_sha256': authority_sha}]})
+    return cat, series, edition, manifest, sha, authority
+
+
+def test_own_role_membership_uses_explicit_roles_and_replays_without_mutation(own_role_membership_bundle):
+    cat, _, _, path, sha, _ = own_role_membership_bundle
+    ids = ['lne:ndl:R100000002-I1']
+    assert cat.resolve_wikidata_edition_memberships(path, sha, edition_ids=ids)['linked'] == 0
+    with cat._connect() as db:
+        before = [tuple(r) for r in db.execute('SELECT * FROM entries ORDER BY entry_id')]
+    result = cat.resolve_own_role_wikidata_edition_memberships(path, sha, edition_ids=ids)
+    assert result['linked'] == 1 and result['unresolved_editions'] == 0
+    row = cat.work_detail(ids[0])
+    assert row['series_entry_id'] == 'lns:wd:Q1'
+    proof = row['series_membership_evidence']
+    assert proof['rule_version'] == 'ndl-edition-series-membership-own-direct-role-v2'
+    assert proof['role_bindings']['writer_authority_ids'] == ['01234567']
+    assert proof['role_bindings']['illustrator_authority_ids'] == ['07654321']
+    assert proof['original_work_identity_asserted'] is False
+    assert proof['author_identity_asserted'] is False
+    assert proof['P50_backfilled'] is False
+    assert cat.resolve_own_role_wikidata_edition_memberships(path, sha, edition_ids=ids)['unchanged'] == 1
+    with cat._connect() as db:
+        assert [tuple(r) for r in db.execute('SELECT * FROM entries ORDER BY entry_id')] == before
+        assert db.execute('SELECT count(*) FROM read_status').fetchone()[0] == 0
+
+
+def test_own_role_membership_stale_authority_drops_relation_not_bibliography(own_role_membership_bundle):
+    cat, _, _, path, sha, authority = own_role_membership_bundle
+    identity = 'lne:ndl:R100000002-I1'
+    assert cat.resolve_own_role_wikidata_edition_memberships(path, sha, edition_ids=[identity])['linked'] == 1
+    authority.write_text('{}', encoding='utf-8')
+    row = cat.work_detail(identity)
+    assert row['entry_kind'] == 'edition' and not row.get('series_entry_id')
+
+
+def test_own_role_membership_keeps_ambiguous_series_unresolved(own_role_membership_bundle, tmp_path):
+    cat, series, _, path, sha, _ = own_role_membership_bundle
+    _scoped_membership_duplicate_series(cat, series, tmp_path)
+    result = cat.resolve_own_role_wikidata_edition_memberships(path, sha,
+        edition_ids=['lne:ndl:R100000002-I1'])
+    assert result['linked'] == 0 and result['unresolved_editions'] == 1
+
+
+@pytest.mark.parametrize('ambiguity', ['multiple_p349', 'shared_p349'])
+def test_own_role_membership_requires_unique_author_authority_bridge(own_role_membership_bundle, ambiguity):
+    cat, _, _, _, _, _ = own_role_membership_bundle
+    with cat._connect() as db:
+        stored = {r['entry_id']: dict(r) for r in db.execute('SELECT * FROM entries')}
+    cache = {}
+    rows = cat._membership_base_rows(stored, cache)
+    authorities = {'Q500': {'01234567'}}
+    if ambiguity == 'multiple_p349':
+        authorities['Q500'].add('09999999')
+    else:
+        next(row for row in rows if row['entry_kind'] == 'series')['authors'].append(
+            {'qid': 'Q501', 'name': '同じ典拠への別QID'})
+        authorities['Q501'] = {'01234567'}
+    assert cat._own_role_membership_candidates(rows, stored, authorities, cache) == {}
+
+
+@pytest.mark.parametrize('own_role_membership_bundle', ['extra_contributor'], indirect=True)
+def test_own_role_membership_does_not_ignore_other_direct_writer_fields(own_role_membership_bundle):
+    cat, _, _, path, sha, _ = own_role_membership_bundle
+    result = cat.resolve_own_role_wikidata_edition_memberships(path, sha,
+        edition_ids=['lne:ndl:R100000002-I1'])
+    assert result['linked'] == 0 and result['unresolved_editions'] == 1
+
+
+def test_own_role_membership_detects_new_candidate_before_write(own_role_membership_bundle, tmp_path, monkeypatch):
+    cat, series, _, path, sha, _ = own_role_membership_bundle
+    original = cat._own_role_membership_candidates
+    def intervening(*args, **kwargs):
+        result = original(*args, **kwargs)
+        _scoped_membership_duplicate_series(cat, series, tmp_path)
+        return result
+    monkeypatch.setattr(cat, '_own_role_membership_candidates', intervening)
+    with pytest.raises(ValueError, match='candidate set changed'):
+        cat.resolve_own_role_wikidata_edition_memberships(path, sha,
+            edition_ids=['lne:ndl:R100000002-I1'])
+    with cat._connect() as db:
+        assert db.execute('SELECT count(*) FROM edition_series_memberships').fetchone()[0] == 0
+
+
+@pytest.fixture
+def orange_listing_bundle(edition_bundle, orange_source_group_bundle, request):
+    from pathlib import Path
+    import xml.etree.ElementTree as ET
+    from recommend_book.ingestion.core import RawArtifact
+    from recommend_book.ingestion.ndl import NDLAdapter, DC, DCTERMS, DCNDL
+    cat, _, edition = edition_bundle
+    _, env, path, sha, groups = orange_source_group_bundle
+    result = cat.import_orange_source_groups(path, sha)
+    group_id = result['reference_entries'][groups[0]['reference_id']]
+    raw = Path(edition['provenance']['raw_path'])
+    node = ET.fromstring(raw.read_bytes())
+    primary = next(node.iter('{' + DCNDL + '}BibResource'))
+    for child in list(primary):
+        if child.tag in {'{' + DCNDL + '}volume', '{' + DCNDL + '}seriesTitle',
+                         '{' + DC + '}creator', '{' + DCTERMS + '}creator'}:
+            primary.remove(child)
+        elif child.tag in {'{' + DC + '}title', '{' + DCTERMS + '}title'}:
+            child.text = groups[0]['members'][0]['title']
+        elif child.tag == '{' + DCTERMS + '}publisher':
+            child.clear()
+            child.text = '集英社'
+    ET.SubElement(primary, '{' + DC + '}creator').text = '架空著者 著'
+    if getattr(request, 'param', None) == 'extra_contributor':
+        ET.SubElement(primary, '{' + DCTERMS + '}contributor').text = '追加作家 著'
+    ET.SubElement(primary, '{' + DCTERMS + '}subject',
+        {'{http://www.w3.org/1999/02/22-rdf-syntax-ns#}resource': 'http://id.ndl.go.jp/class/ndc9/913.6'})
+    raw.write_bytes(ET.tostring(node, encoding='utf-8'))
+    digest = hashlib.sha256(raw.read_bytes()).hexdigest()
+    source = NDLAdapter(None)._normalize(node, RawArtifact(digest, str(raw), raw.stat().st_size,
+        '2026-10-25T00:00:00Z', 'https://ndlsearch.ndl.go.jp/api/sru'),
+        'iss-ndl-opac', locator='records[1]/recordData').model_dump(mode='json')
+    edition.update(source_record=source, title=source['titles'][0]['value'], volume=source['volume'],
+        authors=[c['name'] for c in source['contributors'] if c['role'] == 'author'],
+        publisher=source['publisher'], label=source['series'], label_candidate=False,
+        ndc=source['extra']['ndc_codes'])
+    edition['provenance']['raw_sha256'] = digest
+    imported = cat.import_editions([edition])
+    assert imported['inserted'] == 1, imported
+    return cat, edition, env, path, sha, group_id
+
+
+def test_orange_listing_association_replays_without_creating_story_or_edition_identity(orange_listing_bundle):
+    cat, _, _, path, sha, group_id = orange_listing_bundle
+    ids = ['lne:ndl:R100000002-I1']
+    result = cat.correlate_orange_edition_listings(path, sha, edition_ids=ids)
+    assert result['new_associations'] == 1 and result['unresolved_editions'] == 0
+    row = cat.work_detail(ids[0])
+    association, = row['publisher_listing_associations']
+    assert association['group_entry_id'] == group_id
+    assert association['scope'] == 'bibliographic_reference_association'
+    assert association['edition_identity_asserted'] is False
+    assert association['story_series_identity_asserted'] is False
+    assert association['light_novel_identity_asserted'] is False
+    assert association['official_child_unknown_fields']['isbn'] is None
+    assert not row.get('series_entry_id') and not row.get('publisher_bibliography_matched')
+    assert not row['light_novel_confirmed'] and row['members'] == []
+    assert cat.correlate_orange_edition_listings(path, sha, edition_ids=ids)['unchanged'] == 1
+    with cat._connect() as db:
+        assert db.execute('SELECT count(*) FROM edition_series_memberships').fetchone()[0] == 0
+        assert db.execute('SELECT count(*) FROM read_status').fetchone()[0] == 0
+
+
+def test_orange_listing_stale_source_drops_only_association(orange_listing_bundle):
+    cat, _, env, path, sha, _ = orange_listing_bundle
+    identity = 'lne:ndl:R100000002-I1'
+    assert cat.correlate_orange_edition_listings(path, sha, edition_ids=[identity])['new_associations'] == 1
+    (env['root'] / 'parent0.html').write_text('changed', encoding='utf-8')
+    row = cat.work_detail(identity)
+    assert row['entry_kind'] == 'edition' and not row.get('publisher_listing_associations')
+
+
+@pytest.mark.parametrize('orange_listing_bundle', ['extra_contributor'], indirect=True)
+def test_orange_listing_does_not_ignore_other_direct_writer_fields(orange_listing_bundle):
+    cat, _, _, path, sha, _ = orange_listing_bundle
+    result = cat.correlate_orange_edition_listings(path, sha, edition_ids=['lne:ndl:R100000002-I1'])
+    assert result['new_associations'] == 0 and result['unresolved_editions'] == 1
+
+
+def test_orange_listing_holds_all_competing_child_candidates(orange_listing_bundle, monkeypatch):
+    import recommend_book.light_novel_orange_groups_v1 as module
+    cat, _, _, path, sha, _ = orange_listing_bundle
+    original = module.orange_child_candidate_index
+    def competing(*args, **kwargs):
+        rows = original(*args, **kwargs)
+        rows[-1]['title'] = rows[0]['title']
+        return rows
+    monkeypatch.setattr(module, 'orange_child_candidate_index', competing)
+    result = cat.correlate_orange_edition_listings(path, sha, edition_ids=['lne:ndl:R100000002-I1'])
+    assert result['new_associations'] == 0 and result['ambiguous_editions'] == 1
+
+
+def test_orange_listing_authenticates_all_targets_before_writes(orange_listing_bundle, tmp_path):
+    from pathlib import Path
+    cat, edition, _, path, sha, _ = orange_listing_bundle
+    other = _scoped_membership_duplicate_edition(cat, edition, tmp_path)
+    Path(other['provenance']['raw_path']).write_text('changed', encoding='utf-8')
+    with pytest.raises(ValueError):
+        cat.correlate_orange_edition_listings(path, sha,
+            edition_ids=['lne:ndl:R100000002-I1', 'lne:ndl:' + other['id']])
+    with cat._connect() as db:
+        assert db.execute('SELECT count(*) FROM publisher_bibliographic_correspondences').fetchone()[0] == 0
+
+
+def test_orange_listing_preserves_an_existing_different_binding(orange_listing_bundle):
+    cat, _, _, path, sha, _ = orange_listing_bundle
+    identity = 'lne:ndl:R100000002-I1'
+    with cat._connect() as db:
+        db.execute('INSERT INTO publisher_bibliographic_correspondences VALUES(?,?,?,?)',
+            (identity, 'orange', '{}', 'a' * 64))
+        before = tuple(db.execute('SELECT * FROM publisher_bibliographic_correspondences').fetchone())
+    result = cat.correlate_orange_edition_listings(path, sha, edition_ids=[identity])
+    assert result['new_associations'] == 0 and result['protected_existing'] == 1
+    with cat._connect() as db:
+        assert tuple(db.execute('SELECT * FROM publisher_bibliographic_correspondences').fetchone()) == before
+
+
+def test_orange_listing_detects_group_change_before_any_write(orange_listing_bundle, monkeypatch):
+    cat, _, _, path, sha, group_id = orange_listing_bundle
+    original = cat._orange_listing_candidates
+    def intervening(*args, **kwargs):
+        result = original(*args, **kwargs)
+        with cat._connect() as db:
+            record = json.loads(db.execute('SELECT record_json FROM entries WHERE entry_id=?', (group_id,)).fetchone()[0])
+            record['title'] = '変更された掲載グループ'
+            raw = json.dumps(record, ensure_ascii=False)
+            db.execute('UPDATE entries SET record_json=?,record_sha256=? WHERE entry_id=?',
+                (raw, hashlib.sha256(raw.encode()).hexdigest(), group_id))
+        return result
+    monkeypatch.setattr(cat, '_orange_listing_candidates', intervening)
+    with pytest.raises(ValueError, match='group set changed'):
+        cat.correlate_orange_edition_listings(path, sha, edition_ids=['lne:ndl:R100000002-I1'])
+    with cat._connect() as db:
+        assert db.execute('SELECT count(*) FROM publisher_bibliographic_correspondences').fetchone()[0] == 0
+
+
+def test_orange_listing_replay_failure_does_not_hide_another_valid_association(orange_listing_bundle, tmp_path, monkeypatch):
+    cat, edition, _, path, sha, _ = orange_listing_bundle
+    good_id = 'lne:ndl:R100000002-I1'
+    assert cat.correlate_orange_edition_listings(path, sha, edition_ids=[good_id])['new_associations'] == 1
+    other = _scoped_membership_duplicate_edition(cat, edition, tmp_path, title_suffix=' 別の書誌')
+    bad_id = 'lne:ndl:' + other['id']
+    with cat._connect() as db:
+        stored = {r['entry_id']: dict(r) for r in db.execute("SELECT * FROM entries WHERE kind='edition'")}
+        proof = json.loads(db.execute('SELECT proof_json FROM publisher_bibliographic_correspondences '
+            'WHERE edition_id=?', (good_id,)).fetchone()[0])
+        proof['edition_record_sha256'] = stored[bad_id]['record_sha256']
+        raw = json.dumps(proof, ensure_ascii=False)
+        db.execute('INSERT INTO publisher_bibliographic_correspondences VALUES(?,?,?,?)',
+            (bad_id, 'orange', raw, hashlib.sha256(raw.encode()).hexdigest()))
+    original = cat._orange_listing_candidates
+    def failing_source(editions, *args, **kwargs):
+        if bad_id in editions:
+            raise ValueError('injected failure of a different listing source')
+        return original(editions, *args, **kwargs)
+    monkeypatch.setattr(cat, '_orange_listing_candidates', failing_source)
+    cache = {}
+    rows = cat._membership_base_rows(stored, cache)
+    cat._attach_bibliographic_correspondences(rows, list(stored.values()), cache)
+    indexed = {row['entry_id']: row for row in rows}
+    assert indexed[good_id]['publisher_listing_associations']
+    assert not indexed[bad_id].get('publisher_listing_associations')

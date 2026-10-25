@@ -25,7 +25,7 @@ function element() {
 const document = {
   getElementById(id){if(!elements.has(id))elements.set(id,element());return elements.get(id);},
   querySelectorAll(){return [];},
-  createElement(){return element();}
+  createElement(tag){return {...element(),tagName:tag.toUpperCase()};}
 };
 const context = {document, URLSearchParams, Map, Intl,
   HTMLFormElement:{prototype:{reset(){document.getElementById('search-query').value='';}}},
@@ -129,6 +129,33 @@ context.fetch=async path=>({ok:true,json:async()=>path.includes('/similar')?{ite
       assert.ok(!detail.includes('出版社の掲載書誌'));
     }
   }
+  const association={scope:'bibliographic_reference_association',group_entry_id:'lng:pub:orange:'+'a'.repeat(32),
+    group_title:'掲載グループ名',title:'完全題 <確認用>',source_url:'https://orangebunko.shueisha.co.jp/book/example',
+    group_source_url:'https://orangebunko.shueisha.co.jp/series/example',
+    credit_literals:[{role_literal:'著',name:'掲載された著者名'}],story_series_identity_asserted:false,
+    edition_identity_asserted:false,original_work_identity_asserted:false,light_novel_identity_asserted:false};
+  const ndl={entry_id:'lne:ndl:R100000002-I1',entry_kind:'edition',title:'NDL書誌',members:[],
+    recommendable:false,publisher_listing_associations:[association]};
+  vm.runInNewContext('state.favorites.clear()',context);
+  const associationRequests=[];
+  context.fetch=async path=>{associationRequests.push(path);return {ok:true,json:async()=>ndl};};
+  context.NDL=ndl;
+  await vm.runInNewContext('showDetail(NDL.entry_id)',context);
+  const associationSection=elements.get('detail-body').children.find(child=>
+    child.children?.[0]?.textContent==='出版社の掲載書誌との対応');
+  assert.ok(associationSection,'render bibliography associations separately from edition members');
+  const text=visibleText(associationSection);
+  assert.ok(text.includes('完全題 <確認用>') && text.includes('著：掲載された著者名'));
+  assert.ok(text.includes('原作品・物語シリーズ・版の同一性は未確認'));
+  const descendants=el=>[el,...(el.children||[]).flatMap(descendants)];
+  const links=descendants(associationSection).filter(el=>el.tagName==='A');
+  assert.deepEqual(links.map(el=>[el.textContent,el.href]),
+    [[association.title,association.source_url],[association.group_title,association.group_source_url]]);
+  assert.ok(links.every(el=>el.target==='_blank'&&el.rel==='noopener noreferrer'));
+  assert.ok(!descendants(associationSection).some(el=>['BUTTON','SELECT'].includes(el.tagName)),
+    'an association must not acquire favorite, reading-state, or member controls');
+  assert.equal(vm.runInNewContext('state.favorites.size',context),0);
+  assert.deepEqual(associationRequests,['/api/entries/'+encodeURIComponent(ndl.entry_id)]);
 })().catch(error=>{console.error(error);process.exitCode=1;});
 '''
     result = subprocess.run([node, '-'], input='const SOURCE=' + json.dumps(_JS) + ';\n' + harness,

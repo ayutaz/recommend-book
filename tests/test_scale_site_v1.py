@@ -340,3 +340,39 @@ def test_unverified_membership_does_not_publish_article_credit(relation):
         'rule_version': 'ndl-edition-wikipedia-novel-credit-membership-v1',
         'article_attribution': {'credit': 'UNVERIFIED', 'source_url': 'javascript:alert(1)'}}})
     assert 'membership_source' not in row
+
+
+def orange_listing_association():
+    return {'rule_version': 'orange-explicit-child-ndl-bibliographic-reference-association-v1',
+        'scope': 'bibliographic_reference_association', 'group_entry_id': 'lng:pub:orange:' + 'a' * 32,
+        'source_group_title': '掲載グループ', 'official_title': '完全な子書名',
+        'official_parent_url': 'https://orangebunko.shueisha.co.jp/book/series/example',
+        'official_child_url': 'https://orangebunko.shueisha.co.jp/book/opaque-reference',
+        'official_credit_literals': [{'role_literal': '著者', 'name': '著者名', 'raw_path': 'PRIVATE'}],
+        'edition_identity_asserted': False, 'story_series_identity_asserted': False,
+        'original_work_identity_asserted': False, 'light_novel_identity_asserted': False,
+        'manifest_path': 'PRIVATE_MANIFEST', 'publisher_source_evidence': [{'raw_path': 'PRIVATE_RAW'}]}
+
+
+def test_orange_listing_public_fields_are_separate_from_identity_and_content():
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = public_work({'publisher_listing_associations': [orange_listing_association()]})
+    association, = row['publisher_listing_associations']
+    assert association['title'] == '完全な子書名' and association['group_title'] == '掲載グループ'
+    assert association['credit_literals'] == [{'role_literal': '著者', 'name': '著者名'}]
+    assert association['scope'] == 'bibliographic_reference_association'
+    assert association['edition_identity_asserted'] is False
+    assert not row.get('members') and not row.get('content_sources')
+    assert 'PRIVATE' not in json.dumps(row)
+
+
+@pytest.mark.parametrize('mutation', ['version', 'identity', 'url', 'group'])
+def test_unverified_orange_listing_claims_are_not_published(mutation):
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    value = orange_listing_association()
+    if mutation == 'version': value['rule_version'] = 'unknown-rule'
+    elif mutation == 'identity': value['edition_identity_asserted'] = True
+    elif mutation == 'url': value['official_child_url'] = 'javascript:alert(1)'
+    elif mutation == 'group': value['group_entry_id'] = 'PRIVATE_PATH'
+    row = public_work({'publisher_listing_associations': [value]})
+    assert not row.get('publisher_listing_associations')

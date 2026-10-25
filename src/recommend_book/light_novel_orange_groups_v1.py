@@ -63,7 +63,7 @@ def _normalized(parts):
     return ' '.join(' '.join(c.text() if isinstance(c, _Node) else c for c in parts).split())
 
 
-def _source(root, receipt, url, kind):
+def _source_metadata(receipt, url, kind):
     statuses = [receipt[k] for k in ('status', 'http_status') if k in receipt]
     if (receipt.get('source_url') != url or not statuses or any(type(s) is not int or s != 200 for s in statuses)
             or receipt.get('final_url', url) != url or receipt.get('location') or receipt.get('error')
@@ -73,6 +73,10 @@ def _source(root, receipt, url, kind):
     allowed = {'html': {'text/html'}, 'xml': {'text/xml', 'application/xml'}, 'robots': {'text/plain'}}[kind]
     if (receipt.get('content_type') or '').split(';')[0].strip().lower() not in allowed:
         raise ValueError('Orange source content type differs')
+
+
+def _source(root, receipt, url, kind):
+    _source_metadata(receipt, url, kind)
     raw = _read(_relative(root, receipt['raw_path']), receipt['sha256'], MAX_SOURCE_BYTES)
     if receipt.get('byte_length') != len(raw):
         raise ValueError('Orange receipt size differs')
@@ -179,8 +183,7 @@ def _page(root, receipt, declared):
     return group_title, brand, category, members
 
 
-def verify_orange_groups(manifest_path: str | Path, sha256: str) -> list[dict]:
-    """Return every native parent listing group, independent of NDL coverage."""
+def _verify_groups(manifest_path, sha256, selection=None, *, candidate_index=False):
     path = Path(manifest_path).resolve()
     root = path.parent
     try:
@@ -244,6 +247,31 @@ def verify_orange_groups(manifest_path: str | Path, sha256: str) -> list[dict]:
         for url, declared in zip(urls, handoff, strict=True):
             if declared['source_url'] != url or not parser.can_fetch('recommend-book-research/1.0', url):
                 raise ValueError('Orange sitemap/native group or robots scope differs')
+            if candidate_index:
+                # Metadata candidates are deliberately not positive evidence.
+                # Share all pins/closed URL scope, but never open parent HTML.
+                receipt = own(url)
+                _source_metadata(receipt, url, 'html')
+                if (not isinstance(receipt.get('sha256'), str) or not re.fullmatch(r'[0-9a-f]{64}', receipt['sha256'])
+                        or type(receipt.get('byte_length')) is not int or not 0 < receipt['byte_length'] <= MAX_SOURCE_BYTES
+                        or declared['reference_id'] != 'publisher-series:'+hashlib.sha256(url.encode()).hexdigest()[:24]
+                        or not isinstance(declared['title'], str) or not declared['title'].strip()
+                        or declared['index_source_url'] != _SITEMAP or declared['index_source_sha256'] != sitemap_receipt['sha256']
+                        or declared['index_retrieved_at'] != sitemap_receipt['retrieved_at']):
+                    raise ValueError('Orange candidate parent metadata binding differs')
+                _evidence(root, declared['source_evidence'], receipt, 'title; article.book-box.box h2 / p.book-info-name')
+                for ordinal, member in enumerate(declared['explicit_memberships'], 1):
+                    child_url, title = member['source_url'], member['title']
+                    book = _BOOK.fullmatch(child_url) if isinstance(child_url, str) else None
+                    if not book or not isinstance(title, str) or not title.strip() or member.get('isbn') is not None:
+                        raise ValueError('Orange candidate child URL/complete title differs')
+                    _evidence(root, member['evidence'], receipt, f'article.book-box.box:nth-of-type({ordinal}) h2 / p.book-info-name')
+                    seen.append(child_url)
+                    result.append({'group_reference_id': 'orange-taxonomy-url:'+hashlib.sha256(url.encode()).hexdigest(),
+                        'child_reference_id': 'shueisha-orange-book:'+book[1], 'title': title})
+                continue
+            if selection is not None and 'orange-taxonomy-url:'+hashlib.sha256(url.encode()).hexdigest() != selection:
+                continue
             receipt = own(url)
             title, brand, category, members = _page(root, receipt, declared)
             if (declared['index_source_url'] != _SITEMAP or declared['index_source_sha256'] != sitemap_receipt['sha256']
@@ -266,8 +294,49 @@ def verify_orange_groups(manifest_path: str | Path, sha256: str) -> list[dict]:
                 'source_evidence': [{'source_url': _SITEMAP, 'raw_sha256': sitemap_receipt['sha256'], 'locator': 'urlset/url/loc'},
                     {'source_url': url, 'raw_sha256': receipt['sha256'], 'locator': 'title; ' + _GROUP_SELECTOR}],
                 'usage_permissions': dict(_USAGE)})
-        if len(seen) != children or len(set(seen)) != frame['unique_explicit_books']:
+        if selection is None and (len(seen) != children or len(set(seen)) != frame['unique_explicit_books']):
             raise ValueError('Orange complete child reference or unique URL count differs')
+        if selection is not None:
+            # Authenticate the entire pinned metadata frame, without pretending
+            # that its other parent HTML pages have been replayed here.
+            declared_urls = [m['source_url'] for g in handoff for m in g['explicit_memberships']]
+            if (len(declared_urls) != children or len(set(declared_urls)) != children
+                    or any(not isinstance(u, str) or not _BOOK.fullmatch(u) for u in declared_urls)):
+                raise ValueError('Orange pinned metadata child frame differs')
+            _only(result, 'selected native parent reference')
         return result
     except (KeyError, TypeError, AttributeError, UnicodeDecodeError, json.JSONDecodeError, ET.ParseError) as exc:
         raise ValueError('Orange publisher group evidence cannot be reproduced') from exc
+
+
+def verify_orange_groups(manifest_path: str | Path, sha256: str) -> list[dict]:
+    """Return every native parent listing group, independent of NDL coverage."""
+    return _verify_groups(manifest_path, sha256)
+
+
+def verify_orange_child(manifest_path: str | Path, sha256: str, *,
+                        group_reference_id: str, child_reference_id: str) -> dict:
+    """Authenticate one explicit child and its complete selected parent only.
+
+    Metadata/rights/robots/sitemap pins retain the original full-frame contract.
+    Only this parent's HTML is replayed. The caller must independently hold all
+    competing group/child bibliography candidates; this API selects no identity.
+    """
+    if (not isinstance(group_reference_id, str) or not re.fullmatch(r'orange-taxonomy-url:[0-9a-f]{64}', group_reference_id)
+            or not isinstance(child_reference_id, str) or not child_reference_id.startswith('shueisha-orange-book:')
+            or not _BOOK.fullmatch(_ORIGIN+'/book/'+child_reference_id.removeprefix('shueisha-orange-book:'))):
+        raise ValueError('Orange selected parent/child reference pattern differs')
+    group = _only(_verify_groups(manifest_path, sha256, group_reference_id), 'selected native parent reference')
+    child = _only([c for c in group['members'] if c['publisher_reference_id'] == child_reference_id], 'selected explicit child reference')
+    return {'group': group, 'child': child, 'source_proof_sha256': sha256}
+
+
+def orange_child_candidate_index(manifest_path: str | Path, sha256: str) -> list[dict]:
+    """Return the complete pinned child candidate universe, without parent HTML.
+
+    Titles here are legacy whitespace-normalized metadata. Equal titles retain
+    every distinct group/child pair. There is no subset selector. These rows
+    grant no positive association: selected-parent/child raw verification and
+    the pure association matcher remain mandatory for every proposed match.
+    """
+    return _verify_groups(manifest_path, sha256, candidate_index=True)

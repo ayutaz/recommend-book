@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from recommend_book.light_novel_orange_groups_v1 import verify_orange_groups
+from recommend_book.light_novel_orange_groups_v1 import orange_child_candidate_index, verify_orange_child, verify_orange_groups
 
 
 ORIGIN = 'https://orangebunko.shueisha.co.jp'
@@ -157,3 +157,98 @@ def test_rehashed_raw_cannot_change_the_brand_or_explicit_parent_list_scope(sour
         member['evidence']['source_sha256'] = digest(raw)
     save(source)
     with pytest.raises(ValueError): verify(source)
+
+
+def selected(env, group_id=None, child_id='shueisha-orange-book:408680400x'):
+    group_id = group_id or 'orange-taxonomy-url:'+digest((ORIGIN+'/book/series/opaque-a').encode())
+    return verify_orange_child(env['root']/'proof.json', env['sha'],
+                               group_reference_id=group_id, child_reference_id=child_id)
+
+
+def test_scoped_child_replays_only_its_complete_parent_and_preserves_all_group_rows(source, monkeypatch):
+    import recommend_book.light_novel_orange_groups_v1 as module
+    baseline = verify(source)
+    assert digest(json.dumps(baseline, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()) == '4d360fa502c4d49c5eb7942c919d87347f05de720b5349ab42f635f93101831d'
+    original, calls = module._source, []
+    def counted(root, receipt, url, kind):
+        calls.append((url, kind))
+        return original(root, receipt, url, kind)
+    monkeypatch.setattr(module, '_source', counted)
+    (source['root']/'parent1.html').unlink()
+    result = selected(source)
+    assert result['group'] == baseline[0]
+    assert result['child'] == baseline[0]['members'][0]
+    assert result['source_proof_sha256'] == source['sha']
+    assert [url for url, kind in calls if kind == 'html'] == [ORIGIN+'/book/series/opaque-a']
+    assert {kind for _, kind in calls} == {'html', 'xml', 'robots'}
+
+
+@pytest.mark.parametrize('kind', ['unknown_group', 'unknown_child', 'other_parent_child', 'changed_raw',
+                                 'changed_metadata', 'duplicate_parent', 'changed_manifest', 'blocked_robots'])
+def test_scoped_selection_rejects_absent_ambiguous_or_changed_source(source, kind):
+    group_id = None; child_id = 'shueisha-orange-book:408680400x'
+    if kind == 'unknown_group': group_id = 'orange-taxonomy-url:'+'0'*64
+    elif kind == 'unknown_child': child_id = 'shueisha-orange-book:absent'
+    elif kind == 'other_parent_child': child_id = 'shueisha-orange-book:9781234567897'
+    elif kind == 'changed_raw': (source['root']/'parent0.html').write_bytes(b'<title>changed</title>')
+    elif kind == 'changed_metadata': source['handoff'][0]['explicit_memberships'][0]['title'] = 'changed'
+    elif kind == 'duplicate_parent': source['handoff'][1]['source_url'] = source['handoff'][0]['source_url']
+    elif kind == 'changed_manifest': source['frame']['processed'] = 1
+    else:
+        raw = b'User-agent: *\nDisallow: /book/\n'
+        (source['root']/'robots.txt').write_bytes(raw)
+        source['receipts'][0].update(sha256=digest(raw), byte_length=len(raw))
+    save(source)
+    with pytest.raises(ValueError): selected(source, group_id, child_id)
+
+
+def test_candidate_index_authenticates_all_metadata_without_opening_parent_html(source, monkeypatch):
+    import recommend_book.light_novel_orange_groups_v1 as module
+    original, calls = module._source, []
+    def counted(root, receipt, url, kind):
+        calls.append(kind)
+        return original(root, receipt, url, kind)
+    monkeypatch.setattr(module, '_source', counted)
+    for n in range(2): (source['root']/f'parent{n}.html').unlink()
+    rows = orange_child_candidate_index(source['root']/'proof.json', source['sha'])
+    assert calls == ['robots', 'xml']
+    assert len(rows) == 3
+    assert rows[0] == {'group_reference_id': 'orange-taxonomy-url:'+digest((ORIGIN+'/book/series/opaque-a').encode()),
+                       'child_reference_id': 'shueisha-orange-book:408680400x', 'title': '完全な題 ２【外伝】'}
+    assert rows[-1]['child_reference_id'] == 'shueisha-orange-book:9781234567897'
+    with pytest.raises(TypeError):
+        orange_child_candidate_index(source['root']/'proof.json', source['sha'], group_reference_ids=[rows[0]['group_reference_id']])
+
+
+def test_candidate_index_retains_conflicting_titles_in_different_groups_without_positive_identity(source):
+    # Even a pinned metadata-only candidate can later fail selected raw replay.
+    # The index must preserve the complete competing universe, not choose one.
+    title = source['handoff'][0]['explicit_memberships'][0]['title']
+    source['handoff'][1]['explicit_memberships'][0]['title'] = title
+    save(source)
+    rows = orange_child_candidate_index(source['root']/'proof.json', source['sha'])
+    candidates = [r for r in rows if r['title'] == title]
+    assert len(candidates) == 2 and len({r['group_reference_id'] for r in candidates}) == 2
+    assert len({r['child_reference_id'] for r in candidates}) == 2
+    with pytest.raises(ValueError):
+        selected(source, candidates[1]['group_reference_id'], candidates[1]['child_reference_id'])
+
+
+@pytest.mark.parametrize('kind', ['unpinned_metadata', 'empty_title', 'nontext_title', 'foreign_url', 'duplicate_url',
+                                 'missing_child', 'changed_parent', 'wrong_receipt', 'rights'])
+def test_candidate_index_rejects_modified_or_incomplete_metadata_scope(source, kind):
+    book = source['handoff'][0]['explicit_memberships'][0]
+    if kind == 'unpinned_metadata':
+        (source['root']/'handoff.json').write_bytes(b'[]')
+        with pytest.raises(ValueError, match='hash'): orange_child_candidate_index(source['root']/'proof.json', source['sha'])
+        return
+    if kind == 'empty_title': book['title'] = ' '
+    elif kind == 'nontext_title': book['title'] = 123
+    elif kind == 'foreign_url': book['source_url'] = 'https://example.org/book/408680400x'
+    elif kind == 'duplicate_url': source['handoff'][1]['explicit_memberships'][0]['source_url'] = book['source_url']
+    elif kind == 'missing_child': source['handoff'][1]['explicit_memberships'].clear()
+    elif kind == 'changed_parent': source['handoff'][1]['source_url'] = ORIGIN+'/book/series/other'
+    elif kind == 'wrong_receipt': source['receipts'][2]['status'] = 503
+    else: source['ledger']['rights'] = 'all rights granted'
+    save(source)
+    with pytest.raises(ValueError): orange_child_candidate_index(source['root']/'proof.json', source['sha'])
