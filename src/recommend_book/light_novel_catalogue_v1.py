@@ -126,6 +126,40 @@ def normalize_search(value):
                    for c in text if not c.isspace())
 
 
+def _search_without_punctuation(text):
+    """Relax discovery only; identity and membership retain literal punctuation."""
+    return ''.join(c for c in text if not unicodedata.category(c).startswith('P'))
+
+
+def _search_text(fields):
+    # Keep field boundaries: a title ending in 5 and an alias starting in 2
+    # must remain two numeric sequences, rather than becoming volume 52.
+    return ' '.join(normalize_search(field) for field in fields)
+
+
+def _search_terms(query):
+    # Publisher titles often place the volume before the subtitle, while ISBD
+    # titles place it last. These terms widen search, never identity matching.
+    text = unicodedata.normalize('NFKC', str(query))
+    separated = ''.join(' ' if c.isspace() or unicodedata.category(c).startswith('P') else c for c in text)
+    terms = tuple(dict.fromkeys(normalize_search(part) for part in re.findall(r'\d+|[^\d\s]+', separated)))
+    return terms if len(terms) >= 2 and any(not term.isdecimal() for term in terms) else ()
+
+
+def _search_contains(text, key, punctuationless_key, terms):
+    if key in text:
+        return True
+    relaxed = _search_without_punctuation(text)
+    relaxed_match = bool(punctuationless_key) and punctuationless_key in relaxed
+    if not relaxed_match and not terms:
+        return False
+    numbers = {number.lstrip('0') or '0' for number in re.findall(r'\d+', text)}
+    query_numbers = {number.lstrip('0') or '0' for number in re.findall(r'\d+', key)}
+    if relaxed_match and query_numbers <= numbers:
+        return True
+    return bool(terms) and all((term.lstrip('0') or '0') in numbers if term.isdecimal() else term in relaxed for term in terms)
+
+
 def _json(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
 
@@ -3531,6 +3565,8 @@ class LightNovelCatalogue:
         public projection or proof of a relation.
         """
         key = normalize_search(query or '')
+        punctuationless_key = _search_without_punctuation(key)
+        terms = _search_terms(query or '')
         if not key and entry_id is None:
             return None
         values, title_keys, series_titles, qids = {}, {}, {}, {}
@@ -3562,7 +3598,7 @@ class LightNovelCatalogue:
                 child_titles = [credit['name'] for credit in record['publisher_product_reference']['credit_literals']]
             else:
                 child_titles = []
-            values[identity] = normalize_search(' '.join([*titles, *child_titles, *authors]))
+            values[identity] = _search_text([*titles, *child_titles, *authors])
             title_keys[identity] = {normalize_search(t) for t in titles if t}
             # A possible RDF ISBD main title widens selection only. Its literal
             # source-field structure is checked later by _source_with_title_parts.
@@ -3586,7 +3622,8 @@ class LightNovelCatalogue:
             if a in edges and b in edges:
                 edges[a].add(b)
                 edges[b].add(a)
-        selected = {entry_id} & records.keys() if entry_id else {identity for identity, text in values.items() if key in text}
+        selected = {entry_id} & records.keys() if entry_id else {
+            identity for identity, text in values.items() if _search_contains(text, key, punctuationless_key, terms)}
         pending = list(selected)
         while pending:
             identity = pending.pop()
@@ -3674,6 +3711,8 @@ class LightNovelCatalogue:
             else:
                 years.append(int(value))
         key = normalize_search(query)
+        punctuationless_key = _search_without_punctuation(key)
+        terms = _search_terms(query)
         result = []
         for row in rows:
             children = row.get('publisher_product_references', []) if row['entry_kind'] == 'publisher_group' else []
@@ -3690,7 +3729,9 @@ class LightNovelCatalogue:
                     child_terms.extend(credit['name'] for credit in row['publisher_product_reference']['credit_literals'])
                 else:
                     child_terms.extend(credit['name'] for credit in row['publisher_product_reference']['credits'] if credit['role'] == 'author')
-            if key and key not in normalize_search(' '.join([row['title'], *row['aliases'], *[a['name'] or a['qid'] for a in row['authors']], *child_terms])):
+            if key and not _search_contains(_search_text([
+                    row['title'], *row['aliases'], *[a['name'] or a['qid'] for a in row['authors']],
+                    *child_terms]), key, punctuationless_key, terms):
                 continue
             if genre and genre not in {g['qid'] for g in row['genres']}:
                 continue
