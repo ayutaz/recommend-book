@@ -242,9 +242,7 @@ def normalize_search(value):
 
 def _search_without_punctuation(text):
     """Relax discovery only; identity and membership retain literal punctuation."""
-    # NFKC maps publisher subtitle decoration ～ to ASCII ~, a symbol rather
-    # than Unicode punctuation. Treat these separators alike for discovery.
-    return ''.join(c for c in text if c not in '~～' and not unicodedata.category(c).startswith('P'))
+    return ''.join(c for c in text if not unicodedata.category(c).startswith('P'))
 
 
 def _search_text(fields):
@@ -257,7 +255,7 @@ def _search_terms(query):
     # Publisher titles often place the volume before the subtitle, while ISBD
     # titles place it last. These terms widen search, never identity matching.
     text = unicodedata.normalize('NFKC', str(query))
-    separated = ''.join(' ' if c.isspace() or c in '~～' or unicodedata.category(c).startswith('P') else c for c in text)
+    separated = ''.join(' ' if c.isspace() or unicodedata.category(c).startswith('P') else c for c in text)
     terms = tuple(dict.fromkeys(normalize_search(part) for part in re.findall(r'\d+|[^\d\s]+', separated)))
     return terms if len(terms) >= 2 and any(not term.isdecimal() for term in terms) else ()
 
@@ -3258,13 +3256,44 @@ class LightNovelCatalogue:
             return []
         return list(dict.fromkeys([raw, *variants]))
 
+    @staticmethod
+    def _confirmed_iris_search_titles(match):
+        """Use only the literal compositions of the accepted Iris NEO v2 rule."""
+        if (not isinstance(match, dict) or match.get('scope') != 'edition_only'
+                or match.get('rule_version') != 'publisher-ndl-edition-confirmation-iris-neo-v2'):
+            return []
+        title = match.get('title_match')
+        if (not isinstance(title, dict)
+                or set(title) != {'rule', 'source_value', 'main', 'subtitle', 'volume', 'locators'}
+                or title['rule'] != 'own_complete_title_all_parts_v1'):
+            return []
+        raw, main, subtitle, volume = (title[key] for key in ('source_value', 'main', 'subtitle', 'volume'))
+        locators = title['locators']
+        if (not isinstance(raw, str) or not raw.strip() or not isinstance(main, str) or not main.strip()
+                or any(value is not None and (not isinstance(value, str) or not value.strip()) for value in (subtitle, volume))
+                or not isinstance(locators, list) or len(locators) != (2 if volume else 1)
+                or any(not isinstance(value, str) or not value for value in locators)
+                or match.get('primary_title_locator') != locators[0]
+                or match.get('matched_ndl_title') != raw):
+            return []
+        # Reproduce the existing matcher's exact decomposition, without
+        # creating an alias or interpreting a new title/edition identity.
+        complete = raw[:-len('. ' + volume)] if volume and raw.endswith('. ' + volume) else raw
+        parts = complete.split(' : ', 1)
+        if (main, subtitle) != (parts[0], parts[1] if len(parts) == 2 else None):
+            return []
+        variants = [main + (volume or '') + (subtitle or ''), main + (subtitle or '') + (volume or '')]
+        if subtitle:
+            variants += [main + (volume or '') + '~' + subtitle + '~', main + '~' + subtitle + '~' + (volume or '')]
+        return list(dict.fromkeys([raw, *variants]))
+
     def _saved_confirmation_search_titles(self, stored, records, cache):
         """Saved proofs widen selection only; attachment must reproduce them raw."""
         entries = {entry['entry_id']: entry for entry in stored}
         titles = {}
         for binding in self._book_confirmation_bindings(cache):
             try:
-                if (binding['provider'] not in {'kadokawa', 'tobooks'}
+                if (binding['provider'] not in {'kadokawa', 'tobooks', 'ichijinsha-iris'}
                         or hashlib.sha256(binding['proof_json'].encode()).hexdigest() != binding['proof_sha256']):
                     continue
                 proof = json.loads(binding['proof_json'])
@@ -3288,6 +3317,18 @@ class LightNovelCatalogue:
                     title = self._confirmed_part_search_title(proof['match'])
                     candidates = ([title] if title else []) + self._confirmed_kadokawa_composed_search_titles(proof['match'])
                     official_url = 'https://www.kadokawa.co.jp/product/' + proof['publisher_book_id'].split(':')[1] + '/'
+                elif provider == 'ichijinsha-iris':
+                    if not re.fullmatch(r'publisher-book:[0-9a-f]{24}', proof['publisher_book_id']):
+                        continue
+                    candidates = self._confirmed_iris_search_titles(proof['match'])
+                    sources = proof['match'].get('sources') if isinstance(proof['match'], dict) else None
+                    if (not candidates or not isinstance(sources, list) or len(sources) != 2
+                            or not isinstance(sources[1], str)
+                            or not re.fullmatch(r'https://www\.ichijinsha\.co\.jp/iris/title/[^/?#]+/', sources[1])):
+                        continue
+                    official_url = sources[1]
+                    if proof['publisher_book_id'] != 'publisher-book:' + hashlib.sha256(official_url.encode()).hexdigest()[:24]:
+                        continue
                 else:
                     if not re.fullmatch(r'tobooks-product:[0-9]+', proof['publisher_book_id']):
                         continue
@@ -4556,6 +4597,10 @@ class LightNovelCatalogue:
                 match = row.get('edition_confirmation_evidence')
                 if isinstance(match, dict) and match.get('official_source_url') == row['confirmation_source_url']:
                     confirmed_titles.extend(LightNovelCatalogue._confirmed_tobooks_search_titles(match))
+            elif (row.get('edition_bibliography_confirmed') is True
+                    and re.fullmatch(r'https://www\.ichijinsha\.co\.jp/iris/title/[^/?#]+/', row.get('confirmation_source_url', ''))):
+                confirmed_titles.extend(LightNovelCatalogue._confirmed_iris_search_titles(
+                    row.get('edition_confirmation_evidence')))
             if key and not (_search_contains(_search_text([
                     row['title'], *row['aliases'], *child_titles, *confirmed_titles]), key, punctuationless_key, terms)
                     or key in _search_text(names)):

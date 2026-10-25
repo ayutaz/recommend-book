@@ -11,8 +11,10 @@ def matches(stored, query):
 
 @pytest.mark.parametrize('separator', ['～', '~', '〜'])
 @pytest.mark.parametrize(('volume', 'expected'), [('2', True), ('3', False)])
-def test_decorative_subtitle_boundaries_find_the_complete_title_and_correct_volume(separator, volume, expected):
-    assert matches('主書名 : 完全な副書名. ' + volume, '主書名' + separator + '完全な副書名' + separator + '２') is expected
+def test_ascii_tilde_compositions_require_confirmation_instead_of_generic_relaxation(separator, volume, expected):
+    # ～ becomes ASCII ~ after NFKC. It must come from an authenticated
+    # publisher composition, not from discarding symbols in a saved NDL title.
+    assert matches('主書名 : 完全な副書名. ' + volume, '主書名' + separator + '完全な副書名' + separator + '２') is (expected and separator == '〜')
 
 
 @pytest.mark.parametrize('separator', ['～', '~', '〜'])
