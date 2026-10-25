@@ -2799,6 +2799,183 @@ class LightNovelCatalogue:
                 result['linked'] += 1
         return result
 
+    def _wikipedia_novel_credits(self, manifest_path, expected_sha256, stored, cache):
+        """Verify bibliographic credits independently of classified article prose."""
+        from .light_novel_wikipedia_credit_v1 import verify_novel_credit, match_novel_credit
+        document = self._payload(manifest_path, expected_sha256, cache)
+        if document.get('version') != 'light-novel-wikipedia-author-credits-v1':
+            raise ValueError('unsupported Wikipedia novel-credit manifest')
+        specs = {}
+        for spec in document['series']:
+            identity = _entry(spec['series_entry_id'])
+            if not identity.startswith('lns:wd:') or identity in specs:
+                raise ValueError('duplicate or invalid Wikipedia credit series')
+            specs[identity] = spec
+        result = {}
+        for identity, spec in specs.items():
+            if identity not in stored:
+                continue
+            entry = stored[identity]
+            if entry['kind'] != 'series' or entry['record_sha256'] != spec['series_record_sha256']:
+                raise ValueError('Wikipedia credit series metadata differs')
+            record = json.loads(entry['record_json'])
+            # The caller authenticates the series; this payload lookup shares
+            # the same operation cache and does not infer a missing author QID.
+            provenance = record['provenance']
+            entity = self._payload(provenance['raw_path'], provenance['raw_sha256'], cache)['entities'][record['id']]
+            key = ('wikipedia_novel_credit', identity, entry['record_sha256'],
+                   spec['article_raw_path'], spec['article_raw_sha256'], spec['revision_id'])
+            if key not in cache:
+                article = self._payload(spec['article_raw_path'], spec['article_raw_sha256'], cache)
+                cache[key] = verify_novel_credit(record, entity, article, spec['revision_id'])
+            credit = cache[key]
+            anchor_id = _entry(spec['anchor_edition_id'])
+            if not anchor_id.startswith('lne:ndl:'):
+                raise ValueError('Wikipedia credit anchor must be an NDL edition')
+            if anchor_id not in stored:
+                with self._connect() as db:
+                    anchor = db.execute('SELECT * FROM entries WHERE entry_id=?', (anchor_id,)).fetchone()
+                if anchor is None:
+                    raise ValueError('Wikipedia credit anchor is absent')
+                stored[anchor_id] = dict(anchor)
+            anchor = stored[anchor_id]
+            if anchor['kind'] != 'edition' or anchor['record_sha256'] != spec['anchor_edition_record_sha256']:
+                raise ValueError('Wikipedia credit anchor metadata differs')
+            self._membership_base_rows({anchor_id: anchor}, cache)
+            anchor_parts = self._edition_primary_bibliographic_parts(json.loads(anchor['record_json']), cache)
+            match = match_novel_credit(credit, anchor_parts, normalize_search) if anchor_parts else None
+            if match is None:
+                raise ValueError('Wikipedia credit anchor does not reproduce its bibliography')
+            result[identity] = {**credit,
+                'anchor_edition_id': anchor_id, 'anchor_edition_record_sha256': anchor['record_sha256'],
+                'anchor_authority_ids': match['matched_authority_ids'],
+                'article_raw_sha256': spec['article_raw_sha256']}
+        return result
+
+    def _wikipedia_credit_membership_candidates(self, rows, stored, credits, cache):
+        from .light_novel_wikipedia_credit_v1 import match_novel_credit
+        index = {}
+        for row in rows:
+            if row['entry_kind'] == 'series' and row['entry_id'].startswith('lns:wd:'):
+                for title in [row['title'], *row['aliases']]:
+                    index.setdefault(normalize_search(title), set()).add(row['entry_id'])
+        result = {}
+        for row in rows:
+            if row['entry_kind'] != 'edition':
+                continue
+            record = json.loads(stored[row['entry_id']]['record_json'])
+            candidates = set()
+            for title in record['source_record']['titles']:
+                candidates.update(index.get(normalize_search(title['value']), ()))
+            # A second title candidate is uncertainty, even without a credit
+            # manifest for it. A selective manifest cannot hide a competitor.
+            if len(candidates) != 1:
+                continue
+            identity = next(iter(candidates))
+            credit = credits.get(identity)
+            if credit is None:
+                continue
+            parts = self._edition_primary_bibliographic_parts(record, cache)
+            match = match_novel_credit(credit, parts, normalize_search) if parts else None
+            if match is None or match['matched_authority_ids'] != credit['anchor_authority_ids']:
+                continue
+            result[row['entry_id']] = {**match,
+                'anchor_edition_id': credit['anchor_edition_id'],
+                'anchor_edition_record_sha256': credit['anchor_edition_record_sha256'],
+                'article_raw_sha256': credit['article_raw_sha256'],
+                'article_attribution': credit['attribution']}
+        return result
+
+    def resolve_wikipedia_credit_edition_memberships(self, manifest_path, expected_sha256, *, edition_ids):
+        """Add scoped edition links from explicit, work-specific author credits.
+
+        This does not assert person identity, fill P50, or create original works.
+        Existing authority-based proofs and every existing binding are retained.
+        """
+        if isinstance(edition_ids, (str, bytes)) or edition_ids is None:
+            raise ValueError('an explicit edition ID collection is required')
+        requested = list(edition_ids)
+        if len(requested) != len(set(requested)) or any(
+                not _entry(identity).startswith('lne:ndl:') for identity in requested):
+            raise ValueError('unique typed NDL edition IDs are required')
+        result = {'scope': 'wikipedia_novel_credit_only', 'requested_editions': len(requested),
+                  'candidate_series': 0, 'linked': 0, 'unchanged': 0,
+                  'protected_existing': 0, 'unresolved_editions': 0}
+        if not requested:
+            return result
+        with self._connect() as db:
+            editions = {row['entry_id']: dict(row) for row in db.execute(
+                'SELECT * FROM entries WHERE entry_id IN (' + ','.join('?' for _ in requested) + ')', requested)}
+            if set(editions) != set(requested) or any(row['kind'] != 'edition' for row in editions.values()):
+                raise ValueError('requested edition is missing or has a different kind')
+            series = db.execute("SELECT * FROM entries WHERE "
+                "json_extract(record_json,'$.schema_version')='light-novel-metadata-v1' "
+                "AND (kind='series' OR json_extract(record_json,'$.kind')='series')").fetchall()
+        titles = set()
+        for entry in editions.values():
+            if hashlib.sha256(entry['record_json'].encode()).hexdigest() != entry['record_sha256']:
+                raise ValueError('stored metadata SHA mismatch')
+            record = json.loads(entry['record_json'])
+            if record.get('schema_version') not in {'light-novel-edition-v1', 'light-novel-edition-bulk-v1'}:
+                raise ValueError('requested record is not an NDL edition')
+            titles.update(normalize_search(title['value']) for title in record['source_record']['titles'])
+        selected = dict(editions)
+        for entry in series:
+            if hashlib.sha256(entry['record_json'].encode()).hexdigest() != entry['record_sha256']:
+                raise ValueError('stored metadata SHA mismatch')
+            record = json.loads(entry['record_json'])
+            if titles & {normalize_search(title) for title in [record['title'], *record['aliases']]}:
+                if not _entry(entry['entry_id']).startswith('lns:wd:'):
+                    raise ValueError('candidate is not a typed Wikidata series')
+                selected[entry['entry_id']] = dict(entry)
+        result['candidate_series'] = len(selected) - len(editions)
+        cache = {}
+        rows = self._membership_base_rows(selected, cache)
+        credits = self._wikipedia_novel_credits(manifest_path, expected_sha256, selected, cache)
+        candidates = self._wikipedia_credit_membership_candidates(rows, selected, credits, cache)
+        result['unresolved_editions'] = len(requested) - len(candidates)
+        with self._connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            current_candidates = {}
+            for current in db.execute("SELECT * FROM entries WHERE "
+                    "json_extract(record_json,'$.schema_version')='light-novel-metadata-v1' "
+                    "AND (kind='series' OR json_extract(record_json,'$.kind')='series')"):
+                if hashlib.sha256(current['record_json'].encode()).hexdigest() != current['record_sha256']:
+                    raise ValueError('stored metadata SHA mismatch')
+                record = json.loads(current['record_json'])
+                if titles & {normalize_search(title) for title in [record['title'], *record['aliases']]}:
+                    current_candidates[current['entry_id']] = (current['kind'], current['record_sha256'])
+            expected_candidates = {identity: (entry['kind'], entry['record_sha256'])
+                for identity, entry in selected.items() if identity.startswith('lns:wd:')}
+            if current_candidates != expected_candidates:
+                raise ValueError('membership candidate set changed during resolution')
+            for identity, entry in selected.items():
+                current = db.execute('SELECT kind,record_sha256 FROM entries WHERE entry_id=?', (identity,)).fetchone()
+                if current is None or (current['kind'], current['record_sha256']) != (entry['kind'], entry['record_sha256']):
+                    raise ValueError('selected membership metadata changed during resolution')
+            for identity in requested:
+                membership = candidates.get(identity)
+                previous = db.execute('SELECT * FROM edition_series_memberships WHERE edition_id=?', (identity,)).fetchone()
+                if membership is None:
+                    result['protected_existing'] += int(previous is not None)
+                    continue
+                series_id = membership['series_entry_id']
+                proof = {'kind': 'wikipedia_novel_credit_membership',
+                    'manifest_path': str(Path(manifest_path).resolve()), 'manifest_sha256': expected_sha256,
+                    'edition_record_sha256': selected[identity]['record_sha256'],
+                    'series_record_sha256': selected[series_id]['record_sha256'], 'membership': membership}
+                encoded = _json(proof)
+                digest = hashlib.sha256(encoded.encode()).hexdigest()
+                if previous:
+                    if previous['series_id'] == series_id and previous['proof_json'] == encoded and previous['proof_sha256'] == digest:
+                        result['unchanged'] += 1
+                    else:
+                        result['protected_existing'] += 1
+                    continue
+                db.execute('INSERT INTO edition_series_memberships VALUES(?,?,?,?)', (identity, series_id, encoded, digest))
+                result['linked'] += 1
+        return result
+
     def _attach_memberships(self, rows, stored, cache):
         with self._connect() as db:
             bindings = db.execute('SELECT * FROM edition_series_memberships').fetchall()
@@ -2846,6 +3023,18 @@ class LightNovelCatalogue:
                         indexed[edition_id].update(series_entry_id=series_id, volume_number=membership['volume_number'],
                             relation_resolution='edition_series_membership_verified', light_novel_confirmed=True,
                             admission_status='edition_series_membership_verified', series_membership_evidence=membership)
+                    continue
+                if proof.get('kind') == 'wikipedia_novel_credit_membership':
+                    key = ('wikipedia_novel_credit_memberships', proof['manifest_path'], proof['manifest_sha256'])
+                    if key not in plans:
+                        credits = self._wikipedia_novel_credits(proof['manifest_path'], proof['manifest_sha256'], stored, cache)
+                        plans[key] = self._wikipedia_credit_membership_candidates(rows, stored, credits, cache)
+                    membership = plans[key].get(edition_id)
+                    if membership != proof['membership'] or membership.get('series_entry_id') != series_id:
+                        continue
+                    indexed[edition_id].update(series_entry_id=series_id, volume_number=membership['volume_number'],
+                        relation_resolution='edition_series_membership_verified', light_novel_confirmed=True,
+                        admission_status='edition_series_membership_verified', series_membership_evidence=membership)
                     continue
                 key = (proof['manifest_path'], proof['manifest_sha256'])
                 if key not in plans:

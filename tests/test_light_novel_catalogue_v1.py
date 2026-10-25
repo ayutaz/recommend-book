@@ -5191,3 +5191,195 @@ def test_futaba_workgroup_operation_cache_is_scoped_by_manifest_path_and_reads_o
     changed['publisher_series_proof']['manifest_path'] = str(second)
     with pytest.raises(ValueError, match='relative.*raw'):
         cat._project(changed, cache)
+
+
+@pytest.fixture
+def wiki_credit_membership_bundle(membership_bundle, tmp_path):
+    from pathlib import Path
+    import xml.etree.ElementTree as ET
+    from recommend_book.ingestion.ndl import NDLAdapter
+    from recommend_book.ingestion.core import RawArtifact
+    cat, series, edition, _, _ = membership_bundle
+    raw = Path(series['provenance']['raw_path'])
+    payload = json.loads(raw.read_text(encoding='utf-8'))
+    entity = payload['entities']['Q1']
+    entity['claims'].pop('P50')
+    entity['sitelinks'] = {'jawiki': {'title': series['title']}}
+    series['authors'] = []
+    series['sitelinks'] = entity['sitelinks']
+    series['provenance']['raw_sha256'] = write(raw, payload)
+    result = cat.ingest([series])
+    assert result['updated'] == 1, json.dumps(result)
+    raw_edition = Path(edition['provenance']['raw_path'])
+    xml = raw_edition.read_text(encoding='utf-8').replace('>著者</foaf:name>', '>架空筆名</foaf:name>').replace(
+        '</rdf:Description></d:creator>', '<d:description>著</d:description></rdf:Description></d:creator>')
+    xml = xml.replace('<d:title>' + series['title'] + '</d:title>',
+        '<d:title>' + series['title'] + '. 1</d:title><dc:title xmlns:dc="http://purl.org/dc/elements/1.1/">'
+        + series['title'] + '</dc:title>').replace('ラノベ文庫 ; 1', 'ラノベ文庫')
+    xml = xml.replace('</d:creator>', '</d:creator><dc:creator xmlns:dc="http://purl.org/dc/elements/1.1/">架空筆名 著</dc:creator>')
+    raw_edition.write_text(xml, encoding='utf-8')
+    rhash = hashlib.sha256(raw_edition.read_bytes()).hexdigest()
+    source = NDLAdapter(None)._normalize(ET.fromstring(xml), RawArtifact(
+        rhash, str(raw_edition), len(raw_edition.read_bytes()), '2026-10-24T00:00:00Z',
+        'https://ndlsearch.ndl.go.jp/api/sru'), 'iss-ndl-opac', locator='records[1]/recordData').model_dump(mode='json')
+    edition['source_record'] = source
+    edition['authors'] = ['架空筆名']
+    edition['title'] = source['titles'][0]['value']
+    edition['label'] = source['series']
+    edition['provenance']['raw_sha256'] = rhash
+    assert cat.import_editions([edition])['updated'] == 1
+    title = series['title']
+    text = ('{{Infobox animanga/Header\n| タイトル = ' + title + '\n}}\n'
+            '{{Infobox animanga/Novel\n| 著者 = 架空筆名\n| 出版社 = 出版社\n| レーベル = ラノベ文庫\n}}\n'
+            '{{Infobox animanga/Manga\n| 原作 = 架空筆名\n| 作画 = 別の人物\n}}\n'
+            '{{Infobox animanga/Footer}}\n'
+            + '『' + title + '』は、架空筆名による日本のライトノベル。')
+    article = tmp_path / 'wiki-credit.json'
+    article_sha = write(article, {'query': {'pages': [{'title': title, 'pageid': 7, 'ns': 0,
+        'pageprops': {'wikibase_item': 'Q1'}, 'revisions': [{'revid': 17,
+            'slots': {'main': {'contentmodel': 'wikitext', 'content': text}}}]}]}})
+    with cat._connect() as db:
+        series_sha = db.execute("SELECT record_sha256 FROM entries WHERE entry_id='lns:wd:Q1'").fetchone()[0]
+        anchor_sha = db.execute("SELECT record_sha256 FROM entries WHERE entry_id='lne:ndl:R100000002-I1'").fetchone()[0]
+    manifest = tmp_path / 'wiki-credit-manifest.json'
+    manifest_sha = write(manifest, {'version': 'light-novel-wikipedia-author-credits-v1', 'series': [{
+        'series_entry_id': 'lns:wd:Q1', 'series_record_sha256': series_sha,
+        'article_raw_path': str(article), 'article_raw_sha256': article_sha, 'revision_id': 17,
+        'anchor_edition_id': 'lne:ndl:R100000002-I1', 'anchor_edition_record_sha256': anchor_sha}]})
+    return cat, series, edition, manifest, manifest_sha, article
+
+
+def test_wikipedia_credit_membership_replays_source_and_survives_repeat(wiki_credit_membership_bundle):
+    cat, _, _, path, sha, _ = wiki_credit_membership_bundle
+    ids = ['lne:ndl:R100000002-I1']
+    result = cat.resolve_wikipedia_credit_edition_memberships(path, sha, edition_ids=ids)
+    assert result['linked'] == 1 and result['unresolved_editions'] == 0
+    repeat = cat.resolve_wikipedia_credit_edition_memberships(path, sha, edition_ids=ids)
+    assert repeat['unchanged'] == 1 and repeat['linked'] == 0
+    row = cat.work_detail(ids[0])
+    assert row['series_entry_id'] == 'lns:wd:Q1'
+    evidence = row['series_membership_evidence']
+    assert evidence['author_identity_asserted'] is False
+    assert evidence['P50_backfilled'] is False
+    assert evidence['original_work_identity_asserted'] is False
+    assert str(path.parent) not in json.dumps(row, ensure_ascii=False)
+    with cat._connect() as db:
+        assert json.loads(db.execute("SELECT record_json FROM entries WHERE entry_id='lns:wd:Q1'").fetchone()[0])['authors'] == []
+        assert db.execute('SELECT count(*) FROM read_status').fetchone()[0] == 0
+
+
+def test_wikipedia_credit_membership_stale_article_keeps_independent_bibliography(wiki_credit_membership_bundle):
+    cat, _, _, path, sha, article = wiki_credit_membership_bundle
+    identity = 'lne:ndl:R100000002-I1'
+    assert cat.resolve_wikipedia_credit_edition_memberships(path, sha, edition_ids=[identity])['linked'] == 1
+    article.write_text('{}', encoding='utf-8')
+    row = cat.work_detail(identity)
+    assert row['entry_kind'] == 'edition' and not row.get('series_entry_id')
+    assert not row['light_novel_confirmed']
+
+
+def test_wikipedia_credit_membership_preserves_existing_other_binding(wiki_credit_membership_bundle):
+    cat, _, _, path, sha, _ = wiki_credit_membership_bundle
+    with cat._connect() as db:
+        db.execute('INSERT INTO edition_series_memberships VALUES(?,?,?,?)',
+            ('lne:ndl:R100000002-I1', 'lns:wd:Q1', '{}', 'a' * 64))
+        before = [tuple(r) for r in db.execute('SELECT * FROM edition_series_memberships')]
+    result = cat.resolve_wikipedia_credit_edition_memberships(path, sha, edition_ids=['lne:ndl:R100000002-I1'])
+    assert result['linked'] == 0 and result['protected_existing'] == 1
+    with cat._connect() as db:
+        assert [tuple(r) for r in db.execute('SELECT * FROM edition_series_memberships')] == before
+
+
+def test_wikipedia_credit_membership_authenticates_all_targets_before_writes(wiki_credit_membership_bundle, tmp_path):
+    cat, _, edition, path, sha, _ = wiki_credit_membership_bundle
+    other_record = _scoped_membership_duplicate_edition(cat, edition, tmp_path)
+    other = 'lne:ndl:' + other_record['id']
+    with cat._connect() as db:
+        entry = json.loads(db.execute('SELECT record_json FROM entries WHERE entry_id=?', (other,)).fetchone()[0])
+    from pathlib import Path
+    Path(entry['provenance']['raw_path']).write_text('changed', encoding='utf-8')
+    with pytest.raises(ValueError):
+        cat.resolve_wikipedia_credit_edition_memberships(path, sha, edition_ids=['lne:ndl:R100000002-I1', other])
+    with cat._connect() as db:
+        assert db.execute('SELECT count(*) FROM edition_series_memberships').fetchone()[0] == 0
+
+
+def test_wikipedia_credit_membership_missing_target_and_empty_scope_are_write_free(wiki_credit_membership_bundle):
+    cat, _, _, path, sha, _ = wiki_credit_membership_bundle
+    assert cat.resolve_wikipedia_credit_edition_memberships('missing', 'invalid', edition_ids=[])['requested_editions'] == 0
+    with pytest.raises(ValueError):
+        cat.resolve_wikipedia_credit_edition_memberships(path, sha, edition_ids=['lne:ndl:R100000002-I999'])
+    with cat._connect() as db:
+        assert db.execute('SELECT count(*) FROM edition_series_memberships').fetchone()[0] == 0
+
+
+def test_wikipedia_credit_membership_cannot_hide_second_title_candidate(wiki_credit_membership_bundle, tmp_path):
+    cat, series, _, path, sha, _ = wiki_credit_membership_bundle
+    _scoped_membership_duplicate_series(cat, series, tmp_path)
+    result = cat.resolve_wikipedia_credit_edition_memberships(path, sha, edition_ids=['lne:ndl:R100000002-I1'])
+    assert result['linked'] == 0 and result['unresolved_editions'] == 1
+
+
+def test_wikipedia_credit_membership_target_race_is_write_free(wiki_credit_membership_bundle, monkeypatch):
+    from contextlib import contextmanager
+    import sqlite3
+    cat, _, _, path, sha, _ = wiki_credit_membership_bundle
+    original, calls, writes = cat._connect, [], []
+    @contextmanager
+    def interleaved():
+        with original() as db:
+            calls.append(True)
+            if len(calls) == 2:
+                with sqlite3.connect(cat.db_path) as other:
+                    other.execute("UPDATE entries SET kind='work' WHERE entry_id='lne:ndl:R100000002-I1'")
+                db.set_trace_callback(lambda sql: writes.append(sql) if sql.startswith(('INSERT', 'UPDATE', 'DELETE')) else None)
+            yield db
+    monkeypatch.setattr(cat, '_connect', interleaved)
+    with pytest.raises(ValueError, match='metadata changed'):
+        cat.resolve_wikipedia_credit_edition_memberships(path, sha, edition_ids=['lne:ndl:R100000002-I1'])
+    assert writes == []
+
+
+def test_wikipedia_credit_membership_same_literal_different_authority_is_unresolved(wiki_credit_membership_bundle, tmp_path):
+    from pathlib import Path
+    import xml.etree.ElementTree as ET
+    from recommend_book.ingestion.core import RawArtifact
+    from recommend_book.ingestion.ndl import NDLAdapter
+    cat, _, edition, path, sha, _ = wiki_credit_membership_bundle
+    other = _scoped_membership_duplicate_edition(cat, edition, tmp_path)
+    raw = Path(other['provenance']['raw_path'])
+    xml = raw.read_text(encoding='utf-8').replace('01234567', '07654321')
+    raw.write_text(xml, encoding='utf-8')
+    digest = hashlib.sha256(raw.read_bytes()).hexdigest()
+    other['source_record'] = NDLAdapter(None)._normalize(ET.fromstring(xml), RawArtifact(
+        digest, str(raw), raw.stat().st_size, '2026-10-24T00:00:00Z',
+        'https://ndlsearch.ndl.go.jp/api/sru'), 'iss-ndl-opac', locator='records[1]/recordData').model_dump(mode='json')
+    other['provenance']['raw_sha256'] = digest
+    assert cat.import_editions([other])['updated'] == 1
+    result = cat.resolve_wikipedia_credit_edition_memberships(path, sha, edition_ids=['lne:ndl:' + other['id']])
+    assert result['linked'] == 0 and result['unresolved_editions'] == 1
+
+
+def test_wikipedia_credit_membership_concurrent_title_candidate_is_write_free(wiki_credit_membership_bundle, monkeypatch, tmp_path):
+    from contextlib import contextmanager
+    import sqlite3
+    cat, series, _, path, sha, _ = wiki_credit_membership_bundle
+    duplicate = _scoped_membership_duplicate_series(cat, series, tmp_path)
+    identity = 'lns:wd:' + duplicate['id']
+    with cat._connect() as db:
+        target = tuple(db.execute('SELECT * FROM entries WHERE entry_id=?', (identity,)).fetchone())
+        db.execute('DELETE FROM entries WHERE entry_id=?', (identity,))
+    original, calls = cat._connect, []
+    @contextmanager
+    def interleaved():
+        with original() as db:
+            calls.append(True)
+            if len(calls) == 2:
+                with sqlite3.connect(cat.db_path) as other:
+                    other.execute('INSERT INTO entries VALUES(?,?,?,?)', target)
+            yield db
+    monkeypatch.setattr(cat, '_connect', interleaved)
+    with pytest.raises(ValueError, match='candidate set changed'):
+        cat.resolve_wikipedia_credit_edition_memberships(path, sha, edition_ids=['lne:ndl:R100000002-I1'])
+    with cat._connect() as db:
+        assert db.execute('SELECT count(*) FROM edition_series_memberships').fetchone()[0] == 0
