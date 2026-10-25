@@ -1,6 +1,7 @@
 from copy import deepcopy
 import hashlib
 import json
+from pathlib import PurePosixPath, PureWindowsPath
 
 import pytest
 
@@ -292,7 +293,28 @@ def test_trade_form_contract_cannot_be_relabelled_print(trade_source,kind):
     with pytest.raises(ValueError):trade_verify(trade_source)
 
 
+def _fixture_golden_json(rows,frame_root):
+    # Replace only the machine-local evidence path, including its separator.
+    # All bibliographic and provenance fields remain in the exact golden.
+    root=PureWindowsPath(frame_root) if isinstance(frame_root,PureWindowsPath) else PurePosixPath(frame_root)
+    rows=deepcopy(rows)
+    for row in rows:
+        relative=type(root)(row['evidence']['raw_path']).relative_to(root)
+        row['evidence']['raw_path']='<FRAME>/'+relative.as_posix()
+    return json.dumps(rows,ensure_ascii=False,sort_keys=True,separators=(',',':'))
+
+
 def test_complete_original_print_fixture_output_is_unchanged(source):
-    text=json.dumps(verify(source,IDS),ensure_ascii=False,sort_keys=True,separators=(',',':'))
-    text=text.replace(str(source['root']).replace('\\','\\\\'),'<FRAME>')
-    assert sha(text.encode())=='398c529eba420a64e58371a935d218813913c3671ae96e66a52e23589511d6b6'
+    text=_fixture_golden_json(verify(source,IDS),source['root'])
+    assert sha(text.encode())=='c853fae63ed48f4a2a12764c6a28ab12e6c0aaee2da95cad5ac5ddccf6a08801'
+
+
+def test_fixture_golden_normalizes_only_the_evidence_path_across_operating_systems():
+    windows=[{'title':r'原題\記号','evidence':{'raw_path':r'C:\fixture\frame\page1.json','locator':'/result/book/0'}}]
+    posix=deepcopy(windows);posix[0]['evidence']['raw_path']='/tmp/frame/page1.json'
+    canonical=_fixture_golden_json(windows,PureWindowsPath('C:/fixture/frame'))
+    assert canonical==_fixture_golden_json(posix,PurePosixPath('/tmp/frame'))
+    assert json.loads(canonical)[0]['title']==r'原題\記号'
+    assert windows[0]['evidence']['raw_path']==r'C:\fixture\frame\page1.json'
+    posix[0]['title']='別題'
+    assert canonical!=_fixture_golden_json(posix,PurePosixPath('/tmp/frame'))
