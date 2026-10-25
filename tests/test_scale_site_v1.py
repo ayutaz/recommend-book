@@ -313,7 +313,8 @@ def test_real_sqlite_catalogue_http_pagination_and_persistent_status(tmp_path):
         thread.join()
 
 
-def test_wikipedia_membership_credit_is_public_bibliography_not_content_classification():
+@pytest.mark.parametrize('version', ['v1', 'v2'])
+def test_wikipedia_membership_credit_is_public_bibliography_not_content_classification(version):
     from recommend_book.recommendation.scale_site_v1 import public_work
     credit = {'credit': 'Wikipedia contributors: Example novel',
         'source_url': 'https://ja.wikipedia.org/w/index.php?oldid=17',
@@ -322,7 +323,7 @@ def test_wikipedia_membership_credit_is_public_bibliography_not_content_classifi
         'changes': 'Bibliographic fields extracted', 'raw_path': 'PRIVATE_ARTICLE_PATH'}
     row = public_work({'entry_id': 'lne:ndl:R100000002-I1', 'entry_kind': 'edition',
         'relation_resolution': 'edition_series_membership_verified', 'content_sources': [],
-        'series_membership_evidence': {'rule_version': 'ndl-edition-wikipedia-novel-credit-membership-v1',
+        'series_membership_evidence': {'rule_version': 'ndl-edition-wikipedia-novel-credit-membership-' + version,
             'article_attribution': credit, 'manifest_path': 'PRIVATE_MANIFEST_PATH'}})
     assert row['membership_source']['attribution'] == credit['credit']
     assert row['membership_source']['source_url'] == credit['source_url']

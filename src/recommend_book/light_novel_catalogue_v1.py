@@ -2801,9 +2801,17 @@ class LightNovelCatalogue:
 
     def _wikipedia_novel_credits(self, manifest_path, expected_sha256, stored, cache):
         """Verify bibliographic credits independently of classified article prose."""
-        from .light_novel_wikipedia_credit_v1 import verify_novel_credit, match_novel_credit
+        from .light_novel_wikipedia_credit_v1 import (
+            verify_novel_credit, match_novel_credit,
+            verify_novel_credit_v2, match_novel_credit_v2,
+        )
         document = self._payload(manifest_path, expected_sha256, cache)
-        if document.get('version') != 'light-novel-wikipedia-author-credits-v1':
+        version = document.get('version')
+        if version == 'light-novel-wikipedia-author-credits-v1':
+            verify_credit, match_credit = verify_novel_credit, match_novel_credit
+        elif version == 'light-novel-wikipedia-author-credits-v2':
+            verify_credit, match_credit = verify_novel_credit_v2, match_novel_credit_v2
+        else:
             raise ValueError('unsupported Wikipedia novel-credit manifest')
         specs = {}
         for spec in document['series']:
@@ -2823,11 +2831,11 @@ class LightNovelCatalogue:
             # the same operation cache and does not infer a missing author QID.
             provenance = record['provenance']
             entity = self._payload(provenance['raw_path'], provenance['raw_sha256'], cache)['entities'][record['id']]
-            key = ('wikipedia_novel_credit', identity, entry['record_sha256'],
+            key = ('wikipedia_novel_credit', version, identity, entry['record_sha256'],
                    spec['article_raw_path'], spec['article_raw_sha256'], spec['revision_id'])
             if key not in cache:
                 article = self._payload(spec['article_raw_path'], spec['article_raw_sha256'], cache)
-                cache[key] = verify_novel_credit(record, entity, article, spec['revision_id'])
+                cache[key] = verify_credit(record, entity, article, spec['revision_id'])
             credit = cache[key]
             anchor_id = _entry(spec['anchor_edition_id'])
             if not anchor_id.startswith('lne:ndl:'):
@@ -2843,7 +2851,7 @@ class LightNovelCatalogue:
                 raise ValueError('Wikipedia credit anchor metadata differs')
             self._membership_base_rows({anchor_id: anchor}, cache)
             anchor_parts = self._edition_primary_bibliographic_parts(json.loads(anchor['record_json']), cache)
-            match = match_novel_credit(credit, anchor_parts, normalize_search) if anchor_parts else None
+            match = match_credit(credit, anchor_parts, normalize_search) if anchor_parts else None
             if match is None:
                 raise ValueError('Wikipedia credit anchor does not reproduce its bibliography')
             result[identity] = {**credit,
@@ -2853,7 +2861,7 @@ class LightNovelCatalogue:
         return result
 
     def _wikipedia_credit_membership_candidates(self, rows, stored, credits, cache):
-        from .light_novel_wikipedia_credit_v1 import match_novel_credit
+        from .light_novel_wikipedia_credit_v1 import match_novel_credit, match_novel_credit_v2
         index = {}
         for row in rows:
             if row['entry_kind'] == 'series' and row['entry_id'].startswith('lns:wd:'):
@@ -2876,7 +2884,10 @@ class LightNovelCatalogue:
             if credit is None:
                 continue
             parts = self._edition_primary_bibliographic_parts(record, cache)
-            match = match_novel_credit(credit, parts, normalize_search) if parts else None
+            match_credit = (match_novel_credit_v2
+                if credit['rule_version'] == 'wikipedia-work-specific-novel-credit-v2'
+                else match_novel_credit)
+            match = match_credit(credit, parts, normalize_search) if parts else None
             if match is None or match['matched_authority_ids'] != credit['anchor_authority_ids']:
                 continue
             result[row['entry_id']] = {**match,
@@ -3032,8 +3043,15 @@ class LightNovelCatalogue:
                     membership = plans[key].get(edition_id)
                     if membership != proof['membership'] or membership.get('series_entry_id') != series_id:
                         continue
+                    light_novel_confirmed = True
+                    if membership.get('light_novel_classification_asserted') is False:
+                        # A work-specific light-bungei author credit proves a
+                        # relationship, not an LN genre. Retain only an
+                        # independently confirmed edition or parent flag.
+                        light_novel_confirmed = (indexed[edition_id].get('light_novel_confirmed') is True
+                            or indexed[series_id].get('light_novel_confirmed') is True)
                     indexed[edition_id].update(series_entry_id=series_id, volume_number=membership['volume_number'],
-                        relation_resolution='edition_series_membership_verified', light_novel_confirmed=True,
+                        relation_resolution='edition_series_membership_verified', light_novel_confirmed=light_novel_confirmed,
                         admission_status='edition_series_membership_verified', series_membership_evidence=membership)
                     continue
                 key = (proof['manifest_path'], proof['manifest_sha256'])

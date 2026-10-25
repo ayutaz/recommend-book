@@ -15,11 +15,14 @@ import mwparserfromhell
 
 from .light_novel_bibliographic_match_v1 import _publisher
 from .light_novel_earthstar_match_v1 import _fallback_titles
+from .light_novel_explicit_series_match_v1 import dated_own_author_bindings
 from .light_novel_reference_match_v1 import _key, _parent, _titles
 
 
 _CREDIT_VERSION = 'wikipedia-work-specific-novel-credit-v1'
 _MATCH_VERSION = 'ndl-edition-wikipedia-novel-credit-membership-v1'
+_CREDIT_VERSION_V2 = 'wikipedia-work-specific-novel-credit-v2'
+_MATCH_VERSION_V2 = 'ndl-edition-wikipedia-novel-credit-membership-v2'
 _DC = 'http://purl.org/dc/elements/1.1/'
 _DCT = 'http://purl.org/dc/terms/'
 _DCNDL = 'http://ndl.go.jp/dcndl/terms/'
@@ -66,7 +69,7 @@ def _template_fields(template):
     return result
 
 
-def _verify(metadata, entity, article_payload, expected_revision_id):
+def _verify(metadata, entity, article_payload, expected_revision_id, *, _v2=False):
     qid = metadata['id']
     _require(isinstance(qid, str) and re.fullmatch(r'Q[1-9][0-9]*', qid)
              and entity['id'] == qid and metadata['kind'] == 'series', 'Exact series identity required')
@@ -129,8 +132,9 @@ def _verify(metadata, entity, article_payload, expected_revision_id):
     _require(not lead_code.filter_templates(recursive=True) and not lead_code.filter_headings(),
              'Generated or absent lead credit')
     lead = lead_code.strip_code().strip()
+    work_types = r'(?P<work_type>ライトノベル|小説|ライト文芸)' if _v2 else r'(?:ライトノベル|小説)'
     pattern = (r'^『' + re.escape(title) + r'』(?:（[^（）\n]*）)?は、' + re.escape(author)
-               + r'による(?:日本の)?(?:ライトノベル|小説)')
+               + r'による(?:日本の)?' + work_types)
     found = re.match(pattern, lead)
     _require(found is not None, 'Lead complete title/Novel author credit does not agree')
     source_url = f'https://ja.wikipedia.org/w/index.php?oldid={expected_revision_id}'
@@ -140,7 +144,8 @@ def _verify(metadata, entity, article_payload, expected_revision_id):
         'imprint': _CONTENT + '/Infobox animanga/Novel[1]/レーベル',
         'lead_credit': _CONTENT + '/lead/paragraph[1]/sentence[1]',
         'series_qid': 'query.pages[0].pageprops.wikibase_item'}
-    return {'rule_version': _CREDIT_VERSION, 'title': title, 'series_entry_id': 'lns:wd:' + qid,
+    result = {'rule_version': _CREDIT_VERSION_V2 if _v2 else _CREDIT_VERSION,
+        'title': title, 'series_entry_id': 'lns:wd:' + qid,
         'author_names': [author], 'publisher': publisher, 'imprint': imprint,
         'imprint_wikidata': {'qid': publishers[0]['id'], 'label': publishers[0]['label']},
         'revision_id': expected_revision_id, 'page_id': page['pageid'], 'source_url': source_url,
@@ -152,12 +157,23 @@ def _verify(metadata, entity, article_payload, expected_revision_id):
                 + quote(page['title'], safe='') + '&action=history',
             'license': 'CC-BY-SA-4.0', 'license_url': 'https://creativecommons.org/licenses/by-sa/4.0/',
             'changes': 'Minimal explicit bibliographic fields extracted; no prose classification reused'}}
+    if _v2:
+        result.update(source_work_type_literal=found['work_type'], light_novel_classification_asserted=False)
+    return result
 
 
 def verify_novel_credit(metadata, entity, article_payload, expected_revision_id):
     """Verify authenticated response content; malformed/ambiguous evidence raises ValueError."""
     try:
         return _verify(metadata, entity, article_payload, expected_revision_id)
+    except (KeyError, TypeError, AttributeError, IndexError) as error:
+        raise ValueError('Incomplete Wikipedia novel-credit contract') from error
+
+
+def verify_novel_credit_v2(metadata, entity, article_payload, expected_revision_id):
+    """Also accept an explicit light-bungei credit, without classifying it as LN."""
+    try:
+        return _verify(metadata, entity, article_payload, expected_revision_id, _v2=True)
     except (KeyError, TypeError, AttributeError, IndexError) as error:
         raise ValueError('Incomplete Wikipedia novel-credit contract') from error
 
@@ -201,8 +217,77 @@ def _author_concordance(parts, names, own):
     return output
 
 
-def _match(credit, parts, normalize_search):
-    if (credit['rule_version'] != _CREDIT_VERSION or credit['author_identity_asserted'] is not False
+def _author_concordance_v2(parts, names, own):
+    direct = _author_concordance(parts, names, own)
+    if direct is not None:
+        return direct
+    literals = parts['literal_authors']
+    if {row['name'] for row in literals} != set(names):
+        return None
+    for row in literals:
+        marked = re.fullmatch(r'(.+?)\s*(著者|著|作)', row['literal'])
+        if (not marked or marked[1].strip() != row['name'] or not any(
+                _direct(row['locator'], own, ns, 'creator') for ns in (_DC, _DCT))):
+            return None
+    output, allowed_headings, uris = [], {}, set()
+    for name in names:
+        bindings = dated_own_author_bindings(parts, name)
+        if len(bindings) != 1 or len(bindings[0]['authority_ids']) != 1:
+            return None
+        binding = bindings[0]
+        witness = binding['edition_bound_corroboration']
+        # The shared helper has broader person-key support for older providers;
+        # this path requires literal family+given equality, with no name alias.
+        if witness['family'] + witness['given'] != name:
+            return None
+        uri = binding['authority_ids'][0]
+        authority = _AUTHORITY.fullmatch(uri)
+        if not authority:
+            return None
+        allowed_headings[binding['name']] = uri
+        uris.add(uri)
+        output.append({'name_literal': name, 'authority_uri': uri, 'ndl_authority_id': authority[1],
+            'contributors': [{'authority_uri': uri, 'projection_pointer': binding['projection_pointer']}],
+            'literal_writer': deepcopy(next(row for row in literals if row['name'] == name)),
+            'own_primary_resource_locator': own, 'author_identity_asserted': False,
+            'edition_bound_corroboration': deepcopy(witness)})
+    # Account for EVERY normalized own writer, including authority-free rows.
+    # A usable dated binding cannot hide another writer or an unbound heading.
+    for row in parts['source']['contributors']:
+        if row['role'] != 'author':
+            continue
+        row_uris = {i['value'] for i in row['identifiers'] if i['source'] == 'ndl-authority'}
+        if row['name'] in names:
+            if row_uris - uris:
+                return None
+        elif row['name'] in allowed_headings:
+            if row_uris != {allowed_headings[row['name']]}:
+                return None
+        else:
+            return None
+    return output
+
+
+def _imprint_v2(credit, source_value, own, normalize_search):
+    if not isinstance(source_value, str) or not source_value:
+        return None
+    result = {'source_value': source_value, 'imprint_literal': source_value, 'numbering_literal': None,
+        'own_primary_resource_locator': own, 'projection_pointer': '/source/series',
+        'scope': 'this_own_bibliographic_record_only', 'global_label_alias_asserted': False}
+    if ';' not in source_value and normalize_search(source_value) == normalize_search(credit['imprint']):
+        return {**result, 'rule': 'exact_own_imprint_literal_v2'}
+    if source_value.count(';') != 1 or credit['imprint'] != '集英社オレンジ文庫':
+        return None
+    imprint, numbering = (value.strip() for value in source_value.split(';'))
+    if (imprint != credit['imprint'] or not re.fullmatch(r'し[1-9][0-9]*-[1-9][0-9]*', numbering)):
+        return None
+    return {**result, 'rule': 'exact_own_orange_imprint_with_explicit_numbering_component_v2',
+        'imprint_literal': imprint, 'numbering_literal': numbering}
+
+
+def _match(credit, parts, normalize_search, *, _v2=False):
+    if (credit['rule_version'] != (_CREDIT_VERSION_V2 if _v2 else _CREDIT_VERSION)
+            or credit['author_identity_asserted'] is not False
             or credit['P50_backfilled'] is not False or credit['original_work_identity_asserted'] is not False
             or not re.fullmatch(r'lns:wd:Q[1-9][0-9]*', credit['series_entry_id'])
             or not isinstance(credit['author_names'], list) or len(credit['author_names']) != 1
@@ -249,10 +334,17 @@ def _match(credit, parts, normalize_search):
     if any(normalize_search(row['value']) not in allowed_dc for row in parts['titles']
            if _direct(row['locator'], own, _DC, 'title')):
         return None
-    if (not source['series'] or ';' in source['series']
+    imprint_match = None
+    if _v2:
+        if credit['light_novel_classification_asserted'] is not False:
+            return None
+        imprint_match = _imprint_v2(credit, source['series'], own, normalize_search)
+        if imprint_match is None:
+            return None
+    elif (not source['series'] or ';' in source['series']
             or normalize_search(source['series']) != normalize_search(credit['imprint'])):
         return None
-    authors = _author_concordance(parts, credit['author_names'], own)
+    authors = (_author_concordance_v2 if _v2 else _author_concordance)(parts, credit['author_names'], own)
     if not authors:
         return None
     # Keep provenance paths and arbitrary caller annotations outside public proof.
@@ -261,7 +353,10 @@ def _match(credit, parts, normalize_search):
     public_credit['field_locators'] = {key: credit['field_locators'][key] for key in _LOCATOR_FIELDS}
     public_credit['attribution'] = {key: credit['attribution'][key] for key in
         ('credit', 'source_url', 'history_url', 'license', 'license_url', 'changes')}
-    return {'rule_version': _MATCH_VERSION, 'scope': 'edition_membership_only',
+    if _v2:
+        public_credit.update(source_work_type_literal=credit['source_work_type_literal'],
+            light_novel_classification_asserted=False)
+    result = {'rule_version': _MATCH_VERSION_V2 if _v2 else _MATCH_VERSION, 'scope': 'edition_membership_only',
         'edition_id': 'lne:ndl:' + identity, 'series_entry_id': credit['series_entry_id'],
         'matched_title': title['source_value'], 'title_match': title, 'volume': volume['value'],
         'volume_number': int(unicodedata.normalize('NFKC', volume['value'])), 'ndc_codes': deepcopy(ndc),
@@ -277,11 +372,22 @@ def _match(credit, parts, normalize_search):
             'imprint': {'own_primary_resource_locator': own, 'projection_pointer': '/source/series'},
             'language': {'own_primary_resource_locator': own, 'projection_pointer': '/source/language'},
             'ndc': {'own_primary_resource_locator': own, 'projection_pointer': '/source/extra/ndc_codes'}}}
+    if _v2:
+        result.update(imprint_match=imprint_match, light_novel_classification_asserted=False)
+    return result
 
 
 def match_novel_credit(credit, parts, normalize_search):
     """Return a bounded own-edition membership proof, or None for a hold."""
     try:
         return _match(credit, parts, normalize_search)
+    except (KeyError, TypeError, AttributeError, ValueError, IndexError):
+        return None
+
+
+def match_novel_credit_v2(credit, parts, normalize_search):
+    """Explicit v2 edition-bound dated-author and imprint-numbering correspondence."""
+    try:
+        return _match(credit, parts, normalize_search, _v2=True)
     except (KeyError, TypeError, AttributeError, ValueError, IndexError):
         return None

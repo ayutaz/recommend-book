@@ -550,7 +550,9 @@ def public_work(row):
     membership = row.get('series_membership_evidence')
     if (row.get('relation_resolution') == 'edition_series_membership_verified'
             and isinstance(membership, dict)
-            and membership.get('rule_version') == 'ndl-edition-wikipedia-novel-credit-membership-v1'):
+            and membership.get('rule_version') in {
+                'ndl-edition-wikipedia-novel-credit-membership-v1',
+                'ndl-edition-wikipedia-novel-credit-membership-v2'}):
         credit = membership.get('article_attribution')
         if isinstance(credit, dict) and _link(credit.get('source_url')):
             result['membership_source'] = {

@@ -13,7 +13,7 @@ jobs:
   tests:
     name: Tests (${{ matrix.os }}, Python 3.14)
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 25 || 15 }}
     strategy:
       fail-fast: false
       matrix:
@@ -36,7 +36,7 @@ jobs:
       - name: Install locked dependencies
         run: uv sync --locked --dev
       - name: Run fixture tests
-        run: uv run --locked pytest tests -ra --junitxml=test-results.xml
+        run: uv run --locked pytest tests -ra --durations=20 --junitxml=test-results.xml
       - name: Preserve fixture test results
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

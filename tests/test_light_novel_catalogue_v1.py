@@ -5268,6 +5268,34 @@ def test_wikipedia_credit_membership_replays_source_and_survives_repeat(wiki_cre
         assert db.execute('SELECT count(*) FROM read_status').fetchone()[0] == 0
 
 
+def test_wikipedia_credit_v2_is_explicit_and_replays_without_relaxing_v1(wiki_credit_membership_bundle):
+    cat, _, _, path, _, article = wiki_credit_membership_bundle
+    payload = json.loads(article.read_text(encoding='utf-8'))
+    slot = payload['query']['pages'][0]['revisions'][0]['slots']['main']
+    slot['content'] = slot['content'].replace('ライトノベル', 'ライト文芸')
+    document = json.loads(path.read_text(encoding='utf-8'))
+    document['series'][0]['article_raw_sha256'] = write(article, payload)
+    sha = write(path, document)
+    identity = 'lne:ndl:R100000002-I1'
+    with pytest.raises(ValueError, match='Lead complete title'):
+        cat.resolve_wikipedia_credit_edition_memberships(path, sha, edition_ids=[identity])
+    document['version'] = 'light-novel-wikipedia-author-credits-v2'
+    sha = write(path, document)
+    result = cat.resolve_wikipedia_credit_edition_memberships(path, sha, edition_ids=[identity])
+    assert result['linked'] == 1 and result['unresolved_editions'] == 0
+    row = cat.work_detail(identity)
+    assert row['series_entry_id'] == 'lns:wd:Q1'
+    evidence = row['series_membership_evidence']
+    assert evidence['rule_version'] == 'ndl-edition-wikipedia-novel-credit-membership-v2'
+    assert row['light_novel_confirmed'] is False
+    assert evidence['novel_credit']['rule_version'] == 'wikipedia-work-specific-novel-credit-v2'
+    assert evidence['author_identity_asserted'] is False
+    assert evidence['P50_backfilled'] is False
+    assert evidence['original_work_identity_asserted'] is False
+    repeat = cat.resolve_wikipedia_credit_edition_memberships(path, sha, edition_ids=[identity])
+    assert repeat['unchanged'] == 1 and repeat['linked'] == 0
+
+
 def test_wikipedia_credit_membership_stale_article_keeps_independent_bibliography(wiki_credit_membership_bundle):
     cat, _, _, path, sha, article = wiki_credit_membership_bundle
     identity = 'lne:ndl:R100000002-I1'

@@ -1,11 +1,12 @@
 from copy import deepcopy
+import hashlib
 import json
 import unicodedata
 
 import pytest
 
 from recommend_book.light_novel_wikipedia_credit_v1 import (
-    match_novel_credit, verify_novel_credit,
+    match_novel_credit, match_novel_credit_v2, verify_novel_credit, verify_novel_credit_v2,
 )
 
 
@@ -232,3 +233,121 @@ def test_private_caller_annotations_do_not_enter_public_membership_proof():
 @pytest.mark.parametrize('revision', [True, '111326970', 0])
 def test_revision_pin_is_a_positive_integer_not_a_coercible_value(revision):
     with pytest.raises(ValueError): verify_novel_credit(*inputs(), revision)
+
+
+def v2_inputs():
+    text = TEXT.replace(TITLE, '後宮の烏').replace('十夜', '白川紺子').replace('SQEXノベル', '集英社オレンジ文庫')
+    text = text.replace('スクウェア・エニックス', '集英社').replace('[[ライトノベル]]', '[[ライト文芸]]')
+    metadata, entity, payload = inputs(text)
+    metadata['title'] = entity['sitelinks']['jawiki']['title'] = payload['query']['pages'][0]['title'] = '後宮の烏'
+    metadata['publishers'][0]['label'] = '集英社オレンジ文庫'
+    return metadata, entity, payload
+
+
+def v2_credit():
+    return verify_novel_credit_v2(*v2_inputs(), REVISION)
+
+
+def v2_parts():
+    own = parts()
+    own['source'].update(publisher='集英社', series='集英社オレンジ文庫 ; し1-13')
+    own['publisher_agents'][0]['name'] = '集英社'
+    own['source']['contributors'] = [
+        {'name': '白川, 紺子, 1982-', 'role': 'author', 'identifiers': [
+            {'source': 'ndl-authority', 'value': 'http://id.ndl.go.jp/auth/entity/001127879'}]},
+        {'name': '白川紺子', 'role': 'author', 'identifiers': []}]
+    own['titles'][0]['value'] = '後宮の烏. 2'
+    own['titles'][1]['value'] = '後宮の烏'
+    own['volume']['value'] = '2'
+    own['literal_authors'][0].update(name='白川紺子', literal='白川紺子 著')
+    return own
+
+
+def test_v1_preexisting_proofs_are_byte_equivalent_and_new_v2_is_explicit():
+    article = credit()
+    membership = match_novel_credit(article, parts(), normalize)
+    def digest(value):
+        return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
+            separators=(',', ':')).encode()).hexdigest()
+    assert digest(article) == '4e44ec53e357af7a2b33a8a90451f1c93701eaf765b9ae994732ba3d6de52c51'
+    assert digest(membership) == 'b4fbdd30ad7340357730f7e32c0081d455e3abbe4f7d3ea99909af55f002f96c'
+    with pytest.raises(ValueError): verify_novel_credit(*v2_inputs(), REVISION)
+    assert match_novel_credit(v2_credit(), v2_parts(), normalize) is None
+    assert match_novel_credit_v2(article, parts(), normalize) is None
+
+
+def test_v2_light_bungei_credit_and_own_dated_writer_are_bibliographic_only():
+    article, own = v2_credit(), v2_parts()
+    before = deepcopy((article, own))
+    proof = match_novel_credit_v2(article, own, normalize)
+    assert article['rule_version'] == 'wikipedia-work-specific-novel-credit-v2'
+    assert article['source_work_type_literal'] == 'ライト文芸'
+    assert article['light_novel_classification_asserted'] is False
+    assert proof['rule_version'] == 'ndl-edition-wikipedia-novel-credit-membership-v2'
+    assert proof['matched_authority_ids'] == ['001127879']
+    binding = proof['author_credit_concordance'][0]['edition_bound_corroboration']
+    assert binding['authority_heading'] == '白川, 紺子, 1982-'
+    assert binding['birth_year'] == '1982' and binding['literal_credit']['literal'] == '白川紺子 著'
+    assert proof['imprint_match']['source_value'] == '集英社オレンジ文庫 ; し1-13'
+    assert proof['imprint_match']['imprint_literal'] == '集英社オレンジ文庫'
+    assert proof['imprint_match']['numbering_literal'] == 'し1-13'
+    assert proof['imprint_match']['projection_pointer'] == '/source/series'
+    assert proof['author_identity_asserted'] is False and proof['P50_backfilled'] is False
+    assert proof['light_novel_classification_asserted'] is False
+    assert (article, own) == before
+
+
+def test_v2_numbering_structure_is_not_limited_to_previously_observed_six_numbers():
+    own = v2_parts()
+    own['source']['series'] = '集英社オレンジ文庫 ; し1-21'
+    assert match_novel_credit_v2(v2_credit(), own, normalize) is not None
+
+
+@pytest.mark.parametrize('series', ['別レーベル ; し1-13', '集英社オレンジ文庫 ; し1-13 ; し1-14',
+    '集英社オレンジ文庫 ; 別レーベル', '集英社オレンジ文庫 ; し1-13注記',
+    '集英社オレンジ文庫 ; し0-13', '集英社オレンジ文庫 ; し1-0',
+    '集英社オレンジ文庫 ; し1--13', '集英社オレンジ文庫 ; あ1-13'])
+def test_v2_imprint_numbering_rejects_other_labels_ambiguous_or_unknown_suffix(series):
+    own = v2_parts()
+    own['source']['series'] = series
+    assert match_novel_credit_v2(v2_credit(), own, normalize) is None
+
+
+@pytest.mark.parametrize('mutation', ['extra_writer', 'other_authority', 'two_same_name_authorities',
+    'ambiguous_date', 'literal_parent', 'literal_namespace', 'original_literal', 'missing_literal',
+    'name_punctuation_alias', 'date_suffix', 'uncovered_heading'])
+def test_v2_dated_fallback_accounts_for_all_own_writers_without_global_name_alias(mutation):
+    own = v2_parts()
+    contributors = own['source']['contributors']
+    if mutation == 'extra_writer': contributors.append({'name': '別著者', 'role': 'author', 'identifiers': []})
+    elif mutation == 'other_authority': contributors.append({'name': '別人, 著者, 1982-', 'role': 'author',
+        'identifiers': [{'source': 'ndl-authority', 'value': AUTHORITY}]})
+    elif mutation == 'two_same_name_authorities': contributors.append({**deepcopy(contributors[0]),
+        'identifiers': [{'source': 'ndl-authority', 'value': AUTHORITY}]})
+    elif mutation == 'ambiguous_date': contributors.append({**deepcopy(contributors[0]), 'name': '白川, 紺子, 1983-'})
+    elif mutation == 'literal_parent': own['literal_authors'][0]['locator'] = 'related/' + own['literal_authors'][0]['locator']
+    elif mutation == 'literal_namespace': own['literal_authors'][0]['locator'] = loc('https://example.test/', 'creator', 4)
+    elif mutation == 'original_literal': own['literal_authors'][0]['literal'] = '白川紺子 原作'
+    elif mutation == 'missing_literal': own['literal_authors'] = []
+    elif mutation == 'name_punctuation_alias': contributors[0]['name'] = '白川, 紺・子, 1982-'
+    elif mutation == 'date_suffix': contributors[0]['name'] += ' 著者'
+    elif mutation == 'uncovered_heading': contributors.append({'name': '白川, 紺子, 1982-', 'role': 'author', 'identifiers': []})
+    assert match_novel_credit_v2(v2_credit(), own, normalize) is None
+
+
+@pytest.mark.parametrize('mutation', ['title', 'volume', 'ndc', 'language', 'publisher', 'lead_author', 'manga_only'])
+def test_v2_does_not_weaken_other_source_or_own_bibliographic_gates(mutation):
+    own = v2_parts()
+    if mutation in {'lead_author', 'manga_only'}:
+        metadata, entity, payload = v2_inputs()
+        slot = payload['query']['pages'][0]['revisions'][0]['slots']['main']
+        if mutation == 'lead_author': slot['content'] = slot['content'].replace('は、白川紺子による', 'は、別人による')
+        else: slot['content'] = slot['content'].replace('| 著者 = 白川紺子', '| 原作 = 白川紺子')
+        with pytest.raises(ValueError): verify_novel_credit_v2(metadata, entity, payload, REVISION)
+        return
+    if mutation == 'title': own['titles'][0]['value'] = '後宮の烏 外伝. 2'
+    elif mutation == 'volume': own['volume']['value'] = '3'
+    elif mutation == 'ndc': own['source']['extra']['ndc_codes'].append('726.1')
+    elif mutation == 'language': own['source']['language'] = 'eng'
+    elif mutation == 'publisher': own['source']['publisher'] = own['publisher_agents'][0]['name'] = '別出版社'
+    assert match_novel_credit_v2(v2_credit(), own, normalize) is None
