@@ -40,7 +40,15 @@ ALPHAPOLIS_REFERENCE_SCHEMA = 'light-novel-alphapolis-publisher-reference-v1'
 HIFUMI_REFERENCE_SCHEMA = 'light-novel-hifumi-publisher-reference-v1'
 ICHIJINSHA_IRIS_REFERENCE_SCHEMA = 'light-novel-ichijinsha-iris-publisher-reference-v1'
 ICHIJINSHA_PROMOTION_REFERENCE_SCHEMA = 'light-novel-ichijinsha-iris-promotion-reference-v1'
+EARTHSTAR_REFERENCE_SCHEMA = 'light-novel-earthstar-publisher-reference-v1'
 PUBLISHER_REFERENCE_PROVIDERS = {
+    'earthstar': {'schema': EARTHSTAR_REFERENCE_SCHEMA, 'record_provider': 'earthstar',
+        'loader': '_earthstar_publisher_references', 'fields': '_finite_listing_reference_fields',
+        'reference_pattern': r'earthstar-work:[A-Za-z0-9_-]+', 'source_unit': 'publisher_work_reference',
+        'source_url_pattern': r'https://earthstar-novel\.com/book/detail/[A-Za-z0-9_-]+/',
+        'source_publisher': 'アース・スター エンターテイメント', 'source_roles': ('author', 'illustrator', 'unknown'),
+        'public_kind': 'earthstar_work_reference',
+        'credit': 'ローカル書誌参照: アース・スター公式作品一覧（作品・版・物語シリーズの同一性未確認）'},
     'ichijinshairisspecial': {'schema': ICHIJINSHA_PROMOTION_REFERENCE_SCHEMA, 'record_provider': 'ichijinsha-iris-special-reference',
         'loader': '_ichijinsha_iris_special_publisher_references', 'fields': '_finite_listing_reference_fields',
         'reference_pattern': r'publisher-promotion-book:[0-9a-f]{24}', 'source_unit': 'publisher_product_reference',
@@ -285,7 +293,7 @@ def _qid(value):
 
 
 def _entry(value):
-    if not isinstance(value, str) or not re.fullmatch(r'(?:ln[sw]:wd:Q[1-9][0-9]*|ln[se]:ndl:[A-Za-z0-9._-]+|lng:pub:(?:futaba|orange|ecobalt|sbcr|hj|arian|hjnovels|sbcrindex):[0-9a-f]{32}|lnr:pub:(?:ecobalt|futaba|kadokawa|kadokawaprint|kadokawatrade|tobooks|gagaga|kodansha|overlapdetails|shueishadx|gc|overlap|alphapolis|hifumi|ichijinshairis|ichijinshairisspecial):[0-9a-f]{32})', value):
+    if not isinstance(value, str) or not re.fullmatch(r'(?:ln[sw]:wd:Q[1-9][0-9]*|ln[se]:ndl:[A-Za-z0-9._-]+|lng:pub:(?:futaba|orange|ecobalt|sbcr|hj|arian|hjnovels|sbcrindex):[0-9a-f]{32}|lnr:pub:(?:ecobalt|futaba|kadokawa|kadokawaprint|kadokawatrade|tobooks|gagaga|kodansha|overlapdetails|shueishadx|gc|overlap|alphapolis|hifumi|ichijinshairis|ichijinshairisspecial|earthstar):[0-9a-f]{32})', value):
         raise ValueError('a typed light-novel entry ID is required')
     return value
 
@@ -427,7 +435,7 @@ class LightNovelCatalogue:
             return self._project_publisher_reference('kadokawatrade', record, cache)
         if record.get('schema_version') == TOBOOKS_REFERENCE_SCHEMA:
             return self._project_publisher_reference('tobooks', record, cache)
-        for provider in ('gagaga', 'kodansha', 'overlapdetails', 'shueishadx', 'gc', 'overlap', 'alphapolis', 'hifumi', 'ichijinshairis', 'ichijinshairisspecial'):
+        for provider in ('gagaga', 'kodansha', 'overlapdetails', 'shueishadx', 'gc', 'overlap', 'alphapolis', 'hifumi', 'ichijinshairis', 'ichijinshairisspecial', 'earthstar'):
             if record.get('schema_version') == PUBLISHER_REFERENCE_PROVIDERS[provider]['schema']:
                 return self._project_publisher_reference(provider, record, cache)
         for provider, profile in SOURCE_GROUP_PROVIDERS.items():
@@ -986,7 +994,7 @@ class LightNovelCatalogue:
     @staticmethod
     def _publisher_reference_assertion(provider, path, sha256, reference):
         assertion = LightNovelCatalogue._ecobalt_reference_assertion(path, sha256, reference)
-        if provider in {'futaba', 'kadokawa', 'kadokawaprint', 'kadokawatrade', 'tobooks', 'gagaga', 'kodansha', 'overlapdetails', 'shueishadx', 'gc', 'overlap', 'alphapolis', 'hifumi', 'ichijinshairis', 'ichijinshairisspecial'}:
+        if provider in {'futaba', 'kadokawa', 'kadokawaprint', 'kadokawatrade', 'tobooks', 'gagaga', 'kodansha', 'overlapdetails', 'shueishadx', 'gc', 'overlap', 'alphapolis', 'hifumi', 'ichijinshairis', 'ichijinshairisspecial', 'earthstar'}:
             assertion['title'] = reference['title']
         return assertion
 
@@ -1217,6 +1225,9 @@ class LightNovelCatalogue:
     def _alphapolis_publisher_references(self, path, sha256, cache):
         return self._finite_listing_publisher_references('alphapolis', path, sha256, cache)
 
+    def _earthstar_publisher_references(self, path, sha256, cache):
+        return self._finite_listing_publisher_references('earthstar', path, sha256, cache)
+
     def _ichijinsha_iris_special_publisher_references(self, path, sha256, cache):
         return self._finite_listing_publisher_references('ichijinshairisspecial', path, sha256, cache)
 
@@ -1366,6 +1377,12 @@ class LightNovelCatalogue:
                             or identity != 'publisher-promotion-book:' + hashlib.sha256(
                                 (reference['source_url'] + '#' + locator[1]).encode()).hexdigest()[:24]):
                         raise ValueError('Iris promotion scope or own bibliography differs')
+                if provider == 'earthstar' and (
+                        reference['source_url'] != 'https://earthstar-novel.com/book/detail/' + identity.split(':')[1] + '/'
+                        or isbn is not None or labels != []
+                        or reference['form'] not in (None, '小説', 'ノベル', '漫画', 'コミック')
+                        or reference['official_lightnovel_tag'] is not None):
+                    raise ValueError('EarthStar card scope or unknown fields differ')
                 # Gagaga roles are original literals; Kodansha roles are already
                 # normalized by its source verifier and are not relabelled as literals.
                 credits = ([{'role': 'unknown', 'name': c['name']} for c in reference['credits']]
@@ -1543,7 +1560,7 @@ class LightNovelCatalogue:
 
     def _project_publisher_reference(self, provider, record, cache):
         profile = PUBLISHER_REFERENCE_PROVIDERS[provider]
-        provider_name = {'ecobalt': 'eCobalt', 'futaba': 'Futaba', 'kadokawa': 'Kadokawa', 'kadokawaprint': 'Kadokawa print', 'kadokawatrade': 'Kadokawa trade', 'tobooks': 'TO', 'gagaga': 'Gagaga', 'kodansha': 'Kodansha', 'overlapdetails': 'Overlap detail', 'shueishadx': 'Shueisha DX', 'gc': 'GC', 'overlap': 'Overlap BNK', 'alphapolis': 'Alpha', 'hifumi': 'Hifumi', 'ichijinshairis': 'Iris', 'ichijinshairisspecial': 'Iris promotion'}[provider]
+        provider_name = {'ecobalt': 'eCobalt', 'futaba': 'Futaba', 'kadokawa': 'Kadokawa', 'kadokawaprint': 'Kadokawa print', 'kadokawatrade': 'Kadokawa trade', 'tobooks': 'TO', 'gagaga': 'Gagaga', 'kodansha': 'Kodansha', 'overlapdetails': 'Overlap detail', 'shueishadx': 'Shueisha DX', 'gc': 'GC', 'overlap': 'Overlap BNK', 'alphapolis': 'Alpha', 'hifumi': 'Hifumi', 'ichijinshairis': 'Iris', 'ichijinshairisspecial': 'Iris promotion', 'earthstar': 'EarthStar'}[provider]
         identity = _entry('lnr:pub:' + provider + ':' + record['id'])
         if (record.get('schema_version') != profile['schema'] or record.get('source') != 'publisher'
                 or record.get('provider') != profile['record_provider'] or record.get('kind') != 'publisher_reference'):
@@ -1557,7 +1574,7 @@ class LightNovelCatalogue:
             key = assertion['local_reference_key']
             if (pin in seen or not re.fullmatch(r'[0-9a-f]{64}', assertion['manifest_sha256'])
                     or not re.fullmatch(profile['reference_pattern'], assertion['reference_id'])
-                    or provider in {'futaba', 'kadokawa', 'kadokawaprint', 'kadokawatrade', 'tobooks', 'gagaga', 'kodansha', 'overlapdetails', 'shueishadx', 'gc', 'overlap', 'alphapolis', 'hifumi', 'ichijinshairis', 'ichijinshairisspecial'} and assertion['title'] != record['title']
+                    or provider in {'futaba', 'kadokawa', 'kadokawaprint', 'kadokawatrade', 'tobooks', 'gagaga', 'kodansha', 'overlapdetails', 'shueishadx', 'gc', 'overlap', 'alphapolis', 'hifumi', 'ichijinshairis', 'ichijinshairisspecial', 'earthstar'} and assertion['title'] != record['title']
                     or previous_key is not None and key != previous_key):
                 raise ValueError(provider_name + ' product reference assertion continuity differs')
             seen.add(pin)
@@ -1592,11 +1609,11 @@ class LightNovelCatalogue:
             row.update(isbn=record['isbn'], publication_label=record['publication_label'],
                 usage_permissions={'bibliographic_reference_only': True, 'commercial_reuse': 'unknown',
                     'prose_ai_permission': False, 'images_permission': False, 'raw_redistribution_permission': False})
-        elif provider in {'kadokawa', 'kadokawaprint', 'kadokawatrade', 'tobooks', 'gagaga', 'kodansha', 'overlapdetails', 'shueishadx', 'gc', 'overlap', 'alphapolis', 'hifumi', 'ichijinshairis', 'ichijinshairisspecial'}:
+        elif provider in {'kadokawa', 'kadokawaprint', 'kadokawatrade', 'tobooks', 'gagaga', 'kodansha', 'overlapdetails', 'shueishadx', 'gc', 'overlap', 'alphapolis', 'hifumi', 'ichijinshairis', 'ichijinshairisspecial', 'earthstar'}:
             row.update(publication_label=record['publication_label'],
                 reference_scope=record['reference_scope'], usage_permissions=record['usage_permissions'],
                 light_novel_identity_asserted=False)
-            if provider in {'kadokawaprint', 'kadokawatrade', 'tobooks', 'gagaga', 'kodansha', 'overlapdetails', 'shueishadx', 'gc', 'overlap', 'alphapolis', 'hifumi', 'ichijinshairis', 'ichijinshairisspecial'}:
+            if provider in {'kadokawaprint', 'kadokawatrade', 'tobooks', 'gagaga', 'kodansha', 'overlapdetails', 'shueishadx', 'gc', 'overlap', 'alphapolis', 'hifumi', 'ichijinshairis', 'ichijinshairisspecial', 'earthstar'}:
                 row['isbn'] = record['isbn']
         return row
 
@@ -1648,6 +1665,9 @@ class LightNovelCatalogue:
     def import_alphapolis_publisher_references(self, manifest_path, expected_sha256, *, reference_ids):
         return self._import_explicit_finite_listing('alphapolis', manifest_path, expected_sha256, reference_ids)
 
+    def import_earthstar_publisher_references(self, manifest_path, expected_sha256, *, reference_ids):
+        return self._import_explicit_finite_listing('earthstar', manifest_path, expected_sha256, reference_ids)
+
     def import_ichijinsha_iris_special_publisher_references(self, manifest_path, expected_sha256, *, reference_ids):
         return self._import_explicit_finite_listing('ichijinshairisspecial', manifest_path, expected_sha256, reference_ids)
 
@@ -1671,7 +1691,7 @@ class LightNovelCatalogue:
         """Store ungrouped listings with local identity, without asserting a work or edition."""
         cache = {}
         profile = PUBLISHER_REFERENCE_PROVIDERS[provider]
-        provider_name = {'ecobalt': 'eCobalt', 'futaba': 'Futaba', 'kadokawa': 'Kadokawa', 'kadokawaprint': 'Kadokawa print', 'kadokawatrade': 'Kadokawa trade', 'tobooks': 'TO', 'gagaga': 'Gagaga', 'kodansha': 'Kodansha', 'overlapdetails': 'Overlap detail', 'shueishadx': 'Shueisha DX', 'gc': 'GC', 'overlap': 'Overlap BNK', 'alphapolis': 'Alpha', 'hifumi': 'Hifumi', 'ichijinshairis': 'Iris', 'ichijinshairisspecial': 'Iris promotion'}[provider]
+        provider_name = {'ecobalt': 'eCobalt', 'futaba': 'Futaba', 'kadokawa': 'Kadokawa', 'kadokawaprint': 'Kadokawa print', 'kadokawatrade': 'Kadokawa trade', 'tobooks': 'TO', 'gagaga': 'Gagaga', 'kodansha': 'Kodansha', 'overlapdetails': 'Overlap detail', 'shueishadx': 'Shueisha DX', 'gc': 'GC', 'overlap': 'Overlap BNK', 'alphapolis': 'Alpha', 'hifumi': 'Hifumi', 'ichijinshairis': 'Iris', 'ichijinshairisspecial': 'Iris promotion', 'earthstar': 'EarthStar'}[provider]
         path = str(_resolved_path(manifest_path, cache))
         if provider in {'kadokawa', 'kadokawaprint', 'kadokawatrade'}:
             reference_ids = list(reference_ids) if reference_ids is not None and not isinstance(reference_ids, (str, bytes)) else reference_ids
@@ -1719,7 +1739,7 @@ class LightNovelCatalogue:
             reference = references[reference_id]
             assertion = self._publisher_reference_assertion(provider, path, expected_sha256, reference)
             previous_ids = keys.get(_json(assertion['local_reference_key']), [])
-            if provider in {'futaba', 'kadokawa', 'kadokawaprint', 'kadokawatrade', 'tobooks', 'gagaga', 'kodansha', 'overlapdetails', 'shueishadx', 'gc', 'overlap', 'alphapolis', 'hifumi', 'ichijinshairis', 'ichijinshairisspecial'} and (not previous_ids and reference_id in stable_references
+            if provider in {'futaba', 'kadokawa', 'kadokawaprint', 'kadokawatrade', 'tobooks', 'gagaga', 'kodansha', 'overlapdetails', 'shueishadx', 'gc', 'overlap', 'alphapolis', 'hifumi', 'ichijinshairis', 'ichijinshairisspecial', 'earthstar'} and (not previous_ids and reference_id in stable_references
                     or previous_ids and any(records[identity]['title'] != reference['title'] for identity in previous_ids)):
                 result['held'] += 1
                 reason = 'source_reference_scope_or_title_changed'
@@ -4370,10 +4390,10 @@ class LightNovelCatalogue:
             elif record.get('schema_version') == FUTABA_REFERENCE_SCHEMA:
                 child_titles = []
                 authors.extend(credit['name'] for credit in record['publisher_product_reference']['credits'] if credit['role'] == 'author')
-            elif record.get('schema_version') in {KADOKAWA_REFERENCE_SCHEMA, KADOKAWA_PRINT_REFERENCE_SCHEMA, KADOKAWA_TRADE_REFERENCE_SCHEMA, TOBOOKS_REFERENCE_SCHEMA, GAGAGA_REFERENCE_SCHEMA, KODANSHA_REFERENCE_SCHEMA, OVERLAP_DETAIL_REFERENCE_SCHEMA, SHUEISHA_DX_REFERENCE_SCHEMA, GC_REFERENCE_SCHEMA, OVERLAP_BUNKO_REFERENCE_SCHEMA, ALPHAPOLIS_REFERENCE_SCHEMA, HIFUMI_REFERENCE_SCHEMA, ICHIJINSHA_IRIS_REFERENCE_SCHEMA, ICHIJINSHA_PROMOTION_REFERENCE_SCHEMA}:
+            elif record.get('schema_version') in {KADOKAWA_REFERENCE_SCHEMA, KADOKAWA_PRINT_REFERENCE_SCHEMA, KADOKAWA_TRADE_REFERENCE_SCHEMA, TOBOOKS_REFERENCE_SCHEMA, GAGAGA_REFERENCE_SCHEMA, KODANSHA_REFERENCE_SCHEMA, OVERLAP_DETAIL_REFERENCE_SCHEMA, SHUEISHA_DX_REFERENCE_SCHEMA, GC_REFERENCE_SCHEMA, OVERLAP_BUNKO_REFERENCE_SCHEMA, ALPHAPOLIS_REFERENCE_SCHEMA, HIFUMI_REFERENCE_SCHEMA, ICHIJINSHA_IRIS_REFERENCE_SCHEMA, ICHIJINSHA_PROMOTION_REFERENCE_SCHEMA, EARTHSTAR_REFERENCE_SCHEMA}:
                 child_titles = []
                 authors.extend(credit['name'] for credit in record['publisher_product_reference']['credit_literals'])
-                if record.get('schema_version') in {GAGAGA_REFERENCE_SCHEMA, KODANSHA_REFERENCE_SCHEMA, OVERLAP_DETAIL_REFERENCE_SCHEMA, SHUEISHA_DX_REFERENCE_SCHEMA, GC_REFERENCE_SCHEMA, OVERLAP_BUNKO_REFERENCE_SCHEMA, ALPHAPOLIS_REFERENCE_SCHEMA, HIFUMI_REFERENCE_SCHEMA, ICHIJINSHA_IRIS_REFERENCE_SCHEMA, ICHIJINSHA_PROMOTION_REFERENCE_SCHEMA}:
+                if record.get('schema_version') in {GAGAGA_REFERENCE_SCHEMA, KODANSHA_REFERENCE_SCHEMA, OVERLAP_DETAIL_REFERENCE_SCHEMA, SHUEISHA_DX_REFERENCE_SCHEMA, GC_REFERENCE_SCHEMA, OVERLAP_BUNKO_REFERENCE_SCHEMA, ALPHAPOLIS_REFERENCE_SCHEMA, HIFUMI_REFERENCE_SCHEMA, ICHIJINSHA_IRIS_REFERENCE_SCHEMA, ICHIJINSHA_PROMOTION_REFERENCE_SCHEMA, EARTHSTAR_REFERENCE_SCHEMA}:
                     authors.extend(credit['name'] for credit in record['publisher_product_reference']['credits'])
             else:
                 child_titles = []
@@ -4512,9 +4532,9 @@ class LightNovelCatalogue:
             if row['entry_kind'] == 'publisher_reference':
                 if 'author_display' in row:
                     names.append(row['author_display'])
-                elif row.get('publisher_reference_kind') in {PUBLISHER_REFERENCE_PROVIDERS[p]['public_kind'] for p in ('kadokawa', 'kadokawaprint', 'kadokawatrade', 'tobooks', 'gagaga', 'kodansha', 'overlapdetails', 'shueishadx', 'gc', 'overlap', 'alphapolis', 'hifumi', 'ichijinshairis', 'ichijinshairisspecial')}:
+                elif row.get('publisher_reference_kind') in {PUBLISHER_REFERENCE_PROVIDERS[p]['public_kind'] for p in ('kadokawa', 'kadokawaprint', 'kadokawatrade', 'tobooks', 'gagaga', 'kodansha', 'overlapdetails', 'shueishadx', 'gc', 'overlap', 'alphapolis', 'hifumi', 'ichijinshairis', 'ichijinshairisspecial', 'earthstar')}:
                     names.extend(credit['name'] for credit in row['publisher_product_reference']['credit_literals'])
-                    if row.get('publisher_reference_kind') in {'gagaga_product_reference', 'kodansha_product_reference', 'overlap_detail_product_reference', 'shueisha_dx_product_reference', 'gc_product_reference', 'overlap_bunko_product_reference', 'alphapolis_commercial_book_reference', 'hifumi_product_reference', 'ichijinsha_iris_product_reference', 'ichijinsha_iris_promotion_reference'}:
+                    if row.get('publisher_reference_kind') in {'gagaga_product_reference', 'kodansha_product_reference', 'overlap_detail_product_reference', 'shueisha_dx_product_reference', 'gc_product_reference', 'overlap_bunko_product_reference', 'alphapolis_commercial_book_reference', 'hifumi_product_reference', 'ichijinsha_iris_product_reference', 'ichijinsha_iris_promotion_reference', 'earthstar_work_reference'}:
                         names.extend(credit['name'] for credit in row['publisher_product_reference']['credits'])
                 else:
                     names.extend(credit['name'] for credit in row['publisher_product_reference']['credits'] if credit['role'] == 'author')
