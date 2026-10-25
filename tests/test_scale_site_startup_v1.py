@@ -142,7 +142,15 @@ context.fetch=async path=>({ok:true,json:async()=>path.includes('/similar')?{ite
   const tobooks={...kadokawa,entry_id:'lnr:pub:tobooks:'+'c'.repeat(32),publisher_reference_kind:'tobooks_product_reference',
     title:'TOの独立掲載題',isbn:['9780306406157'],publisher_product_reference:{title:'TOの独立掲載題',
       source_url:'https://www.tobooks.jp/contents/12345',label:null,form:null,credit_literals:[{role_literal:null,name:'掲載名'}]}};
-  for(const listing of [kadokawa,kadokawaPrint,kadokawaTrade,tobooks]){
+  const gagaga={...tobooks,entry_id:'lnr:pub:gagaga:'+'e'.repeat(32),publisher_reference_kind:'gagaga_product_reference',
+    title:'ガガガの掲載題',isbn:['9780306406157'],publisher_product_reference:{title:'ガガガの掲載題',
+      source_url:'https://gagagabunko.jp/lineup/202609.html#02',label:'ガガガ文庫',form:null,
+      credit_literals:[{role_literal:'著',name:'掲載名'}]}};
+  const kodansha={...gagaga,entry_id:'lnr:pub:kodansha:'+'f'.repeat(32),publisher_reference_kind:'kodansha_product_reference',
+    title:'講談社の掲載題',isbn:[],publisher_product_reference:{title:'講談社の掲載題',
+      source_url:'https://www.kodansha.co.jp/comic/products/0000431602',label:'講談社ラノベ文庫',form:null,
+      credits:[{role:'author',name:'掲載名'},{role:'unknown',name:'役割不明の掲載名'}],credit_literals:[]}};
+  for(const listing of [kadokawa,kadokawaPrint,kadokawaTrade,tobooks,gagaga,kodansha]){
   context.KAD=listing;
   const kadRequests=[];
   context.fetch=async path=>{kadRequests.push(path);return {ok:true,json:async()=>path.includes('/similar')?{items:[]}:listing};};
@@ -152,7 +160,9 @@ context.fetch=async path=>({ok:true,json:async()=>path.includes('/similar')?{ite
   if(listing===tobooks){
     assert.ok(kadDetail.includes('役割未確認：掲載名') && !kadDetail.includes('著者：掲載名'));
     assert.ok(!kadDetail.includes('電撃文庫') && !kadDetail.includes('文庫 /'));
-  }else assert.ok(kadDetail.includes('電撃文庫 / '+listing.publisher_product_reference.form) && kadDetail.includes('著者：公式表示名'));
+  }else if(listing===gagaga)assert.ok(kadDetail.includes('著：掲載名'));
+  else if(listing===kodansha)assert.ok(kadDetail.includes('著者：掲載名')&&kadDetail.includes('役割未確認：役割不明の掲載名'));
+  else assert.ok(kadDetail.includes('電撃文庫 / '+listing.publisher_product_reference.form) && kadDetail.includes('著者：公式表示名'));
   assert.ok(kadDetail.includes('原作品・物語シリーズやNDLの版との対応は未確認'));
   assert.ok(kadDetail.includes('ローカルの書誌参照です。公開・商用利用などの許諾は未確認です。'));
   assert.ok(visibleLinks(elements.get('detail-body')).includes(listing.publisher_product_reference.source_url));

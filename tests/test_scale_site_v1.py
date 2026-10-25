@@ -588,3 +588,55 @@ def test_kadokawa_trade_reference_profile_and_permission_boundaries(mutation):
     else:
         assert 'publisher_reference_kind' not in public and 'publisher_product_reference' not in public
         assert public['isbn'] == []
+
+
+def finite_lineup_listing(provider):
+    row = tobooks_listing()
+    row.update(entry_id='lnr:pub:' + provider + ':' + 'e' * 32,
+               publisher_reference_kind=provider + '_product_reference', isbn=['9780306406157'])
+    product = row['publisher_product_reference']
+    if provider == 'gagaga':
+        row['source_url'] = 'https://gagagabunko.jp/lineup/202609.html#02'
+        product.update(publisher_reference_id='publisher-lineup:' + 'a' * 24, label='ガガガ文庫',
+            credits=[{'role': 'unknown', 'name': '掲載名'}], credit_literals=[{'role_literal': '著', 'name': '掲載名'}])
+    else:
+        row['source_url'] = 'https://www.kodansha.co.jp/comic/products/0000431602'
+        product.update(publisher_reference_id='kodansha-product:0000431602', label='講談社ラノベ文庫',
+            credits=[{'role': 'author', 'name': '掲載名'}, {'role': 'unknown', 'name': '役割不明の掲載名'}], credit_literals=[])
+    product['source_url'] = row['source_url']
+    return row
+
+
+@pytest.mark.parametrize('provider', ['gagaga', 'kodansha'])
+def test_finite_lineup_references_keep_credit_semantics_and_unknown_isbn_without_identity(provider):
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = finite_lineup_listing(provider)
+    public = public_work(row)
+    assert public['entry_id'] == row['entry_id'] and public['publisher_provider'] == provider
+    assert public['publisher_reference_kind'] == provider + '_product_reference'
+    assert public['isbn'] == (['9780306406157'] if provider == 'gagaga' else [])
+    assert public['authors'] == public['members'] == []
+    assert public['recommendable'] is public['light_novel_confirmed'] is False
+    assert public['publisher_product_reference']['source_url'] == row['source_url']
+    assert public['publisher_product_reference']['publisher_reference_id'] == row['publisher_product_reference']['publisher_reference_id']
+    if provider == 'gagaga':
+        assert public['publisher_product_reference']['credit_literals'] == [{'role_literal': '著', 'name': '掲載名'}]
+    else:
+        assert public['publisher_product_reference']['credit_literals'] == []
+        assert public['publisher_product_reference']['credits'] == row['publisher_product_reference']['credits']
+    assert all(public[key] is False for key in ('edition_identity_asserted', 'story_series_identity_asserted',
+        'original_work_identity_asserted', 'light_novel_identity_asserted'))
+    assert public['usage_permissions']['public_display'] == public['usage_permissions']['commercial_reuse'] == 'unknown'
+    assert 'PRIVATE' not in json.dumps(public)
+
+
+@pytest.mark.parametrize('provider', ['gagaga', 'kodansha'])
+@pytest.mark.parametrize('mutation', ['marker', 'scope'])
+def test_finite_lineup_references_require_matching_profile_and_private_purpose(provider, mutation):
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = finite_lineup_listing(provider)
+    if mutation == 'marker': row['publisher_reference_kind'] = 'tobooks_product_reference'
+    else: row['reference_scope'] = 'public_display_allowed'
+    public = public_work(row)
+    assert 'publisher_product_reference' not in public
+    assert public['isbn'] == []

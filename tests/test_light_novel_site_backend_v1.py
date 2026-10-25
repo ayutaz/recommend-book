@@ -155,6 +155,8 @@ def stores(tmp_path):
     ('kadokawaprint', 'kadokawa_print_product_reference', '紙掲載書誌'),
     ('kadokawatrade', 'kadokawa_trade_product_reference', '単行本掲載書誌'),
     ('tobooks', 'tobooks_product_reference', 'TO掲載書誌'),
+    ('gagaga', 'gagaga_product_reference', 'ガガガ掲載書誌'),
+    ('kodansha', 'kodansha_product_reference', '講談社掲載書誌'),
 ])
 def test_kadokawa_reference_detail_routes_through_unified_http_without_world_lookup(stores, provider, marker, title):
     import threading
@@ -169,8 +171,10 @@ def test_kadokawa_reference_detail_routes_through_unified_http_without_world_loo
         'publisher_reference_kind': marker,
         'publisher_product_reference': {'title': title, 'form': '単行本' if provider == 'kadokawatrade' else None},
         'reference_scope': 'private_bibliographic_discovery',
-        'source_url': 'https://www.tobooks.jp/contents/12345' if provider == 'tobooks'
-                      else 'https://www.kadokawa.co.jp/product/123456789012/'})
+        'source_url': {'tobooks': 'https://www.tobooks.jp/contents/12345',
+                       'gagaga': 'https://gagagabunko.jp/lineup/202609.html#02',
+                       'kodansha': 'https://www.kodansha.co.jp/comic/products/0000431602'}.get(
+                           provider, 'https://www.kadokawa.co.jp/product/123456789012/')})
     world.work_detail = lambda key: pytest.fail('KAD reference must not use the world store')
     world.set_read_status = lambda *args: pytest.fail('KAD reference read state must not use the world store')
     server = create_server(catalogue=combined, port=0)
