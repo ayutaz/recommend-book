@@ -524,6 +524,12 @@ def verify_publisher_references(provider, manifest_path, sha256):
     if provider == 'kodansha':
         from .light_novel_kodansha_references_v1 import verify_kodansha_references
         return verify_kodansha_references(manifest_path, sha256)
+    if provider == 'ichijinshairisspecial':
+        from .light_novel_ichijinsha_promotions_v1 import verify_ichijinsha_promotions
+        return verify_ichijinsha_promotions(manifest_path, sha256)
+    if provider == 'ichijinshairis':
+        from .light_novel_ichijinsha_references_v1 import verify_ichijinsha_references
+        return verify_ichijinsha_references(manifest_path, sha256)
     if provider == 'hifumi':
         from .light_novel_hifumi_references_v1 import verify_hifumi_references
         return verify_hifumi_references(manifest_path, sha256)
