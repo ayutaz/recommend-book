@@ -32,6 +32,7 @@ KADOKAWA_TRADE_REFERENCE_SCHEMA = 'light-novel-kadokawa-trade-publisher-referenc
 TOBOOKS_REFERENCE_SCHEMA = 'light-novel-tobooks-publisher-reference-v1'
 GAGAGA_REFERENCE_SCHEMA = 'light-novel-gagaga-publisher-reference-v1'
 KODANSHA_REFERENCE_SCHEMA = 'light-novel-kodansha-publisher-reference-v1'
+OVERLAP_DETAIL_REFERENCE_SCHEMA = 'light-novel-overlap-detail-publisher-reference-v1'
 PUBLISHER_REFERENCE_PROVIDERS = {
     'ecobalt': {'schema': ECOBALT_REFERENCE_SCHEMA, 'record_provider': 'ecobalt',
         'loader': '_ecobalt_publisher_references', 'fields': '_ecobalt_reference_fields',
@@ -86,6 +87,11 @@ PUBLISHER_REFERENCE_PROVIDERS = {
         'source_roles': ('author', 'illustrator', 'original_author', 'original_concept', 'supervisor', 'unknown'),
         'public_kind': 'kodansha_product_reference',
         'credit': 'ローカル書誌参照: 講談社ラノベ文庫公式商品一覧（掲載参照）'},
+    'overlapdetails': {'schema': OVERLAP_DETAIL_REFERENCE_SCHEMA, 'record_provider': 'overlap-details',
+        'loader': '_overlap_detail_publisher_references', 'fields': '_overlap_detail_reference_fields',
+        'reference_pattern': r'overlap-(?:nvl|nvf|nvr)-product:[A-Za-z0-9_-]+',
+        'public_kind': 'overlap_detail_product_reference',
+        'credit': 'ローカル書誌参照: OVERLAP公式商品詳細と掲載カード（書誌参照のみ）'},
 }
 SOURCE_GROUP_PROVIDERS = {
     'futaba': {
@@ -222,7 +228,7 @@ def _qid(value):
 
 
 def _entry(value):
-    if not isinstance(value, str) or not re.fullmatch(r'(?:ln[sw]:wd:Q[1-9][0-9]*|ln[se]:ndl:[A-Za-z0-9._-]+|lng:pub:(?:futaba|orange|ecobalt|sbcr|hj|arian|hjnovels|sbcrindex):[0-9a-f]{32}|lnr:pub:(?:ecobalt|futaba|kadokawa|kadokawaprint|kadokawatrade|tobooks|gagaga|kodansha):[0-9a-f]{32})', value):
+    if not isinstance(value, str) or not re.fullmatch(r'(?:ln[sw]:wd:Q[1-9][0-9]*|ln[se]:ndl:[A-Za-z0-9._-]+|lng:pub:(?:futaba|orange|ecobalt|sbcr|hj|arian|hjnovels|sbcrindex):[0-9a-f]{32}|lnr:pub:(?:ecobalt|futaba|kadokawa|kadokawaprint|kadokawatrade|tobooks|gagaga|kodansha|overlapdetails):[0-9a-f]{32})', value):
         raise ValueError('a typed light-novel entry ID is required')
     return value
 
@@ -364,7 +370,7 @@ class LightNovelCatalogue:
             return self._project_publisher_reference('kadokawatrade', record, cache)
         if record.get('schema_version') == TOBOOKS_REFERENCE_SCHEMA:
             return self._project_publisher_reference('tobooks', record, cache)
-        for provider in ('gagaga', 'kodansha'):
+        for provider in ('gagaga', 'kodansha', 'overlapdetails'):
             if record.get('schema_version') == PUBLISHER_REFERENCE_PROVIDERS[provider]['schema']:
                 return self._project_publisher_reference(provider, record, cache)
         for provider, profile in SOURCE_GROUP_PROVIDERS.items():
@@ -923,7 +929,7 @@ class LightNovelCatalogue:
     @staticmethod
     def _publisher_reference_assertion(provider, path, sha256, reference):
         assertion = LightNovelCatalogue._ecobalt_reference_assertion(path, sha256, reference)
-        if provider in {'futaba', 'kadokawa', 'kadokawaprint', 'kadokawatrade', 'tobooks', 'gagaga', 'kodansha'}:
+        if provider in {'futaba', 'kadokawa', 'kadokawaprint', 'kadokawatrade', 'tobooks', 'gagaga', 'kodansha', 'overlapdetails'}:
             assertion['title'] = reference['title']
         return assertion
 
@@ -1216,12 +1222,68 @@ class LightNovelCatalogue:
             raise ValueError('selected finite listing metadata conflicts')
         return LightNovelCatalogue._tobooks_reference_fields(reference)
 
+    def _overlap_detail_publisher_references(self, path, sha256, cache):
+        """Consume the existing selected own-card/detail verifier, not its native roster."""
+        from . import light_novel_overlap_details_v1 as source
+        from .normalization import normalize_isbn
+        key = ('overlap_detail_product_references', str(_resolved_path(path, cache)), sha256)
+        if key not in cache:
+            references = {}
+            for reference in source.verify_overlap_product_details(path, sha256):
+                identity, isbn = reference['publisher_reference_id'], reference['isbn']
+                literal, credits = reference['isbn_source_literal'], reference['credits']
+                matched = re.fullmatch(PUBLISHER_REFERENCE_PROVIDERS['overlapdetails']['reference_pattern'], identity)
+                category = identity.split('-')[1].upper() if matched else None
+                if (not matched or identity in references or reference['publisher_product_reference_id'] != identity
+                        or source._product(reference['source_url'], category) != identity.split(':', 1)[1]
+                        or reference['source_unit'] != 'publisher_product_detail_bibliographic_reference_not_confirmed_edition'
+                        or not isinstance(reference['title'], str) or not reference['title'].strip()
+                        or reference['publisher'] is not None or reference['detail_label'] is not None
+                        or reference['label'] != source._BRANDS[category][0]
+                        or reference['label_source_scope'] != 'own_card_label_only_detail_own_label_not_observed'
+                        or reference['isbn_source_basis'] != 'explicit_ISBN_label_value_not_URL'
+                        or literal is None and isbn is not None
+                        or literal is not None and (not isinstance(literal, str)
+                            or not re.fullmatch(r'[0-9Xx][0-9Xx -]*', literal)
+                            or normalize_isbn(literal) is None or normalize_isbn(literal) != isbn)
+                        or reference['form'] is not None and (not isinstance(reference['form'], str) or not reference['form'])
+                        or not isinstance(credits, list) or len(credits) != 2
+                        or credits[0].get('role') != 'unknown' or credits[0].get('role_literal') is not None
+                        or credits[1].get('role') != 'illustrator' or credits[1].get('role_literal') != 'イラスト'
+                        or credits[1].get('role_marker_literal') not in {'イラスト／', 'イラスト/'}
+                        or any(not isinstance(c.get('name'), str) or not c['name'] for c in credits)
+                        or any(reference[field] is not False for field in ('edition_identity_asserted',
+                            'original_work_identity_asserted', 'story_series_identity_asserted'))):
+                    raise ValueError('Overlap own card/detail product reference contract differs')
+                references[identity] = {**reference, 'reference_id': identity,
+                    'reference_scope': 'private_bibliographic_discovery',
+                    'usage_permissions': {'purpose': 'private_bibliographic_discovery',
+                        'public_display': 'unknown', 'commercial_reuse': 'unknown', 'prose_ai_permission': False,
+                        'images_permission': False, 'raw_redistribution_permission': False},
+                    'credit_literals': [{'role_literal': None, 'name': credits[0]['name']},
+                        {'role_literal': credits[1]['role_literal'], 'role_marker_literal': credits[1]['role_marker_literal'],
+                         'name': credits[1]['name']}],
+                    'local_reference_key': {'provider': 'overlap-details',
+                        'source_scope': 'official_own_card_product_detail_reference',
+                        'publisher_reference_id': identity, 'official_product_url': reference['source_url']}}
+            cache[key] = references
+        return cache[key]
+
+    @staticmethod
+    def _overlap_detail_reference_fields(reference):
+        fields = LightNovelCatalogue._kadokawa_reference_fields(reference)
+        fields['publisher_product_reference'].update(
+            credit_literals=[dict(c) for c in reference['credit_literals']],
+            label_source_scope=reference['label_source_scope'])
+        return {**fields, 'isbn': [reference['isbn_source_literal']] if reference['isbn_source_literal'] is not None else [],
+                'isbn_basis': 'explicit_source_ISBN_label_value_not_product_ID'}
+
     def _project_ecobalt_publisher_reference(self, record, cache):
         return self._project_publisher_reference('ecobalt', record, cache)
 
     def _project_publisher_reference(self, provider, record, cache):
         profile = PUBLISHER_REFERENCE_PROVIDERS[provider]
-        provider_name = {'ecobalt': 'eCobalt', 'futaba': 'Futaba', 'kadokawa': 'Kadokawa', 'kadokawaprint': 'Kadokawa print', 'kadokawatrade': 'Kadokawa trade', 'tobooks': 'TO', 'gagaga': 'Gagaga', 'kodansha': 'Kodansha'}[provider]
+        provider_name = {'ecobalt': 'eCobalt', 'futaba': 'Futaba', 'kadokawa': 'Kadokawa', 'kadokawaprint': 'Kadokawa print', 'kadokawatrade': 'Kadokawa trade', 'tobooks': 'TO', 'gagaga': 'Gagaga', 'kodansha': 'Kodansha', 'overlapdetails': 'Overlap detail'}[provider]
         identity = _entry('lnr:pub:' + provider + ':' + record['id'])
         if (record.get('schema_version') != profile['schema'] or record.get('source') != 'publisher'
                 or record.get('provider') != profile['record_provider'] or record.get('kind') != 'publisher_reference'):
@@ -1235,7 +1297,7 @@ class LightNovelCatalogue:
             key = assertion['local_reference_key']
             if (pin in seen or not re.fullmatch(r'[0-9a-f]{64}', assertion['manifest_sha256'])
                     or not re.fullmatch(profile['reference_pattern'], assertion['reference_id'])
-                    or provider in {'futaba', 'kadokawa', 'kadokawaprint', 'kadokawatrade', 'tobooks', 'gagaga', 'kodansha'} and assertion['title'] != record['title']
+                    or provider in {'futaba', 'kadokawa', 'kadokawaprint', 'kadokawatrade', 'tobooks', 'gagaga', 'kodansha', 'overlapdetails'} and assertion['title'] != record['title']
                     or previous_key is not None and key != previous_key):
                 raise ValueError(provider_name + ' product reference assertion continuity differs')
             seen.add(pin)
@@ -1270,11 +1332,11 @@ class LightNovelCatalogue:
             row.update(isbn=record['isbn'], publication_label=record['publication_label'],
                 usage_permissions={'bibliographic_reference_only': True, 'commercial_reuse': 'unknown',
                     'prose_ai_permission': False, 'images_permission': False, 'raw_redistribution_permission': False})
-        elif provider in {'kadokawa', 'kadokawaprint', 'kadokawatrade', 'tobooks', 'gagaga', 'kodansha'}:
+        elif provider in {'kadokawa', 'kadokawaprint', 'kadokawatrade', 'tobooks', 'gagaga', 'kodansha', 'overlapdetails'}:
             row.update(publication_label=record['publication_label'],
                 reference_scope=record['reference_scope'], usage_permissions=record['usage_permissions'],
                 light_novel_identity_asserted=False)
-            if provider in {'kadokawaprint', 'kadokawatrade', 'tobooks', 'gagaga', 'kodansha'}:
+            if provider in {'kadokawaprint', 'kadokawatrade', 'tobooks', 'gagaga', 'kodansha', 'overlapdetails'}:
                 row['isbn'] = record['isbn']
         return row
 
@@ -1311,6 +1373,9 @@ class LightNovelCatalogue:
     def import_kodansha_publisher_references(self, manifest_path, expected_sha256, *, reference_ids):
         return self._import_explicit_finite_listing('kodansha', manifest_path, expected_sha256, reference_ids)
 
+    def import_overlap_detail_publisher_references(self, manifest_path, expected_sha256, *, reference_ids):
+        return self._import_explicit_finite_listing('overlapdetails', manifest_path, expected_sha256, reference_ids)
+
     def _import_explicit_finite_listing(self, provider, manifest_path, sha256, reference_ids):
         if reference_ids is None or isinstance(reference_ids, (str, bytes)):
             raise ValueError('an explicit finite product reference selection is required')
@@ -1325,7 +1390,7 @@ class LightNovelCatalogue:
         """Store ungrouped listings with local identity, without asserting a work or edition."""
         cache = {}
         profile = PUBLISHER_REFERENCE_PROVIDERS[provider]
-        provider_name = {'ecobalt': 'eCobalt', 'futaba': 'Futaba', 'kadokawa': 'Kadokawa', 'kadokawaprint': 'Kadokawa print', 'kadokawatrade': 'Kadokawa trade', 'tobooks': 'TO', 'gagaga': 'Gagaga', 'kodansha': 'Kodansha'}[provider]
+        provider_name = {'ecobalt': 'eCobalt', 'futaba': 'Futaba', 'kadokawa': 'Kadokawa', 'kadokawaprint': 'Kadokawa print', 'kadokawatrade': 'Kadokawa trade', 'tobooks': 'TO', 'gagaga': 'Gagaga', 'kodansha': 'Kodansha', 'overlapdetails': 'Overlap detail'}[provider]
         path = str(_resolved_path(manifest_path, cache))
         if provider in {'kadokawa', 'kadokawaprint', 'kadokawatrade'}:
             reference_ids = list(reference_ids) if reference_ids is not None and not isinstance(reference_ids, (str, bytes)) else reference_ids
@@ -1373,7 +1438,7 @@ class LightNovelCatalogue:
             reference = references[reference_id]
             assertion = self._publisher_reference_assertion(provider, path, expected_sha256, reference)
             previous_ids = keys.get(_json(assertion['local_reference_key']), [])
-            if provider in {'futaba', 'kadokawa', 'kadokawaprint', 'kadokawatrade', 'tobooks', 'gagaga', 'kodansha'} and (not previous_ids and reference_id in stable_references
+            if provider in {'futaba', 'kadokawa', 'kadokawaprint', 'kadokawatrade', 'tobooks', 'gagaga', 'kodansha', 'overlapdetails'} and (not previous_ids and reference_id in stable_references
                     or previous_ids and any(records[identity]['title'] != reference['title'] for identity in previous_ids)):
                 result['held'] += 1
                 reason = 'source_reference_scope_or_title_changed'
@@ -4021,10 +4086,10 @@ class LightNovelCatalogue:
             elif record.get('schema_version') == FUTABA_REFERENCE_SCHEMA:
                 child_titles = []
                 authors.extend(credit['name'] for credit in record['publisher_product_reference']['credits'] if credit['role'] == 'author')
-            elif record.get('schema_version') in {KADOKAWA_REFERENCE_SCHEMA, KADOKAWA_PRINT_REFERENCE_SCHEMA, KADOKAWA_TRADE_REFERENCE_SCHEMA, TOBOOKS_REFERENCE_SCHEMA, GAGAGA_REFERENCE_SCHEMA, KODANSHA_REFERENCE_SCHEMA}:
+            elif record.get('schema_version') in {KADOKAWA_REFERENCE_SCHEMA, KADOKAWA_PRINT_REFERENCE_SCHEMA, KADOKAWA_TRADE_REFERENCE_SCHEMA, TOBOOKS_REFERENCE_SCHEMA, GAGAGA_REFERENCE_SCHEMA, KODANSHA_REFERENCE_SCHEMA, OVERLAP_DETAIL_REFERENCE_SCHEMA}:
                 child_titles = []
                 authors.extend(credit['name'] for credit in record['publisher_product_reference']['credit_literals'])
-                if record.get('schema_version') in {GAGAGA_REFERENCE_SCHEMA, KODANSHA_REFERENCE_SCHEMA}:
+                if record.get('schema_version') in {GAGAGA_REFERENCE_SCHEMA, KODANSHA_REFERENCE_SCHEMA, OVERLAP_DETAIL_REFERENCE_SCHEMA}:
                     authors.extend(credit['name'] for credit in record['publisher_product_reference']['credits'])
             else:
                 child_titles = []
@@ -4160,9 +4225,9 @@ class LightNovelCatalogue:
             if row['entry_kind'] == 'publisher_reference':
                 if 'author_display' in row:
                     names.append(row['author_display'])
-                elif row.get('publisher_reference_kind') in {PUBLISHER_REFERENCE_PROVIDERS[p]['public_kind'] for p in ('kadokawa', 'kadokawaprint', 'kadokawatrade', 'tobooks', 'gagaga', 'kodansha')}:
+                elif row.get('publisher_reference_kind') in {PUBLISHER_REFERENCE_PROVIDERS[p]['public_kind'] for p in ('kadokawa', 'kadokawaprint', 'kadokawatrade', 'tobooks', 'gagaga', 'kodansha', 'overlapdetails')}:
                     names.extend(credit['name'] for credit in row['publisher_product_reference']['credit_literals'])
-                    if row.get('publisher_reference_kind') in {'gagaga_product_reference', 'kodansha_product_reference'}:
+                    if row.get('publisher_reference_kind') in {'gagaga_product_reference', 'kodansha_product_reference', 'overlap_detail_product_reference'}:
                         names.extend(credit['name'] for credit in row['publisher_product_reference']['credits'])
                 else:
                     names.extend(credit['name'] for credit in row['publisher_product_reference']['credits'] if credit['role'] == 'author')
@@ -4225,6 +4290,28 @@ class LightNovelCatalogue:
 
     def work_detail(self, entry_id, **_):
         entry_id = _entry(entry_id)
+        if entry_id.startswith('lnr:pub:'):
+            # A standalone listing has no family/member/feature identity. Authenticate
+            # its own stored tuple and source without loading the catalogue graph.
+            provider = entry_id.split(':')[2]
+            profile = PUBLISHER_REFERENCE_PROVIDERS[provider]
+            with self._connect() as db:
+                entry = db.execute('''SELECT e.*, r.status FROM entries e
+                    LEFT JOIN read_status r USING(entry_id) WHERE e.entry_id=?''', (entry_id,)).fetchone()
+            if entry is None:
+                return None
+            if hashlib.sha256(entry['record_json'].encode()).hexdigest() != entry['record_sha256']:
+                raise ValueError('stored metadata SHA mismatch')
+            record = json.loads(entry['record_json'])
+            if (entry['kind'] != 'publisher_reference' or record.get('schema_version') != profile['schema']
+                    or record.get('provider') != profile['record_provider']
+                    or record.get('id') != entry_id.rsplit(':', 1)[1]):
+                raise ValueError('stored typed identity differs')
+            row = self._project_publisher_reference(provider, record, {})
+            if row['entry_id'] != entry_id or row['entry_kind'] != entry['kind']:
+                raise ValueError('stored typed identity differs')
+            row.update(read_status=entry['status'] or 'unknown', members=[])
+            return row
         rows = self._rows(feature_entry_ids={entry_id}, detail_entry_id=entry_id)
         row = next((r for r in rows if r['entry_id'] == entry_id), None)
         if row:

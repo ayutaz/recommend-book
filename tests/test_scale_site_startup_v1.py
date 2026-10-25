@@ -150,7 +150,12 @@ context.fetch=async path=>({ok:true,json:async()=>path.includes('/similar')?{ite
     title:'講談社の掲載題',isbn:[],publisher_product_reference:{title:'講談社の掲載題',
       source_url:'https://www.kodansha.co.jp/comic/products/0000431602',label:'講談社ラノベ文庫',form:null,
       credits:[{role:'author',name:'掲載名'},{role:'unknown',name:'役割不明の掲載名'}],credit_literals:[]}};
-  for(const listing of [kadokawa,kadokawaPrint,kadokawaTrade,tobooks,gagaga,kodansha]){
+  const overlap={...kadokawaPrint,entry_id:'lnr:pub:overlapdetails:'+'a'.repeat(32),
+    publisher_reference_kind:'overlap_detail_product_reference',title:'OVERLAPの掲載題',
+    publisher_product_reference:{title:'OVERLAPの掲載題',source_url:'https://over-lap.co.jp/test/product/0/opaque_1/?cat=NVL&swrd=',
+      label:'オーバーラップノベルス',form:null,credit_literals:[{role_literal:null,name:'無印の掲載名'},
+        {role_literal:'イラスト',role_marker_literal:'イラスト／',name:'明示の掲載名'}]}};
+  for(const listing of [kadokawa,kadokawaPrint,kadokawaTrade,tobooks,gagaga,kodansha,overlap]){
   context.KAD=listing;
   const kadRequests=[];
   context.fetch=async path=>{kadRequests.push(path);return {ok:true,json:async()=>path.includes('/similar')?{items:[]}:listing};};
@@ -162,6 +167,7 @@ context.fetch=async path=>({ok:true,json:async()=>path.includes('/similar')?{ite
     assert.ok(!kadDetail.includes('電撃文庫') && !kadDetail.includes('文庫 /'));
   }else if(listing===gagaga)assert.ok(kadDetail.includes('著：掲載名'));
   else if(listing===kodansha)assert.ok(kadDetail.includes('著者：掲載名')&&kadDetail.includes('役割未確認：役割不明の掲載名'));
+  else if(listing===overlap)assert.ok(kadDetail.includes('役割未確認：無印の掲載名')&&kadDetail.includes('イラスト／明示の掲載名')&&!kadDetail.includes('著者：無印の掲載名'));
   else assert.ok(kadDetail.includes('電撃文庫 / '+listing.publisher_product_reference.form) && kadDetail.includes('著者：公式表示名'));
   assert.ok(kadDetail.includes('原作品・物語シリーズやNDLの版との対応は未確認'));
   assert.ok(kadDetail.includes('ローカルの書誌参照です。公開・商用利用などの許諾は未確認です。'));

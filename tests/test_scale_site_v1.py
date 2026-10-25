@@ -640,3 +640,49 @@ def test_finite_lineup_references_require_matching_profile_and_private_purpose(p
     public = public_work(row)
     assert 'publisher_product_reference' not in public
     assert public['isbn'] == []
+
+
+def overlap_detail_listing(category='nvl'):
+    row = kadokawa_paper_listing()
+    row.update(entry_id='lnr:pub:overlapdetails:' + 'a' * 32,
+               publisher_reference_kind='overlap_detail_product_reference',
+               source_url='https://over-lap.co.jp/test/product/0/opaque_1/?cat=' + category.upper() + '&swrd=')
+    row['publisher_product_reference'].update(publisher_reference_id='overlap-' + category + '-product:opaque_1',
+        source_url=row['source_url'], label='掲載カードのレーベル', form=None,
+        credits=[{'role': 'unknown', 'name': '無印の掲載名'}, {'role': 'illustrator', 'name': '明示の掲載名'}],
+        credit_literals=[{'role_literal': None, 'name': '無印の掲載名'},
+            {'role_literal': 'イラスト', 'role_marker_literal': 'イラスト/' if category == 'nvf' else 'イラスト／',
+             'name': '明示の掲載名', 'locator': 'PRIVATE'}])
+    return row
+
+
+@pytest.mark.parametrize('category', ['nvl', 'nvf', 'nvr'])
+def test_overlap_detail_reference_keeps_literal_isbn_and_explicit_illustrator_without_author_inference(category):
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = overlap_detail_listing(category)
+    public = public_work(row)
+    assert public['entry_id'] == row['entry_id'] and public['publisher_provider'] == 'overlap-details'
+    assert public['publisher_reference_kind'] == 'overlap_detail_product_reference'
+    assert public['isbn'] == ['978-0-306-40615-7']
+    product = public['publisher_product_reference']
+    assert product['publisher_reference_id'] == row['publisher_product_reference']['publisher_reference_id']
+    assert product['credit_literals'] == [{'role_literal': None, 'name': '無印の掲載名'},
+        {'role_literal': 'イラスト', 'role_marker_literal': 'イラスト/' if category == 'nvf' else 'イラスト／', 'name': '明示の掲載名'}]
+    assert product['credits'] == row['publisher_product_reference']['credits'] and product['form'] is None
+    assert public['authors'] == public['members'] == [] and public['recommendable'] is False
+    assert all(public[key] is False for key in ('edition_identity_asserted', 'story_series_identity_asserted',
+        'original_work_identity_asserted', 'light_novel_identity_asserted'))
+    assert public['usage_permissions']['public_display'] == 'unknown'
+    assert 'PRIVATE' not in json.dumps(public)
+
+
+@pytest.mark.parametrize('mutation', ['marker', 'scope', 'bnk'])
+def test_overlap_detail_reference_does_not_widen_provider_or_source_scope(mutation):
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = overlap_detail_listing()
+    if mutation == 'marker': row['publisher_reference_kind'] = 'tobooks_product_reference'
+    elif mutation == 'scope': row['reference_scope'] = 'public_display_allowed'
+    else: row['publisher_product_reference']['publisher_reference_id'] = 'overlap-product:opaque_1'
+    public = public_work(row)
+    assert 'publisher_product_reference' not in public
+    assert public['isbn'] == []
