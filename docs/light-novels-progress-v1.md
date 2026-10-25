@@ -759,4 +759,15 @@ Iris実装3328597の[CI run 40167145672](https://github.com/ayutaz/recommend-boo
 
 一般検索の区切り処理は元へ戻した。既存のIris NEO v2の完全題照合が保存したmain・副題・巻次・locator・版のSHA・公式URL／参照ID・証跡SHAの整合を確認し、その規則が認めた4種類の完全題だけを検索候補へ使う。原資料の再生と既存proof全体の一致を通過した版だけを、最終的な検索結果へ返す。新しい別題の保存、同一版・人物・シリーズの推定やDB変更は行わない。
 
-既存のKADOKAWA／TOの拒否条件を変更せず、新規Irisの証跡改変・原資料失効・同ISBNのみ・整合する偽造題の検査を加えた114試験が成功した。既存58失敗もこの試験集合で解消。実際の18証跡はすべて候補選択へ接続でき、代表の正式題は実HTTP 200で正しい1版を返し、出版社との版照合確認flagもtrue（26.379秒・単発）。この実装での全試験・実ブラウザー・両OS CIを確認し、142a075や停止した先行runの結果を代用しない。証跡は `bound18-authenticated-candidates-v1.json` と `bound-iris-tilde-authenticated-after-*.json`。
+既存のKADOKAWA／TOの拒否条件を変更せず、新規Irisの証跡改変・原資料失効・同ISBNのみ・整合する偽造題の検査を加えた114試験が成功した。既存58失敗もこの試験集合で解消。実際の18証跡はすべて候補選択へ接続でき、代表の正式題は実HTTP 200で正しい1版を返し、出版社との版照合確認flagもtrue（26.379秒・単発）。この修正版の全試験・実ブラウザー・両OS CIを確認した。142a075や停止した先行runの結果を代用していない。証跡は `bound18-authenticated-candidates-v1.json` と `bound-iris-tilde-authenticated-after-*.json`。
+
+
+## 99参照の最終確認と実装fac7507のCI（2026-10-25）
+
+Iris年別51・特集15・アース・スター33の計99掲載参照を追加し、100,719 entry・掲載参照9,969となった。最初の100,620 entryのID・kind・SHAと他6 tableの最終比較も一致し、読書状態0を保持した。3処理は各1 API・正式認証1回で、採用時の原資料読取りは104＋5＋13＝122頁。新規外部取得・分類モデル呼出し・世界DB書込みは0。新掲載書誌の実HTTPは50検索・4詳細の計54要求が200。全99件の実HTTP成功とは広げない。
+
+EdgeでIris年別・特集・アース・スターの代表検索と詳細を確認し、掲載名、ISBN、不明値、逐語／正規化済みクレジットの区別、公式リンク、同一性未確認の表示を確認した。画面3枚を保存し、画像・好きな作品ボタンは各掲載参照0、読書状態は不明で、状態変更・外部リンククリック0。別に、チルダを含む正式題で既接続版を1件として表示する画面も確認した。記録は `window-browser-verification-v1/` と `iris-authenticated-browser-verification-v1/`。
+
+最終実装fac7507の[CI run 40169976312](https://github.com/ayutaz/recommend-book/actions/runs/40169976312)は両OS成功。JUnit原本でUbuntu 5,265 pass・7 skip、Windows 5,266 pass・6 skip、failure/error 0を確認した。CIのPR merge checkoutと実装headの全ファイルツリーも一致した。ローカルWindows全試験は5,272 pass・0 skip、failure/error 0。原本と照合結果は `ci-evidence-fac7507/`、ローカル結果は `authenticated-iris-full-local-tests-v1.xml` に保存した。
+
+e5ec2e7の途中CI run 40167892235は検索修正に置き換えて停止した。Ubuntu成功・Windows cancelledであり、両OS成功には数えない。成功済み3328597の結果も、最終実装の確認へ代用しなかった。最終記録だけの文書更新ではCIを再起動せず、実装・試験・workflow・lockfileに差分がないことを確認する。独立精度・校正・本人向け推薦改善・日本のライトノベルのほぼ網羅は未評価／未達で、PRはdraftを維持する。
