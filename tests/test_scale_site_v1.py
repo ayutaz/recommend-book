@@ -311,3 +311,31 @@ def test_real_sqlite_catalogue_http_pagination_and_persistent_status(tmp_path):
         server.shutdown()
         server.server_close()
         thread.join()
+
+
+def test_wikipedia_membership_credit_is_public_bibliography_not_content_classification():
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    credit = {'credit': 'Wikipedia contributors: Example novel',
+        'source_url': 'https://ja.wikipedia.org/w/index.php?oldid=17',
+        'history_url': 'https://ja.wikipedia.org/w/index.php?title=Example&action=history',
+        'license': 'CC-BY-SA-4.0', 'license_url': 'https://creativecommons.org/licenses/by-sa/4.0/',
+        'changes': 'Bibliographic fields extracted', 'raw_path': 'PRIVATE_ARTICLE_PATH'}
+    row = public_work({'entry_id': 'lne:ndl:R100000002-I1', 'entry_kind': 'edition',
+        'relation_resolution': 'edition_series_membership_verified', 'content_sources': [],
+        'series_membership_evidence': {'rule_version': 'ndl-edition-wikipedia-novel-credit-membership-v1',
+            'article_attribution': credit, 'manifest_path': 'PRIVATE_MANIFEST_PATH'}})
+    assert row['membership_source']['attribution'] == credit['credit']
+    assert row['membership_source']['source_url'] == credit['source_url']
+    assert row['membership_source']['history_url'] == credit['history_url']
+    assert row['membership_source']['license'] == 'CC-BY-SA-4.0'
+    assert row['content_sources'] == [] and not row.get('llm_features')
+    assert 'PRIVATE_' not in json.dumps(row)
+
+
+@pytest.mark.parametrize('relation', ['original_work_and_story_series_unresolved', None])
+def test_unverified_membership_does_not_publish_article_credit(relation):
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = public_work({'relation_resolution': relation, 'series_membership_evidence': {
+        'rule_version': 'ndl-edition-wikipedia-novel-credit-membership-v1',
+        'article_attribution': {'credit': 'UNVERIFIED', 'source_url': 'javascript:alert(1)'}}})
+    assert 'membership_source' not in row
