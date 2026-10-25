@@ -242,7 +242,9 @@ def normalize_search(value):
 
 def _search_without_punctuation(text):
     """Relax discovery only; identity and membership retain literal punctuation."""
-    return ''.join(c for c in text if not unicodedata.category(c).startswith('P'))
+    # NFKC maps publisher subtitle decoration ～ to ASCII ~, a symbol rather
+    # than Unicode punctuation. Treat these separators alike for discovery.
+    return ''.join(c for c in text if c not in '~～' and not unicodedata.category(c).startswith('P'))
 
 
 def _search_text(fields):
@@ -255,7 +257,7 @@ def _search_terms(query):
     # Publisher titles often place the volume before the subtitle, while ISBD
     # titles place it last. These terms widen search, never identity matching.
     text = unicodedata.normalize('NFKC', str(query))
-    separated = ''.join(' ' if c.isspace() or unicodedata.category(c).startswith('P') else c for c in text)
+    separated = ''.join(' ' if c.isspace() or c in '~～' or unicodedata.category(c).startswith('P') else c for c in text)
     terms = tuple(dict.fromkeys(normalize_search(part) for part in re.findall(r'\d+|[^\d\s]+', separated)))
     return terms if len(terms) >= 2 and any(not term.isdecimal() for term in terms) else ()
 
