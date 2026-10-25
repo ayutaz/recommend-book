@@ -9,7 +9,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 
 _QID = r'Q[1-9][0-9]*'
-_ENTRY_ID = r'(?:ln[sw]:wd:Q[1-9][0-9]*|ln[se]:ndl:[A-Za-z0-9_-][A-Za-z0-9._-]{0,119}|lng:pub:(?:futaba|orange|ecobalt|sbcr|hj|arian|hjnovels|sbcrindex):[0-9a-f]{32}|lnr:pub:(?:ecobalt|futaba|kadokawa|kadokawaprint|kadokawatrade|tobooks|gagaga|kodansha|overlapdetails|shueishadx|gc|overlap):[0-9a-f]{32})'
+_ENTRY_ID = r'(?:ln[sw]:wd:Q[1-9][0-9]*|ln[se]:ndl:[A-Za-z0-9_-][A-Za-z0-9._-]{0,119}|lng:pub:(?:futaba|orange|ecobalt|sbcr|hj|arian|hjnovels|sbcrindex):[0-9a-f]{32}|lnr:pub:(?:ecobalt|futaba|kadokawa|kadokawaprint|kadokawatrade|tobooks|gagaga|kodansha|overlapdetails|shueishadx|gc|overlap|alphapolis|hifumi):[0-9a-f]{32})'
 _FAMILIES = ('all', 'world', 'light_novel')
 _ENTRY_KINDS = ('series', 'work', 'edition', 'publisher_group', 'publisher_reference')
 _DX_REFERENCE_LABELS = ('スーパーダッシュ文庫', 'ダッシュエックス文庫',
@@ -392,6 +392,8 @@ def _public_publisher_product_references(values, *, source_kind):
     overlap_bunko_reference = source_kind == 'overlap_bunko_product_reference'
     dx_reference = source_kind == 'shueisha_dx_product_reference'
     gc_reference = source_kind == 'gc_product_reference'
+    alphapolis_reference = source_kind == 'alphapolis_commercial_book_reference'
+    hifumi_reference = source_kind == 'hifumi_product_reference'
     sbcr = source_kind == 'sbcr_ebook_source_group'
     roles = ('author', 'illustrator', 'original_author', 'original_concept', 'supervisor', 'editor')
     if orange:
@@ -402,6 +404,10 @@ def _public_publisher_product_references(values, *, source_kind):
         roles += ('unknown',)
     if gc_reference:
         roles += ('unknown', 'manga_artist')
+    if alphapolis_reference:
+        roles += ('unknown', 'original_story_credit')
+    if hifumi_reference:
+        roles = ('author', 'illustrator', 'unknown')
     if overlap_reference:
         roles = ('unknown', 'illustrator')
     if sbcr or overlap_bunko_reference:
@@ -415,6 +421,8 @@ def _public_publisher_product_references(values, *, source_kind):
                          r'overlap-product:[A-Za-z0-9_-]+' if overlap_bunko_reference else
                          r'[0-9Xx-]+' if dx_reference else
                          r'gc-product:[0-9]+' if gc_reference else
+                         r'alphapolis-commercial-book:[0-9]+/[0-9]+' if alphapolis_reference else
+                         r'hifumi-product:[A-Za-z0-9_-]+' if hifumi_reference else
                          r'sbcr-product:[A-Za-z0-9]+' if sbcr else
                          r'shueisha-orange-book:[^/?#\s]+' if orange else r'futaba-product:[A-Za-z0-9_-]+')
     for row in values:
@@ -424,6 +432,9 @@ def _public_publisher_product_references(values, *, source_kind):
                 'label': row.get('label') if isinstance(row.get('label'), str) else None,
                 'form': row.get('form') if isinstance(row.get('form'), str) else None,
                 'credits': [], 'media_references': []}
+        if alphapolis_reference:
+            item.update({key: row[key] for key in ('title_literal', 'subtitle_literal', 'complete_display_title')
+                         if isinstance(row.get(key), str)})
         reference = row.get('publisher_reference_id')
         if isinstance(reference, str) and re.fullmatch(reference_pattern, reference):
             item['publisher_reference_id'] = reference
@@ -450,7 +461,7 @@ def _public_publisher_product_references(values, *, source_kind):
                         and credit.get('role_scope') == 'author_index_display_only'):
                     item['credit_literals'].append({'name': credit['name'], 'entry_role_literal': None,
                         'role_context_literal': credit['role_context_literal'], 'role_scope': credit['role_scope']})
-        if futaba_reference or kadokawa_reference or tobooks_reference or gagaga_reference or overlap_reference or dx_reference or gc_reference:
+        if futaba_reference or kadokawa_reference or tobooks_reference or gagaga_reference or overlap_reference or dx_reference or gc_reference or alphapolis_reference:
             item['credit_literals'] = []
             literals = row.get('credit_literals')
             for credit in literals if isinstance(literals, list) else []:
@@ -488,7 +499,9 @@ def _public_publisher_product_references(values, *, source_kind):
             item.update(label=None, form=None, media_references=[])
         if overlap_bunko_reference:
             item.update(form=None, credits=[], credit_literals=[], media_references=[])
-        if kodansha_reference:
+        if alphapolis_reference or hifumi_reference:
+            item.update(form=None, media_references=[])
+        if kodansha_reference or hifumi_reference:
             item['credit_literals'] = []  # This source retains normalized roles, not their original spelling.
         if kadokawa_reference or tobooks_reference or gagaga_reference or kodansha_reference or overlap_reference or dx_reference:
             item['media_references'] = []
@@ -507,7 +520,7 @@ def _public_publisher_reference(row):
         'read_status': row.get('read_status') if row.get('read_status') in ('read', 'unread', 'reading') else 'unknown',
         'source_url': _link(row.get('source_url'))}
     identifier = row.get('entry_id')
-    identifier_match = (re.fullmatch(r'lnr:pub:(ecobalt|futaba|kadokawa|kadokawaprint|kadokawatrade|tobooks|gagaga|kodansha|overlapdetails|shueishadx|gc|overlap):[0-9a-f]{32}', identifier)
+    identifier_match = (re.fullmatch(r'lnr:pub:(ecobalt|futaba|kadokawa|kadokawaprint|kadokawatrade|tobooks|gagaga|kodansha|overlapdetails|shueishadx|gc|overlap|alphapolis|hifumi):[0-9a-f]{32}', identifier)
                         if isinstance(identifier, str) else None)
     if identifier_match:
         result['entry_id'] = identifier
@@ -523,9 +536,10 @@ def _public_publisher_reference(row):
                      'kodansha': 'kodansha_product_reference',
                      'overlapdetails': 'overlap_detail_product_reference',
                      'shueishadx': 'shueisha_dx_product_reference', 'gc': 'gc_product_reference',
-                     'overlap': 'overlap_bunko_product_reference'}.get(provider)
+                     'overlap': 'overlap_bunko_product_reference', 'alphapolis': 'alphapolis_commercial_book_reference',
+                     'hifumi': 'hifumi_product_reference'}.get(provider)
     if (row.get('reference_identity_basis') != 'publisher_product_reference'
-            or reference_kind != expected_kind or provider in ('kadokawa', 'kadokawaprint', 'kadokawatrade', 'tobooks', 'gagaga', 'kodansha', 'overlapdetails', 'shueishadx', 'gc', 'overlap')
+            or reference_kind != expected_kind or provider in ('kadokawa', 'kadokawaprint', 'kadokawatrade', 'tobooks', 'gagaga', 'kodansha', 'overlapdetails', 'shueishadx', 'gc', 'overlap', 'alphapolis', 'hifumi')
             and row.get('reference_scope') != 'private_bibliographic_discovery'):
         return result
     if provider == 'kadokawatrade' and (not isinstance(row.get('publisher_product_reference'), dict)
@@ -544,16 +558,29 @@ def _public_publisher_reference(row):
             or not re.fullmatch(r'overlap-product:[A-Za-z0-9_-]+',
                                 _text(row['publisher_product_reference'].get('publisher_reference_id')))):
         return result
+    if provider == 'alphapolis':
+        product = row.get('publisher_product_reference')
+        if (not isinstance(product, dict) or product.get('label') not in ('アルファポリス', 'レジーナブックス')
+                or not re.fullmatch(r'alphapolis-commercial-book:[0-9]+/[0-9]+', _text(product.get('publisher_reference_id')))
+                or any(not isinstance(product.get(key), str) for key in ('title_literal', 'subtitle_literal', 'complete_display_title'))):
+            return result
+        complete = product['title_literal'] + ('\n' + product['subtitle_literal'] if product['subtitle_literal'] else '')
+        if not product['title_literal'] or any(value != complete for value in (row.get('title'), product.get('title'), product['complete_display_title'])):
+            return result
+    if provider == 'hifumi' and (not isinstance(row.get('publisher_product_reference'), dict)
+            or row['publisher_product_reference'].get('label') not in ('サーガフォレスト', 'メルティアブックス', 'ブレイブ文庫')
+            or not re.fullmatch(r'hifumi-product:[A-Za-z0-9_-]+', _text(row['publisher_product_reference'].get('publisher_reference_id')))):
+        return result
     result.update(reference_identity_basis='publisher_product_reference',
                   publisher_reference_kind=reference_kind)
-    if provider in ('futaba', 'kadokawa', 'kadokawaprint', 'kadokawatrade', 'tobooks', 'gagaga', 'kodansha', 'overlapdetails', 'shueishadx', 'gc', 'overlap'):
+    if provider in ('futaba', 'kadokawa', 'kadokawaprint', 'kadokawatrade', 'tobooks', 'gagaga', 'kodansha', 'overlapdetails', 'shueishadx', 'gc', 'overlap', 'alphapolis', 'hifumi'):
         # Saved product listings do not establish LN status or work authorship.
         result['light_novel_confirmed'] = None if provider == 'futaba' else False
         result['publisher_provider'] = {'futaba': 'futaba-mnovels', 'kadokawa': 'kadokawa',
                                         'kadokawaprint': 'kadokawa-print', 'kadokawatrade': 'kadokawa-trade',
                                         'tobooks': 'tobooks', 'gagaga': 'gagaga', 'kodansha': 'kodansha',
                                         'overlapdetails': 'overlap-details', 'shueishadx': 'shueisha-dx', 'gc': 'gc',
-                                        'overlap': 'overlap-bunko'}[provider]
+                                        'overlap': 'overlap-bunko', 'alphapolis': 'alphapolis', 'hifumi': 'hifumi'}[provider]
         if provider == 'futaba' and isinstance(row.get('isbn'), list):
             result['isbn'] = [item for item in row['isbn']
                               if isinstance(item, str) and re.fullmatch(r'[0-9Xx-]{10,20}', item)]
@@ -568,7 +595,7 @@ def _public_publisher_reference(row):
         expected_permissions = {'bibliographic_reference_only': True, 'commercial_reuse': 'unknown',
                                 'prose_ai_permission': False, 'images_permission': False,
                                 'raw_redistribution_permission': False}
-        if provider in ('kadokawa', 'kadokawaprint', 'kadokawatrade', 'tobooks', 'gagaga', 'kodansha', 'overlapdetails', 'shueishadx', 'gc', 'overlap'):
+        if provider in ('kadokawa', 'kadokawaprint', 'kadokawatrade', 'tobooks', 'gagaga', 'kodansha', 'overlapdetails', 'shueishadx', 'gc', 'overlap', 'alphapolis', 'hifumi'):
             result.update(reference_scope='private_bibliographic_discovery', edition_identity_asserted=False,
                           light_novel_identity_asserted=False)
             expected_permissions = {'purpose': 'private_bibliographic_discovery', 'public_display': 'unknown',
@@ -872,7 +899,7 @@ function indexNameCautions(row){if(row.publisher_work_group_kind!=='sbcr_native_
 function describe(row){if(['hj_native_index_source_group','arian_native_index_source_group','sbcr_native_index_source_group'].includes(row.publisher_work_group_kind))return [indexCredits(row)?'索引の掲載クレジット：'+indexCredits(row):null,'出版社の掲載情報 / 各巻の一覧・総冊数は未確認'].filter(Boolean).join(' / ');if(['publisher_group','publisher_reference'].includes(row.entry_kind)){const display=row.entry_kind==='publisher_reference'?row.author_display:row.heading_author_display;return [display?'掲載リストの著者表示：'+display:null,'出版社の掲載情報 / 原作品・物語シリーズは未確認'].filter(Boolean).join(' / ');}const language=row.entry_kind==='edition'?'版の言語：'+(languageName(row.language)||'不明')+' / 原言語：'+(languageName(row.original_language)||'不明'):languageName(row.original_language)||'原言語不明';return [(row.authors||[]).map(x=>x.name).join('・')||'著者情報なし',row.year?row.year+'年':'刊行年不明',language].join(' / ');}
 function languageName(code){if(/^Q[0-9]+$/.test(code))return '言語名未取得';try{return code?new Intl.DisplayNames(['ja'],{type:'language'}).of(code):'';}catch{return code;}}
 function tags(parent,values){for(const v of values||[])parent.append(node('span',typeof v==='string'?v:v.label,'tag'));}
-function productCreditLabels(product,kind){const literal=(product.credit_literals||[]).map(c=>(kind==='overlap_detail_product_reference'&&c.role_literal==='イラスト'&&['イラスト／','イラスト/'].includes(c.role_marker_literal)?c.role_marker_literal:(c.role_literal||'役割未確認')+'：')+c.name);if(literal.length||kind!=='kodansha_product_reference')return literal;const names={author:'著者',illustrator:'イラスト',original_author:'原作',original_concept:'原案',supervisor:'監修',editor:'編集'};return (product.credits||[]).map(c=>(names[c.role]||'役割未確認')+'：'+c.name);}
+function productCreditLabels(product,kind){const literal=(product.credit_literals||[]).map(c=>(kind==='overlap_detail_product_reference'&&c.role_literal==='イラスト'&&['イラスト／','イラスト/'].includes(c.role_marker_literal)?c.role_marker_literal:(c.role_literal||'役割未確認')+'：')+c.name);if(literal.length||!['kodansha_product_reference','hifumi_product_reference'].includes(kind))return literal;const names={author:'著者',illustrator:'イラスト',original_author:'原作',original_concept:'原案',supervisor:'監修',editor:'編集'};return (product.credits||[]).map(c=>(names[c.role]||'役割未確認')+'：'+c.name);}
 function statusControl(row){const label=node('label',['series','publisher_group'].includes(row.entry_kind)?(['publisher_work_group_and_ndl_bibliography','publisher_source_group'].includes(row.series_identity_basis)?'作品グループの読書状態：':'シリーズの読書状態：'):'読書状態：'),select=node('select');select.setAttribute('aria-label',row.title+'の読書状態');for(const [value,text]of Object.entries(statusNames)){const option=node('option',text);option.value=value;select.append(option);}select.value=row.read_status||'unknown';select.addEventListener('change',async()=>{select.disabled=true;try{await api(entryPath(entryKey(row))+'/read-status',{method:'POST',headers:{'Content-Type':'application/json','X-Catalogue-Request':'1'},body:JSON.stringify({status:select.value})});row.read_status=select.value;await search();}catch(e){select.value=row.read_status||'unknown';$('message').textContent=e.message;}finally{select.disabled=false;}});label.append(select);return label;}
 function renderFavorites(){const parent=$('favorite-works');parent.replaceChildren();if(!state.favorites.size){parent.append(node('span','まだ選択されていません。','muted'));return;}for(const row of state.favorites.values()){const item=node('span',undefined,'selected-item');item.append(node('span',row.title||row.qid));const remove=node('button','解除');remove.type='button';remove.setAttribute('aria-label',row.title+'を好きな作品から解除');remove.addEventListener('click',()=>{state.favorites.delete(entryKey(row));renderFavorites();});item.append(remove);parent.append(item);}}
 function favoriteControl(row){if(row.entry_kind==='publisher_reference')return node('span','推薦に使える内容特徴は未収録','muted');const button=node('button',state.favorites.has(entryKey(row))?'好きな作品から解除':'好きな作品に追加','favorite-toggle');button.type='button';button.addEventListener('click',()=>{if(state.favorites.has(entryKey(row)))state.favorites.delete(entryKey(row));else state.favorites.set(entryKey(row),{entry_id:row.entry_id,qid:row.qid,title:row.title||row.qid});renderFavorites();button.textContent=state.favorites.has(entryKey(row))?'好きな作品から解除':'好きな作品に追加';});return button;}
@@ -888,9 +915,9 @@ async function showDetail(identifier){
   body.replaceChildren(node('h2',row.title),node('p',entryLabel(row),'muted'),node('p',describe(row)),favoriteControl(row));
   if(row.aliases?.length)body.append(node('p','別題：'+row.aliases.join(' / ')));
   body.append(statusControl(row));
-  if(row.entry_kind==='publisher_reference')body.append(node('p',['futaba_mnovels_product_reference','kadokawa_product_reference','kadokawa_print_product_reference','kadokawa_trade_product_reference','tobooks_product_reference','gagaga_product_reference','kodansha_product_reference','overlap_detail_product_reference','shueisha_dx_product_reference','gc_product_reference','overlap_bunko_product_reference'].includes(row.publisher_reference_kind)?'出版社の一覧に掲載された書誌参照です。原作品・物語シリーズやNDLの版との対応は未確認です。保存されたISBN・媒体・掲載クレジットだけを表示します。読書状態はこの掲載参照だけに保存し、他の作品や版へ自動反映しません。':'出版社の一覧に掲載された書誌参照です。原作品・物語シリーズやNDLの版との対応、ISBN・媒体・個別の担当役割は未確認です。読書状態はこの掲載参照だけに保存し、他の作品や版へ自動反映しません。','muted'));
-  if(['kadokawa_product_reference','kadokawa_print_product_reference','kadokawa_trade_product_reference','tobooks_product_reference','gagaga_product_reference','kodansha_product_reference','overlap_detail_product_reference','shueisha_dx_product_reference','gc_product_reference','overlap_bunko_product_reference'].includes(row.publisher_reference_kind))body.append(node('p','ローカルの書誌参照です。公開・商用利用などの許諾は未確認です。','muted'));
-  if(['futaba_mnovels_product_reference','kadokawa_product_reference','kadokawa_print_product_reference','kadokawa_trade_product_reference','tobooks_product_reference','gagaga_product_reference','kodansha_product_reference','overlap_detail_product_reference','shueisha_dx_product_reference','gc_product_reference','overlap_bunko_product_reference'].includes(row.publisher_reference_kind)){const product=row.publisher_product_reference||{},details=section(body,'出版社の掲載書誌');if(row.isbn?.length)details.append(node('p','ISBN：'+row.isbn.join(' / '),'muted'));else details.append(node('p','ISBN：未確認','muted'));const title=node(product.source_url?'a':'span',product.title||'書名不明');if(product.source_url){title.href=product.source_url;title.target='_blank';title.rel='noopener noreferrer';}details.append(title);const facts=[product.label,product.form].filter(Boolean);if(facts.length)details.append(node('p',facts.join(' / '),'muted'));const credits=productCreditLabels(product,row.publisher_reference_kind);if(credits.length)details.append(node('p',credits.join(' / '),'muted'));}
+  if(row.entry_kind==='publisher_reference')body.append(node('p',['futaba_mnovels_product_reference','kadokawa_product_reference','kadokawa_print_product_reference','kadokawa_trade_product_reference','tobooks_product_reference','gagaga_product_reference','kodansha_product_reference','overlap_detail_product_reference','shueisha_dx_product_reference','gc_product_reference','overlap_bunko_product_reference','alphapolis_commercial_book_reference','hifumi_product_reference'].includes(row.publisher_reference_kind)?'出版社の一覧に掲載された書誌参照です。原作品・物語シリーズやNDLの版との対応は未確認です。保存されたISBN・媒体・掲載クレジットだけを表示します。読書状態はこの掲載参照だけに保存し、他の作品や版へ自動反映しません。':'出版社の一覧に掲載された書誌参照です。原作品・物語シリーズやNDLの版との対応、ISBN・媒体・個別の担当役割は未確認です。読書状態はこの掲載参照だけに保存し、他の作品や版へ自動反映しません。','muted'));
+  if(['kadokawa_product_reference','kadokawa_print_product_reference','kadokawa_trade_product_reference','tobooks_product_reference','gagaga_product_reference','kodansha_product_reference','overlap_detail_product_reference','shueisha_dx_product_reference','gc_product_reference','overlap_bunko_product_reference','alphapolis_commercial_book_reference','hifumi_product_reference'].includes(row.publisher_reference_kind))body.append(node('p','ローカルの書誌参照です。公開・商用利用などの許諾は未確認です。','muted'));
+  if(['futaba_mnovels_product_reference','kadokawa_product_reference','kadokawa_print_product_reference','kadokawa_trade_product_reference','tobooks_product_reference','gagaga_product_reference','kodansha_product_reference','overlap_detail_product_reference','shueisha_dx_product_reference','gc_product_reference','overlap_bunko_product_reference','alphapolis_commercial_book_reference','hifumi_product_reference'].includes(row.publisher_reference_kind)){const product=row.publisher_product_reference||{},details=section(body,'出版社の掲載書誌');if(row.isbn?.length)details.append(node('p','ISBN：'+row.isbn.join(' / '),'muted'));else details.append(node('p','ISBN：未確認','muted'));const title=node(product.source_url?'a':'span',product.title||'書名不明');if(product.source_url){title.href=product.source_url;title.target='_blank';title.rel='noopener noreferrer';}details.append(title);const facts=[product.label,product.form].filter(Boolean);if(facts.length)details.append(node('p',facts.join(' / '),'muted'));const credits=productCreditLabels(product,row.publisher_reference_kind);if(credits.length)details.append(node('p',credits.join(' / '),'muted'));}
   if(row.admission_status==='bibliographic_candidate_only')body.append(node('p','レーベルなどの書誌情報から集めた候補です。ライトノベルであることは未確定です。','muted'));
   if(row.edition_bibliography_confirmed){body.append(node('p','出版社の書籍情報と国立国会図書館の書誌で照合した版です。','muted'));if(row.confirmation_source_url){const p=node('p','照合元：'),a=node('a','出版社の書籍ページ');a.href=row.confirmation_source_url;a.target='_blank';a.rel='noopener noreferrer';p.append(a);body.append(p);}}
   if(row.publisher_bibliography_matched){body.append(node('p','出版社の書名・著者・レーベル情報と対応を確認した書誌です。商品・刷単位の同一性は未確認です。','muted'));if(row.bibliography_source_url){const p=node('p','書誌の対応元：'),a=node('a','出版社の書籍情報');a.href=row.bibliography_source_url;a.target='_blank';a.rel='noopener noreferrer';p.append(a);body.append(p);}}

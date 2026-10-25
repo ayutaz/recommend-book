@@ -810,3 +810,95 @@ def test_overlap_bunko_card_reference_cannot_become_a_detail_reference_or_other_
     else: row['publisher_product_reference']['publisher_reference_id'] = 'overlap-nvl-product:opaque_1'
     public = public_work(row)
     assert 'publisher_product_reference' not in public and public['isbn'] == []
+
+
+def alphapolis_listing(label='アルファポリス', subtitle='副題を省略しない'):
+    row = kadokawa_electronic_listing()
+    main = '完全な主題'
+    title = main + ('\n' + subtitle if subtitle else '')
+    row.update(entry_id='lnr:pub:alphapolis:' + 'e' * 32,
+        publisher_reference_kind='alphapolis_commercial_book_reference', title=title, publication_label=label,
+        source_url='https://www.alphapolis.co.jp/book/detail/9780306406157/12345', isbn=['9780306406157'])
+    row['publisher_product_reference'].update(publisher_reference_id='alphapolis-commercial-book:9780306406157/12345',
+        source_url=row['source_url'], title=title, title_literal=main, subtitle_literal=subtitle, complete_display_title=title,
+        label=label, form=None, credits=[{'role': 'author', 'name': '掲載名'}, {'role': 'unknown', 'name': '複合役割名'},
+            {'role': 'original_story_credit', 'name': '原作クレジット名'}],
+        credit_literals=[{'role_literal': '著', 'name': '掲載名'}, {'role_literal': '編・訳', 'name': '複合役割名'},
+            {'role_literal': '原作', 'name': '原作クレジット名', 'locator': 'PRIVATE'}])
+    return row
+
+
+@pytest.mark.parametrize('label, subtitle', [('アルファポリス', '副題を省略しない'), ('レジーナブックス', '')])
+def test_alphapolis_reference_keeps_complete_title_and_display_roles_without_identity_or_isbn_inference(label, subtitle):
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = alphapolis_listing(label, subtitle)
+    public = public_work(row)
+    assert public['entry_id'] == row['entry_id'] and public['publisher_provider'] == 'alphapolis'
+    assert public['publisher_reference_kind'] == 'alphapolis_commercial_book_reference'
+    assert public['title'] == row['title'] and public['isbn'] == public['authors'] == public['members'] == []
+    product = public['publisher_product_reference']
+    assert product['title'] == product['complete_display_title'] == row['title']
+    assert product['title_literal'] == '完全な主題' and product['subtitle_literal'] == subtitle
+    assert product['publisher_reference_id'] == 'alphapolis-commercial-book:9780306406157/12345'
+    assert product['label'] == label and product['form'] is None
+    assert product['credits'] == row['publisher_product_reference']['credits']
+    assert product['credit_literals'] == [{'role_literal': '著', 'name': '掲載名'},
+        {'role_literal': '編・訳', 'name': '複合役割名'}, {'role_literal': '原作', 'name': '原作クレジット名'}]
+    assert public['recommendable'] is public['light_novel_confirmed'] is False
+    assert all(public[key] is False for key in ('edition_identity_asserted', 'story_series_identity_asserted',
+        'original_work_identity_asserted', 'light_novel_identity_asserted'))
+    assert public['usage_permissions']['public_display'] == 'unknown'
+    assert 'PRIVATE' not in json.dumps(public)
+
+
+@pytest.mark.parametrize('mutation', ['marker', 'scope', 'subtitle'])
+def test_alphapolis_reference_rejects_wrong_profile_or_truncated_title_parts(mutation):
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = alphapolis_listing()
+    if mutation == 'marker': row['publisher_reference_kind'] = 'tobooks_product_reference'
+    elif mutation == 'scope': row['reference_scope'] = 'public_display_allowed'
+    else: row['publisher_product_reference']['subtitle_literal'] = '元の副題と違う'
+    public = public_work(row)
+    assert 'publisher_product_reference' not in public and public['isbn'] == []
+
+
+def hifumi_listing(label='サーガフォレスト'):
+    row = kadokawa_electronic_listing()
+    row.update(entry_id='lnr:pub:hifumi:' + 'f' * 32, publisher_reference_kind='hifumi_product_reference',
+               source_url='https://hifumi.co.jp/lineup/9780306406157/', publication_label=label, isbn=['9780306406157'])
+    row['publisher_product_reference'].update(publisher_reference_id='hifumi-product:9780306406157',
+        source_url=row['source_url'], label=label, form='推定しない',
+        credits=[{'role': 'author', 'name': '明示役割の掲載名'}, {'role': 'unknown', 'name': '役割不明の掲載名'}],
+        credit_literals=[{'role_literal': '推定しない', 'name': 'PRIVATE'}])
+    return row
+
+
+@pytest.mark.parametrize('label', ['サーガフォレスト', 'メルティアブックス', 'ブレイブ文庫'])
+def test_hifumi_reference_keeps_canonical_roles_and_unknown_isbn_within_three_observed_labels(label):
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = hifumi_listing(label)
+    public = public_work(row)
+    assert public['entry_id'] == row['entry_id'] and public['publisher_provider'] == 'hifumi'
+    assert public['publisher_reference_kind'] == 'hifumi_product_reference'
+    assert public['isbn'] == public['authors'] == public['members'] == []
+    product = public['publisher_product_reference']
+    assert product['label'] == label and product['form'] is None
+    assert product['publisher_reference_id'] == 'hifumi-product:9780306406157'
+    assert product['credits'] == row['publisher_product_reference']['credits']
+    assert product['credit_literals'] == [], 'absent original role spellings must not be reconstructed'
+    assert public['recommendable'] is public['light_novel_confirmed'] is False
+    assert all(public[key] is False for key in ('edition_identity_asserted', 'story_series_identity_asserted',
+        'original_work_identity_asserted', 'light_novel_identity_asserted'))
+    assert public['usage_permissions']['public_display'] == 'unknown'
+    assert 'PRIVATE' not in json.dumps(public)
+
+
+@pytest.mark.parametrize('mutation', ['marker', 'scope', 'label'])
+def test_hifumi_reference_cannot_widen_its_profile_or_three_label_scope(mutation):
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = hifumi_listing()
+    if mutation == 'marker': row['publisher_reference_kind'] = 'tobooks_product_reference'
+    elif mutation == 'scope': row['reference_scope'] = 'public_display_allowed'
+    else: row['publisher_product_reference']['label'] = '未確認の別レーベル'
+    public = public_work(row)
+    assert 'publisher_product_reference' not in public and public['isbn'] == []

@@ -161,6 +161,8 @@ def stores(tmp_path):
     ('shueishadx', 'shueisha_dx_product_reference', 'DX掲載書誌'),
     ('gc', 'gc_product_reference', 'GC掲載書誌'),
     ('overlap', 'overlap_bunko_product_reference', 'OVL文庫掲載書誌'),
+    ('alphapolis', 'alphapolis_commercial_book_reference', 'Alpha掲載書誌'),
+    ('hifumi', 'hifumi_product_reference', 'Hifumi掲載書誌'),
 ])
 def test_kadokawa_reference_detail_routes_through_unified_http_without_world_lookup(stores, provider, marker, title):
     import threading
@@ -174,9 +176,10 @@ def test_kadokawa_reference_detail_routes_through_unified_http_without_world_loo
         'title': title, 'reference_identity_basis': 'publisher_product_reference',
         'publisher_reference_kind': marker,
         'publisher_product_reference': {'title': title, 'form': '単行本' if provider == 'kadokawatrade' else None,
-            'publisher_reference_id': 'overlap-product:opaque_1' if provider == 'overlap' else
+            'publisher_reference_id': 'hifumi-product:opaque_1' if provider == 'hifumi' else 'alphapolis-commercial-book:1/2' if provider == 'alphapolis' else 'overlap-product:opaque_1' if provider == 'overlap' else
                 'overlap-nvl-product:opaque_1' if provider == 'overlapdetails' else '978-0-306-40615-7',
-            'label': 'オーバーラップ文庫' if provider == 'overlap' else 'ダッシュエックス文庫' if provider == 'shueishadx' else None},
+            'label': 'サーガフォレスト' if provider == 'hifumi' else 'アルファポリス' if provider == 'alphapolis' else 'オーバーラップ文庫' if provider == 'overlap' else 'ダッシュエックス文庫' if provider == 'shueishadx' else None,
+            'title_literal': title, 'subtitle_literal': '', 'complete_display_title': title},
         'reference_scope': 'private_bibliographic_discovery',
         'source_url': {'tobooks': 'https://www.tobooks.jp/contents/12345',
                        'gagaga': 'https://gagagabunko.jp/lineup/202609.html#02',
@@ -184,6 +187,8 @@ def test_kadokawa_reference_detail_routes_through_unified_http_without_world_loo
                        'shueishadx': 'https://dash.shueisha.co.jp/bookDetail/index/978-0-306-40615-7',
                        'gc': 'https://gcnovels.jp/book/123',
                        'overlap': 'https://over-lap.co.jp/test/product/0/opaque_1/?cat=BNK&swrd=',
+                       'alphapolis': 'https://www.alphapolis.co.jp/book/detail/1/2',
+                       'hifumi': 'https://hifumi.co.jp/lineup/opaque_1/',
                        'kodansha': 'https://www.kodansha.co.jp/comic/products/0000431602'}.get(
                            provider, 'https://www.kadokawa.co.jp/product/123456789012/')})
     world.work_detail = lambda key: pytest.fail('KAD reference must not use the world store')

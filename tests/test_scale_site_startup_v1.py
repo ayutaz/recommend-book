@@ -166,7 +166,16 @@ context.fetch=async path=>({ok:true,json:async()=>path.includes('/similar')?{ite
     publisher_reference_kind:'overlap_bunko_product_reference',title:'文庫掲載カードの完全題',isbn:[],
     publisher_product_reference:{title:'文庫掲載カードの完全題',source_url:'https://over-lap.co.jp/test/product/0/opaque_1/?cat=BNK&swrd=',
       label:'オーバーラップ文庫',form:null,credits:[],credit_literals:[]}};
-  for(const listing of [kadokawa,kadokawaPrint,kadokawaTrade,tobooks,gagaga,kodansha,overlap,dx,gc,overlapBunko]){
+  const alpha={...tobooks,entry_id:'lnr:pub:alphapolis:'+'e'.repeat(32),publisher_reference_kind:'alphapolis_commercial_book_reference',
+    title:'完全な主題\n副題を省略しない',isbn:[],publisher_product_reference:{title:'完全な主題\n副題を省略しない',
+      title_literal:'完全な主題',subtitle_literal:'副題を省略しない',complete_display_title:'完全な主題\n副題を省略しない',
+      source_url:'https://www.alphapolis.co.jp/book/detail/1/2',label:'アルファポリス',form:null,
+      credit_literals:[{role_literal:'編・訳',name:'掲載名'}]}};
+  const hifumi={...tobooks,entry_id:'lnr:pub:hifumi:'+'f'.repeat(32),publisher_reference_kind:'hifumi_product_reference',
+    title:'一二三書房の掲載題',isbn:[],publisher_product_reference:{title:'一二三書房の掲載題',
+      source_url:'https://hifumi.co.jp/lineup/opaque_1/',label:'サーガフォレスト',form:null,
+      credits:[{role:'author',name:'明示役割の掲載名'},{role:'unknown',name:'役割不明の掲載名'}],credit_literals:[]}};
+  for(const listing of [kadokawa,kadokawaPrint,kadokawaTrade,tobooks,gagaga,kodansha,overlap,dx,gc,overlapBunko,alpha,hifumi]){
   context.KAD=listing;
   const kadRequests=[];
   context.fetch=async path=>{kadRequests.push(path);return {ok:true,json:async()=>path.includes('/similar')?{items:[]}:listing};};
@@ -182,6 +191,8 @@ context.fetch=async path=>({ok:true,json:async()=>path.includes('/similar')?{ite
   else if(listing===dx)assert.ok(kadDetail.includes('著者・イラスト：掲載名')&&!kadDetail.includes('ISBN：978'));
   else if(listing===gc)assert.ok(kadDetail.includes('小説：小説の掲載名')&&kadDetail.includes('企画協力：別の掲載名')&&!kadDetail.includes('著者：別の掲載名'));
   else if(listing===overlapBunko)assert.ok(kadDetail.includes('オーバーラップ文庫')&&!kadDetail.includes('著者：')&&!kadDetail.includes('イラスト／'));
+  else if(listing===alpha)assert.ok(kadDetail.includes('完全な主題\n副題を省略しない')&&kadDetail.includes('編・訳：掲載名')&&!kadDetail.includes('著者：掲載名'));
+  else if(listing===hifumi)assert.ok(kadDetail.includes('著者：明示役割の掲載名')&&kadDetail.includes('役割未確認：役割不明の掲載名'));
   else assert.ok(kadDetail.includes('電撃文庫 / '+listing.publisher_product_reference.form) && kadDetail.includes('著者：公式表示名'));
   assert.ok(kadDetail.includes('原作品・物語シリーズやNDLの版との対応は未確認'));
   assert.ok(kadDetail.includes('ローカルの書誌参照です。公開・商用利用などの許諾は未確認です。'));
