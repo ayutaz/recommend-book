@@ -153,6 +153,7 @@ def stores(tmp_path):
 @pytest.mark.parametrize('provider, marker, title', [
     ('kadokawa', 'kadokawa_product_reference', '電子掲載書誌'),
     ('kadokawaprint', 'kadokawa_print_product_reference', '紙掲載書誌'),
+    ('kadokawatrade', 'kadokawa_trade_product_reference', '単行本掲載書誌'),
     ('tobooks', 'tobooks_product_reference', 'TO掲載書誌'),
 ])
 def test_kadokawa_reference_detail_routes_through_unified_http_without_world_lookup(stores, provider, marker, title):
@@ -166,6 +167,7 @@ def test_kadokawa_reference_detail_routes_through_unified_http_without_world_loo
     light.rows.append({'entry_id': identity, 'qid': '', 'entry_kind': 'publisher_reference',
         'title': title, 'reference_identity_basis': 'publisher_product_reference',
         'publisher_reference_kind': marker,
+        'publisher_product_reference': {'title': title, 'form': '単行本' if provider == 'kadokawatrade' else None},
         'reference_scope': 'private_bibliographic_discovery',
         'source_url': 'https://www.tobooks.jp/contents/12345' if provider == 'tobooks'
                       else 'https://www.kadokawa.co.jp/product/123456789012/'})

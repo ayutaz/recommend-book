@@ -545,3 +545,46 @@ def test_tobooks_reference_rejects_other_profiles_purposes_or_non_source_isbn_va
     assert public['isbn'] == []
     if mutation != 'isbn':
         assert 'publisher_product_reference' not in public
+
+
+def kadokawa_trade_listing():
+    row = kadokawa_paper_listing()
+    row.update(entry_id='lnr:pub:kadokawatrade:' + 'd' * 32,
+               publisher_reference_kind='kadokawa_trade_product_reference')
+    row['publisher_product_reference'].update(form='単行本', binding='PRIVATE_HARDCOVER', dimensions='PRIVATE_B6')
+    return row
+
+
+def test_kadokawa_trade_reference_keeps_explicit_form_and_isbn_without_binding_or_identity_inference():
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = kadokawa_trade_listing()
+    row['isbn'] += ['0-306-40615-2', '9780306406158', 9780306406157]
+    public = public_work(row)
+    assert public['entry_id'] == row['entry_id'] and public['publisher_provider'] == 'kadokawa-trade'
+    assert public['publisher_reference_kind'] == 'kadokawa_trade_product_reference'
+    assert public['publisher_product_reference']['form'] == '単行本'
+    assert public['isbn'] == ['978-0-306-40615-7', '0-306-40615-2']
+    assert public['publisher_product_reference']['credit_literals'] == [{'role_literal': '著者', 'name': '公式表示名'}]
+    assert public['authors'] == public['members'] == [] and public['recommendable'] is False
+    assert all(public[key] is False for key in ('edition_identity_asserted', 'story_series_identity_asserted',
+        'original_work_identity_asserted', 'light_novel_identity_asserted'))
+    assert public['usage_permissions']['public_display'] == 'unknown'
+    assert 'PRIVATE' not in json.dumps(public)
+
+
+@pytest.mark.parametrize('mutation', ['namespace', 'id', 'marker', 'form', 'scope', 'rights'])
+def test_kadokawa_trade_reference_profile_and_permission_boundaries(mutation):
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = kadokawa_trade_listing()
+    if mutation == 'namespace': row['entry_id'] = 'lnr:pub:kadokawaprint:' + 'd' * 32
+    elif mutation == 'id': row['entry_id'] = 'lnr:pub:kadokawatrade:' + 'D' * 32
+    elif mutation == 'marker': row['publisher_reference_kind'] = 'kadokawa_print_product_reference'
+    elif mutation == 'form': row['publisher_product_reference']['form'] = 'ハードカバー'
+    elif mutation == 'scope': row['reference_scope'] = 'public_display_allowed'
+    else: row['usage_permissions']['public_display'] = 'allowed'
+    public = public_work(row)
+    if mutation == 'rights':
+        assert public.get('usage_permissions', {}).get('public_display') != 'allowed'
+    else:
+        assert 'publisher_reference_kind' not in public and 'publisher_product_reference' not in public
+        assert public['isbn'] == []

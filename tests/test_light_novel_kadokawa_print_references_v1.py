@@ -174,7 +174,7 @@ def test_future_pool_names_and_existing_ndl_hints_do_not_change_source_admission
     assert verify(source)[0]['publisher_reference_id']==IDS[0]
 
 
-def test_valid_isbn10_literal_is_not_replaced_by_normalized_lookup_key(source):
+def set_isbn10_literal(source):
     source['proof']['scope_predicates']['isbn']='explicit non-null literal with valid ISBN-10/13 check digit; identity unasserted'
     p=source['root']/'page1.json';d=json.loads(p.read_bytes())
     d['result']['book'][0]['isbn']='4-04-429101-2'
@@ -187,7 +187,13 @@ def test_valid_isbn10_literal_is_not_replaced_by_normalized_lookup_key(source):
         if member['publisher_reference_id']==IDS[0]:
             member.update(isbn='4-04-429101-2',isbn_literal='4-04-429101-2')
     source['input']['lookup_targets'][0]['isbn_literal']='4-04-429101-2'
+    if 'definition_raw_sha256' in source['forms']:
+        source['forms']['definition_raw_sha256']=sha(raw)
     save(source)
+
+
+def test_valid_isbn10_literal_is_not_replaced_by_normalized_lookup_key(source):
+    set_isbn10_literal(source)
     row,=verify(source)
     assert row['isbn']==row['isbn_literal']=='4-04-429101-2'
     assert row['normalized_isbn13_lookup_key']=='9784044291013'
@@ -199,3 +205,94 @@ def test_shared_metadata_cache_still_checks_each_declared_pin_size(source):
     source['proof']['product_form_name_evidence_pin']['byte_length']=1
     source['sha']=pin(source,'print-scope.json',source['proof'])['sha256']
     with pytest.raises(ValueError):verify(source,cache=cache)
+
+
+@pytest.fixture
+def trade_source(source):
+    for n in (1,2):
+        p=source['root']/f'page{n}.json';d=json.loads(p.read_bytes())
+        d['product_form']['1']={'name':'単行本'}
+        for item in d['result']['book']:item['product_form_id']=1
+        raw=json.dumps(d,ensure_ascii=False).encode();p.write_bytes(raw)
+        for manifest in (source['source_manifest'],source['terminal']):
+            manifest['pages'][n-1].update(sha256=sha(raw),byte_length=len(raw))
+        for member in source['proof']['members']+source['handoff']['members']:
+            if member['evidence']['request_data']['pageno_book']==str(n):
+                member['product_form_id']=1
+                member['evidence']['source_sha256']=sha(raw)
+    source['proof']['schema_version']='kadokawa-trade-private-reference-preparation-scope-v1'
+    source['proof']['scope_predicates'].update(product_form_id=1,isbn='explicit non-null literal with valid ISBN-10/13 check digit; identity unasserted')
+    source['handoff']['schema_version']='kadokawa-trade-private-reference-metadata-handoff-v1'
+    source['exact']['schema_version']='kadokawa-trade-valid-isbn-exact-source-id-set-v1'
+    source['input']['version']='kadokawa-trade-valid-isbn-finite-lookup-preparation-and-search-key-diagnostic-v1'
+    source['hold']['schema_version']='kadokawa-trade-invalid-isbn-separate-hold-v1'
+    receipt=source['terminal']['pages'][0]
+    source['forms']={'definitions':{'1':{'definition':{'name':'単行本'},'json_pointer':'/product_form/1/name'}},
+        'definition_source_url':receipt['source_url'],'definition_request_data':deepcopy(receipt['request_data']),
+        'definition_raw_path':receipt['raw_path'],'definition_raw_sha256':receipt['sha256']}
+    save(source)
+    return source
+
+
+def trade_verify(e,ids=None,cache=None):
+    from recommend_book.light_novel_kadokawa_print_references_v1 import verify_kadokawa_trade_references
+    return verify_kadokawa_trade_references(e['root']/'print-scope.json',e['sha'],reference_ids=ids or [IDS[0]],cache=cache)
+
+
+@pytest.mark.parametrize('isbn10',[False,True])
+def test_trade_literal_form_and_isbn_are_independent_of_binding_and_work_identity(trade_source,monkeypatch,isbn10):
+    import recommend_book.light_novel_publisher_books_v1 as legacy
+    if isbn10:set_isbn10_literal(trade_source)
+    original=legacy._checked_bytes;calls=[]
+    def counted(path,expected):calls.append(path.name);return original(path,expected)
+    monkeypatch.setattr(legacy,'_checked_bytes',counted)
+    cache={};row,=trade_verify(trade_source,cache=cache)
+    assert row['form']=='単行本' and row['product_form_id']==1
+    assert row['source_scope']==row['local_reference_key']['source_scope']=='form1_valid_isbn_product_reference'
+    assert row['local_reference_key']['provider']=='kadokawa'
+    assert row['isbn']==row['isbn_literal']==('4-04-429101-2' if isbn10 else '978-4-04-429101-3')
+    assert row['normalized_isbn13_lookup_key']=='9784044291013'
+    assert row['publisher'] is None and row['official_lightnovel_tag'] is None
+    assert row['credit_literals'][0]['role_literal']=='著者'
+    assert row['usage_permissions']['commercial_reuse']=='unknown'
+    assert all(v is False for k,v in row.items() if k.endswith('_asserted'))
+    assert 'hardcover' not in json.dumps(row) and 'B6' not in json.dumps(row)
+    row['credit_literals'][0]['name']='mutation'
+    assert trade_verify(trade_source,cache=cache)[0]['credit_literals'][0]['name']!='mutation'
+    trade_verify(trade_source,[IDS[1]],cache);trade_verify(trade_source,[IDS[2]],cache)
+    assert calls==['page1.json','page2.json']
+
+
+def test_print_and_electronic_apis_reject_trade_scope_even_with_shared_cache(trade_source):
+    cache={};trade_verify(trade_source,cache=cache)
+    with pytest.raises(ValueError):verify(trade_source,cache=cache)
+    with pytest.raises(ValueError):verify_kadokawa_references(trade_source['root']/'print-scope.json',trade_source['sha'],reference_ids=[IDS[0]],cache=cache)
+
+
+def test_trade_api_rejects_print_scope(source):
+    verify(source)
+    with pytest.raises(ValueError):trade_verify(source)
+
+
+@pytest.mark.parametrize('kind',['form_predicate','form_dictionary','form_receipt','handoff_schema','own_raw_form'])
+def test_trade_form_contract_cannot_be_relabelled_print(trade_source,kind):
+    if kind=='form_predicate':trade_source['proof']['scope_predicates']['product_form_id']=3
+    elif kind=='form_dictionary':trade_source['forms']['definitions']['1']['definition']['name']='文庫'
+    elif kind=='form_receipt':trade_source['forms']['definition_raw_sha256']='a'*64
+    elif kind=='handoff_schema':trade_source['handoff']['schema_version']='kadokawa-print-private-reference-metadata-handoff-v1'
+    else:
+        p=trade_source['root']/'page1.json';d=json.loads(p.read_bytes());d['product_form']['1']['name']='文庫'
+        raw=json.dumps(d,ensure_ascii=False).encode();p.write_bytes(raw)
+        for manifest in (trade_source['source_manifest'],trade_source['terminal']):
+            manifest['pages'][0].update(sha256=sha(raw),byte_length=len(raw))
+        for member in trade_source['proof']['members']+trade_source['handoff']['members']:
+            if member['evidence']['request_data']['pageno_book']=='1':member['evidence']['source_sha256']=sha(raw)
+        trade_source['forms']['definition_raw_sha256']=sha(raw)
+    save(trade_source)
+    with pytest.raises(ValueError):trade_verify(trade_source)
+
+
+def test_complete_original_print_fixture_output_is_unchanged(source):
+    text=json.dumps(verify(source,IDS),ensure_ascii=False,sort_keys=True,separators=(',',':'))
+    text=text.replace(str(source['root']).replace('\\','\\\\'),'<FRAME>')
+    assert sha(text.encode())=='398c529eba420a64e58371a935d218813913c3671ae96e66a52e23589511d6b6'

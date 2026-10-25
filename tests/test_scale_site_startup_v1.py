@@ -136,10 +136,13 @@ context.fetch=async path=>({ok:true,json:async()=>path.includes('/similar')?{ite
   const kadokawaPrint={...kadokawa,entry_id:'lnr:pub:kadokawaprint:'+'b'.repeat(32),
     publisher_reference_kind:'kadokawa_print_product_reference',title:'公式の紙掲載題',isbn:['978-0-306-40615-7'],
     publisher_product_reference:{...kadokawa.publisher_product_reference,title:'公式の紙掲載題',form:'文庫'}};
+  const kadokawaTrade={...kadokawaPrint,entry_id:'lnr:pub:kadokawatrade:'+'d'.repeat(32),
+    publisher_reference_kind:'kadokawa_trade_product_reference',title:'公式の単行本掲載題',
+    publisher_product_reference:{...kadokawaPrint.publisher_product_reference,title:'公式の単行本掲載題',form:'単行本'}};
   const tobooks={...kadokawa,entry_id:'lnr:pub:tobooks:'+'c'.repeat(32),publisher_reference_kind:'tobooks_product_reference',
     title:'TOの独立掲載題',isbn:['9780306406157'],publisher_product_reference:{title:'TOの独立掲載題',
       source_url:'https://www.tobooks.jp/contents/12345',label:null,form:null,credit_literals:[{role_literal:null,name:'掲載名'}]}};
-  for(const listing of [kadokawa,kadokawaPrint,tobooks]){
+  for(const listing of [kadokawa,kadokawaPrint,kadokawaTrade,tobooks]){
   context.KAD=listing;
   const kadRequests=[];
   context.fetch=async path=>{kadRequests.push(path);return {ok:true,json:async()=>path.includes('/similar')?{items:[]}:listing};};
