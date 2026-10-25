@@ -770,3 +770,43 @@ def test_gc_reference_requires_its_own_profile_and_private_purpose(mutation):
     else: row['reference_scope'] = 'public_display_allowed'
     public = public_work(row)
     assert 'publisher_product_reference' not in public and public['isbn'] == []
+
+
+def overlap_bunko_listing():
+    row = kadokawa_electronic_listing()
+    row.update(entry_id='lnr:pub:overlap:' + 'd' * 32,
+               publisher_reference_kind='overlap_bunko_product_reference', publication_label='オーバーラップ文庫',
+               source_url='https://over-lap.co.jp/test/product/0/opaque_1/?cat=BNK&swrd=', isbn=['9780306406157'])
+    row['publisher_product_reference'].update(publisher_reference_id='overlap-product:opaque_1',
+        source_url=row['source_url'], label='オーバーラップ文庫', form='推定しない',
+        credits=[{'role': 'author', 'name': '推定しない'}], credit_literals=[{'role_literal': '著者', 'name': '推定しない'}])
+    return row
+
+
+def test_overlap_bunko_card_reference_does_not_invent_unobserved_bibliographic_fields():
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = overlap_bunko_listing()
+    public = public_work(row)
+    assert public['entry_id'] == row['entry_id'] and public['publisher_provider'] == 'overlap-bunko'
+    assert public['publisher_reference_kind'] == 'overlap_bunko_product_reference'
+    assert public['isbn'] == public['authors'] == public['members'] == []
+    product = public['publisher_product_reference']
+    assert product['publisher_reference_id'] == 'overlap-product:opaque_1'
+    assert product['label'] == 'オーバーラップ文庫' and product['source_url'] == row['source_url']
+    assert product['form'] is None and product['credits'] == product['credit_literals'] == []
+    assert public['recommendable'] is public['light_novel_confirmed'] is False
+    assert all(public[key] is False for key in ('edition_identity_asserted', 'story_series_identity_asserted',
+        'original_work_identity_asserted', 'light_novel_identity_asserted'))
+    assert public['usage_permissions']['public_display'] == 'unknown'
+    assert 'PRIVATE' not in json.dumps(public)
+
+
+@pytest.mark.parametrize('mutation', ['marker', 'scope', 'other_source_kind'])
+def test_overlap_bunko_card_reference_cannot_become_a_detail_reference_or_other_scope(mutation):
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = overlap_bunko_listing()
+    if mutation == 'marker': row['publisher_reference_kind'] = 'overlap_detail_product_reference'
+    elif mutation == 'scope': row['reference_scope'] = 'public_display_allowed'
+    else: row['publisher_product_reference']['publisher_reference_id'] = 'overlap-nvl-product:opaque_1'
+    public = public_work(row)
+    assert 'publisher_product_reference' not in public and public['isbn'] == []

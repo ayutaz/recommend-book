@@ -160,6 +160,7 @@ def stores(tmp_path):
     ('overlapdetails', 'overlap_detail_product_reference', 'OVERLAP掲載書誌'),
     ('shueishadx', 'shueisha_dx_product_reference', 'DX掲載書誌'),
     ('gc', 'gc_product_reference', 'GC掲載書誌'),
+    ('overlap', 'overlap_bunko_product_reference', 'OVL文庫掲載書誌'),
 ])
 def test_kadokawa_reference_detail_routes_through_unified_http_without_world_lookup(stores, provider, marker, title):
     import threading
@@ -173,14 +174,16 @@ def test_kadokawa_reference_detail_routes_through_unified_http_without_world_loo
         'title': title, 'reference_identity_basis': 'publisher_product_reference',
         'publisher_reference_kind': marker,
         'publisher_product_reference': {'title': title, 'form': '単行本' if provider == 'kadokawatrade' else None,
-            'publisher_reference_id': 'overlap-nvl-product:opaque_1' if provider == 'overlapdetails' else '978-0-306-40615-7',
-            'label': 'ダッシュエックス文庫' if provider == 'shueishadx' else None},
+            'publisher_reference_id': 'overlap-product:opaque_1' if provider == 'overlap' else
+                'overlap-nvl-product:opaque_1' if provider == 'overlapdetails' else '978-0-306-40615-7',
+            'label': 'オーバーラップ文庫' if provider == 'overlap' else 'ダッシュエックス文庫' if provider == 'shueishadx' else None},
         'reference_scope': 'private_bibliographic_discovery',
         'source_url': {'tobooks': 'https://www.tobooks.jp/contents/12345',
                        'gagaga': 'https://gagagabunko.jp/lineup/202609.html#02',
                        'overlapdetails': 'https://over-lap.co.jp/test/product/0/opaque_1/?cat=NVL&swrd=',
                        'shueishadx': 'https://dash.shueisha.co.jp/bookDetail/index/978-0-306-40615-7',
                        'gc': 'https://gcnovels.jp/book/123',
+                       'overlap': 'https://over-lap.co.jp/test/product/0/opaque_1/?cat=BNK&swrd=',
                        'kodansha': 'https://www.kodansha.co.jp/comic/products/0000431602'}.get(
                            provider, 'https://www.kadokawa.co.jp/product/123456789012/')})
     world.work_detail = lambda key: pytest.fail('KAD reference must not use the world store')

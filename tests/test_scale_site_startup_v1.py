@@ -162,7 +162,11 @@ context.fetch=async path=>({ok:true,json:async()=>path.includes('/similar')?{ite
   const gc={...tobooks,entry_id:'lnr:pub:gc:'+'c'.repeat(32),publisher_reference_kind:'gc_product_reference',
     title:'GCの掲載題',isbn:[],publisher_product_reference:{title:'GCの掲載題',source_url:'https://gcnovels.jp/book/123',
       label:null,form:null,credit_literals:[{role_literal:'小説',name:'小説の掲載名'},{role_literal:'企画協力',name:'別の掲載名'}]}};
-  for(const listing of [kadokawa,kadokawaPrint,kadokawaTrade,tobooks,gagaga,kodansha,overlap,dx,gc]){
+  const overlapBunko={...overlap,entry_id:'lnr:pub:overlap:'+'d'.repeat(32),
+    publisher_reference_kind:'overlap_bunko_product_reference',title:'文庫掲載カードの完全題',isbn:[],
+    publisher_product_reference:{title:'文庫掲載カードの完全題',source_url:'https://over-lap.co.jp/test/product/0/opaque_1/?cat=BNK&swrd=',
+      label:'オーバーラップ文庫',form:null,credits:[],credit_literals:[]}};
+  for(const listing of [kadokawa,kadokawaPrint,kadokawaTrade,tobooks,gagaga,kodansha,overlap,dx,gc,overlapBunko]){
   context.KAD=listing;
   const kadRequests=[];
   context.fetch=async path=>{kadRequests.push(path);return {ok:true,json:async()=>path.includes('/similar')?{items:[]}:listing};};
@@ -177,6 +181,7 @@ context.fetch=async path=>({ok:true,json:async()=>path.includes('/similar')?{ite
   else if(listing===overlap)assert.ok(kadDetail.includes('役割未確認：無印の掲載名')&&kadDetail.includes('イラスト／明示の掲載名')&&!kadDetail.includes('著者：無印の掲載名'));
   else if(listing===dx)assert.ok(kadDetail.includes('著者・イラスト：掲載名')&&!kadDetail.includes('ISBN：978'));
   else if(listing===gc)assert.ok(kadDetail.includes('小説：小説の掲載名')&&kadDetail.includes('企画協力：別の掲載名')&&!kadDetail.includes('著者：別の掲載名'));
+  else if(listing===overlapBunko)assert.ok(kadDetail.includes('オーバーラップ文庫')&&!kadDetail.includes('著者：')&&!kadDetail.includes('イラスト／'));
   else assert.ok(kadDetail.includes('電撃文庫 / '+listing.publisher_product_reference.form) && kadDetail.includes('著者：公式表示名'));
   assert.ok(kadDetail.includes('原作品・物語シリーズやNDLの版との対応は未確認'));
   assert.ok(kadDetail.includes('ローカルの書誌参照です。公開・商用利用などの許諾は未確認です。'));
