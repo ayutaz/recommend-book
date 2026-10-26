@@ -515,6 +515,9 @@ def verify_publisher_references(provider, manifest_path, sha256):
     edition identity or story-series identity. Gagaga's unpinned private roster
     is never read; its manifest and raw sources are the entire replay contract.
     """
+    if provider == 'dre':
+        from .light_novel_dre_references_v1 import verify_dre_references
+        return verify_dre_references(manifest_path, sha256)
     if provider == 'gc':
         from .light_novel_gc_references_v1 import verify_gc_references
         return verify_gc_references(manifest_path, sha256)

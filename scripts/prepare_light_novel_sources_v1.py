@@ -134,7 +134,7 @@ def main():
     parser.add_argument("--qids", nargs="*")
     parser.add_argument("--languages", nargs="+", default=["ja", "en"])
     args = parser.parse_args()
-    if not 1 <= args.limit <= 1500 or any(language not in ("ja", "en", "fr", "de", "zh", "es", "it", "ko") for language in args.languages):
+    if not 1 <= args.limit <= 1500 or any(language not in ("ja", "en", "fr", "de", "zh", "es", "it", "ko", "ru") for language in args.languages):
         raise ValueError("Bounded series preparation and explicit supported languages required")
     print(json.dumps(prepare(args.metadata, args.output, qids=args.qids, limit=args.limit, languages=args.languages), ensure_ascii=False))
 

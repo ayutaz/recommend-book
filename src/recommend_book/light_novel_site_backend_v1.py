@@ -13,7 +13,7 @@ import re
 
 
 _QID = re.compile(r'Q[1-9][0-9]*')
-_LIGHT = re.compile(r'(?:ln[sw]:wd:Q[1-9][0-9]*|ln[se]:ndl:[A-Za-z0-9._-]+|lng:pub:(?:futaba|orange|ecobalt|sbcr|hj|arian|hjnovels|sbcrindex):[0-9a-f]{32}|lnr:pub:(?:ecobalt|futaba|kadokawa|kadokawaprint|kadokawatrade|tobooks|gagaga|kodansha|overlapdetails|shueishadx|gc|overlap|alphapolis|hifumi|ichijinshairis|ichijinshairisspecial|earthstar):[0-9a-f]{32})')
+_LIGHT = re.compile(r'(?:ln[sw]:wd:Q[1-9][0-9]*|ln[se]:ndl:[A-Za-z0-9._-]+|lng:pub:(?:futaba|orange|ecobalt|sbcr|hj|arian|hjnovels|sbcrindex):[0-9a-f]{32}|lnr:pub:(?:ecobalt|futaba|kadokawa|kadokawaprint|kadokawatrade|tobooks|gagaga|kodansha|overlapdetails|shueishadx|gc|overlap|alphapolis|hifumi|ichijinshairis|ichijinshairisspecial|earthstar|dre):[0-9a-f]{32})')
 _KINDS = {'series', 'work', 'edition', 'publisher_group', 'publisher_reference'}
 _STATES = {'unknown', 'unread', 'reading', 'read'}
 

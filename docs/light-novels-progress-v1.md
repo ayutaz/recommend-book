@@ -771,3 +771,8 @@ EdgeでIris年別・特集・アース・スターの代表検索と詳細を確
 最終実装fac7507の[CI run 40169976312](https://github.com/ayutaz/recommend-book/actions/runs/40169976312)は両OS成功。JUnit原本でUbuntu 5,265 pass・7 skip、Windows 5,266 pass・6 skip、failure/error 0を確認した。CIのPR merge checkoutと実装headの全ファイルツリーも一致した。ローカルWindows全試験は5,272 pass・0 skip、failure/error 0。原本と照合結果は `ci-evidence-fac7507/`、ローカル結果は `authenticated-iris-full-local-tests-v1.xml` に保存した。
 
 e5ec2e7の途中CI run 40167892235は検索修正に置き換えて停止した。Ubuntu成功・Windows cancelledであり、両OS成功には数えない。成功済み3328597の結果も、最終実装の確認へ代用しなかった。最終記録だけの文書更新ではCIを再起動せず、実装・試験・workflow・lockfileに差分がないことを確認する。独立精度・校正・本人向け推薦改善・日本のライトノベルのほぼ網羅は未評価／未達で、PRはdraftを維持する。
+
+
+## 5段階の追加実行（2026-10-26）
+
+日本のライトノベル追加計画の1〜5を実行中。DREの新しい公式資料から新規3シリーズ・所属11・独立掲載書誌82を追加し、別途、未試行の新しいロシア語あらすじから8シリーズに内容特徴を追加した。現在100,804 entry、2,200物語シリーズ、10,051掲載参照、5,042所属、内容特徴580シリーズ。新しい3シリーズの内容分類はまだ0で、内容特徴8の追加は既存シリーズに対するもの。既存書誌・分類・読書状態を保持する。[実行記録](light-novel-expansion-five-stages-2026-10-26.md)に保留と検証経過を記載する。最終実装の両OS CI・実HTTPは確認中。

@@ -42,6 +42,13 @@ ICHIJINSHA_IRIS_REFERENCE_SCHEMA = 'light-novel-ichijinsha-iris-publisher-refere
 ICHIJINSHA_PROMOTION_REFERENCE_SCHEMA = 'light-novel-ichijinsha-iris-promotion-reference-v1'
 EARTHSTAR_REFERENCE_SCHEMA = 'light-novel-earthstar-publisher-reference-v1'
 PUBLISHER_REFERENCE_PROVIDERS = {
+    'dre': {'schema': 'light-novel-dre-publisher-reference-v1', 'record_provider':'dre',
+        'loader':'_dre_publisher_references', 'fields':'_finite_listing_reference_fields',
+        'reference_pattern':r'dre-product:[1-9][0-9]*', 'source_unit':'publisher_product_reference',
+        'source_url_pattern':r'https://drecom-media\.jp/drenovels/product/[1-9][0-9]*',
+        'source_publisher':'ドリコム', 'source_roles':('author','illustrator'),
+        'public_kind':'dre_product_reference',
+        'credit':'ローカル書誌参照: DREノベルス公式年別一覧（掲載参照）'},
     'earthstar': {'schema': EARTHSTAR_REFERENCE_SCHEMA, 'record_provider': 'earthstar',
         'loader': '_earthstar_publisher_references', 'fields': '_finite_listing_reference_fields',
         'reference_pattern': r'earthstar-work:[A-Za-z0-9_-]+', 'source_unit': 'publisher_work_reference',
@@ -293,7 +300,7 @@ def _qid(value):
 
 
 def _entry(value):
-    if not isinstance(value, str) or not re.fullmatch(r'(?:ln[sw]:wd:Q[1-9][0-9]*|ln[se]:ndl:[A-Za-z0-9._-]+|lng:pub:(?:futaba|orange|ecobalt|sbcr|hj|arian|hjnovels|sbcrindex):[0-9a-f]{32}|lnr:pub:(?:ecobalt|futaba|kadokawa|kadokawaprint|kadokawatrade|tobooks|gagaga|kodansha|overlapdetails|shueishadx|gc|overlap|alphapolis|hifumi|ichijinshairis|ichijinshairisspecial|earthstar):[0-9a-f]{32})', value):
+    if not isinstance(value, str) or not re.fullmatch(r'(?:ln[sw]:wd:Q[1-9][0-9]*|ln[se]:ndl:[A-Za-z0-9._-]+|lng:pub:(?:futaba|orange|ecobalt|sbcr|hj|arian|hjnovels|sbcrindex):[0-9a-f]{32}|lnr:pub:(?:ecobalt|futaba|kadokawa|kadokawaprint|kadokawatrade|tobooks|gagaga|kodansha|overlapdetails|shueishadx|gc|overlap|alphapolis|hifumi|ichijinshairis|ichijinshairisspecial|earthstar|dre):[0-9a-f]{32})', value):
         raise ValueError('a typed light-novel entry ID is required')
     return value
 
@@ -435,7 +442,7 @@ class LightNovelCatalogue:
             return self._project_publisher_reference('kadokawatrade', record, cache)
         if record.get('schema_version') == TOBOOKS_REFERENCE_SCHEMA:
             return self._project_publisher_reference('tobooks', record, cache)
-        for provider in ('gagaga', 'kodansha', 'overlapdetails', 'shueishadx', 'gc', 'overlap', 'alphapolis', 'hifumi', 'ichijinshairis', 'ichijinshairisspecial', 'earthstar'):
+        for provider in ('gagaga', 'kodansha', 'overlapdetails', 'shueishadx', 'gc', 'overlap', 'alphapolis', 'hifumi', 'ichijinshairis', 'ichijinshairisspecial', 'earthstar', 'dre'):
             if record.get('schema_version') == PUBLISHER_REFERENCE_PROVIDERS[provider]['schema']:
                 return self._project_publisher_reference(provider, record, cache)
         for provider, profile in SOURCE_GROUP_PROVIDERS.items():
@@ -994,7 +1001,7 @@ class LightNovelCatalogue:
     @staticmethod
     def _publisher_reference_assertion(provider, path, sha256, reference):
         assertion = LightNovelCatalogue._ecobalt_reference_assertion(path, sha256, reference)
-        if provider in {'futaba', 'kadokawa', 'kadokawaprint', 'kadokawatrade', 'tobooks', 'gagaga', 'kodansha', 'overlapdetails', 'shueishadx', 'gc', 'overlap', 'alphapolis', 'hifumi', 'ichijinshairis', 'ichijinshairisspecial', 'earthstar'}:
+        if provider in {'futaba', 'kadokawa', 'kadokawaprint', 'kadokawatrade', 'tobooks', 'gagaga', 'kodansha', 'overlapdetails', 'shueishadx', 'gc', 'overlap', 'alphapolis', 'hifumi', 'ichijinshairis', 'ichijinshairisspecial', 'earthstar', 'dre'}:
             assertion['title'] = reference['title']
         return assertion
 
@@ -1227,6 +1234,9 @@ class LightNovelCatalogue:
 
     def _earthstar_publisher_references(self, path, sha256, cache):
         return self._finite_listing_publisher_references('earthstar', path, sha256, cache)
+
+    def _dre_publisher_references(self, path, sha256, cache):
+        return self._finite_listing_publisher_references('dre', path, sha256, cache)
 
     def _ichijinsha_iris_special_publisher_references(self, path, sha256, cache):
         return self._finite_listing_publisher_references('ichijinshairisspecial', path, sha256, cache)
@@ -1560,7 +1570,7 @@ class LightNovelCatalogue:
 
     def _project_publisher_reference(self, provider, record, cache):
         profile = PUBLISHER_REFERENCE_PROVIDERS[provider]
-        provider_name = {'ecobalt': 'eCobalt', 'futaba': 'Futaba', 'kadokawa': 'Kadokawa', 'kadokawaprint': 'Kadokawa print', 'kadokawatrade': 'Kadokawa trade', 'tobooks': 'TO', 'gagaga': 'Gagaga', 'kodansha': 'Kodansha', 'overlapdetails': 'Overlap detail', 'shueishadx': 'Shueisha DX', 'gc': 'GC', 'overlap': 'Overlap BNK', 'alphapolis': 'Alpha', 'hifumi': 'Hifumi', 'ichijinshairis': 'Iris', 'ichijinshairisspecial': 'Iris promotion', 'earthstar': 'EarthStar'}[provider]
+        provider_name = {'ecobalt': 'eCobalt', 'futaba': 'Futaba', 'kadokawa': 'Kadokawa', 'kadokawaprint': 'Kadokawa print', 'kadokawatrade': 'Kadokawa trade', 'tobooks': 'TO', 'gagaga': 'Gagaga', 'kodansha': 'Kodansha', 'overlapdetails': 'Overlap detail', 'shueishadx': 'Shueisha DX', 'gc': 'GC', 'overlap': 'Overlap BNK', 'alphapolis': 'Alpha', 'hifumi': 'Hifumi', 'ichijinshairis': 'Iris', 'ichijinshairisspecial': 'Iris promotion', 'earthstar': 'EarthStar', 'dre': 'DRE'}[provider]
         identity = _entry('lnr:pub:' + provider + ':' + record['id'])
         if (record.get('schema_version') != profile['schema'] or record.get('source') != 'publisher'
                 or record.get('provider') != profile['record_provider'] or record.get('kind') != 'publisher_reference'):
@@ -1574,7 +1584,7 @@ class LightNovelCatalogue:
             key = assertion['local_reference_key']
             if (pin in seen or not re.fullmatch(r'[0-9a-f]{64}', assertion['manifest_sha256'])
                     or not re.fullmatch(profile['reference_pattern'], assertion['reference_id'])
-                    or provider in {'futaba', 'kadokawa', 'kadokawaprint', 'kadokawatrade', 'tobooks', 'gagaga', 'kodansha', 'overlapdetails', 'shueishadx', 'gc', 'overlap', 'alphapolis', 'hifumi', 'ichijinshairis', 'ichijinshairisspecial', 'earthstar'} and assertion['title'] != record['title']
+                    or provider in {'futaba', 'kadokawa', 'kadokawaprint', 'kadokawatrade', 'tobooks', 'gagaga', 'kodansha', 'overlapdetails', 'shueishadx', 'gc', 'overlap', 'alphapolis', 'hifumi', 'ichijinshairis', 'ichijinshairisspecial', 'earthstar', 'dre'} and assertion['title'] != record['title']
                     or previous_key is not None and key != previous_key):
                 raise ValueError(provider_name + ' product reference assertion continuity differs')
             seen.add(pin)
@@ -1609,11 +1619,11 @@ class LightNovelCatalogue:
             row.update(isbn=record['isbn'], publication_label=record['publication_label'],
                 usage_permissions={'bibliographic_reference_only': True, 'commercial_reuse': 'unknown',
                     'prose_ai_permission': False, 'images_permission': False, 'raw_redistribution_permission': False})
-        elif provider in {'kadokawa', 'kadokawaprint', 'kadokawatrade', 'tobooks', 'gagaga', 'kodansha', 'overlapdetails', 'shueishadx', 'gc', 'overlap', 'alphapolis', 'hifumi', 'ichijinshairis', 'ichijinshairisspecial', 'earthstar'}:
+        elif provider in {'kadokawa', 'kadokawaprint', 'kadokawatrade', 'tobooks', 'gagaga', 'kodansha', 'overlapdetails', 'shueishadx', 'gc', 'overlap', 'alphapolis', 'hifumi', 'ichijinshairis', 'ichijinshairisspecial', 'earthstar', 'dre'}:
             row.update(publication_label=record['publication_label'],
                 reference_scope=record['reference_scope'], usage_permissions=record['usage_permissions'],
                 light_novel_identity_asserted=False)
-            if provider in {'kadokawaprint', 'kadokawatrade', 'tobooks', 'gagaga', 'kodansha', 'overlapdetails', 'shueishadx', 'gc', 'overlap', 'alphapolis', 'hifumi', 'ichijinshairis', 'ichijinshairisspecial', 'earthstar'}:
+            if provider in {'kadokawaprint', 'kadokawatrade', 'tobooks', 'gagaga', 'kodansha', 'overlapdetails', 'shueishadx', 'gc', 'overlap', 'alphapolis', 'hifumi', 'ichijinshairis', 'ichijinshairisspecial', 'earthstar', 'dre'}:
                 row['isbn'] = record['isbn']
         return row
 
@@ -1668,6 +1678,9 @@ class LightNovelCatalogue:
     def import_earthstar_publisher_references(self, manifest_path, expected_sha256, *, reference_ids):
         return self._import_explicit_finite_listing('earthstar', manifest_path, expected_sha256, reference_ids)
 
+    def import_dre_publisher_references(self, manifest_path, expected_sha256, *, reference_ids):
+        return self._import_explicit_finite_listing('dre', manifest_path, expected_sha256, reference_ids)
+
     def import_ichijinsha_iris_special_publisher_references(self, manifest_path, expected_sha256, *, reference_ids):
         return self._import_explicit_finite_listing('ichijinshairisspecial', manifest_path, expected_sha256, reference_ids)
 
@@ -1691,7 +1704,7 @@ class LightNovelCatalogue:
         """Store ungrouped listings with local identity, without asserting a work or edition."""
         cache = {}
         profile = PUBLISHER_REFERENCE_PROVIDERS[provider]
-        provider_name = {'ecobalt': 'eCobalt', 'futaba': 'Futaba', 'kadokawa': 'Kadokawa', 'kadokawaprint': 'Kadokawa print', 'kadokawatrade': 'Kadokawa trade', 'tobooks': 'TO', 'gagaga': 'Gagaga', 'kodansha': 'Kodansha', 'overlapdetails': 'Overlap detail', 'shueishadx': 'Shueisha DX', 'gc': 'GC', 'overlap': 'Overlap BNK', 'alphapolis': 'Alpha', 'hifumi': 'Hifumi', 'ichijinshairis': 'Iris', 'ichijinshairisspecial': 'Iris promotion', 'earthstar': 'EarthStar'}[provider]
+        provider_name = {'ecobalt': 'eCobalt', 'futaba': 'Futaba', 'kadokawa': 'Kadokawa', 'kadokawaprint': 'Kadokawa print', 'kadokawatrade': 'Kadokawa trade', 'tobooks': 'TO', 'gagaga': 'Gagaga', 'kodansha': 'Kodansha', 'overlapdetails': 'Overlap detail', 'shueishadx': 'Shueisha DX', 'gc': 'GC', 'overlap': 'Overlap BNK', 'alphapolis': 'Alpha', 'hifumi': 'Hifumi', 'ichijinshairis': 'Iris', 'ichijinshairisspecial': 'Iris promotion', 'earthstar': 'EarthStar', 'dre': 'DRE'}[provider]
         path = str(_resolved_path(manifest_path, cache))
         if provider in {'kadokawa', 'kadokawaprint', 'kadokawatrade'}:
             reference_ids = list(reference_ids) if reference_ids is not None and not isinstance(reference_ids, (str, bytes)) else reference_ids
@@ -1739,7 +1752,7 @@ class LightNovelCatalogue:
             reference = references[reference_id]
             assertion = self._publisher_reference_assertion(provider, path, expected_sha256, reference)
             previous_ids = keys.get(_json(assertion['local_reference_key']), [])
-            if provider in {'futaba', 'kadokawa', 'kadokawaprint', 'kadokawatrade', 'tobooks', 'gagaga', 'kodansha', 'overlapdetails', 'shueishadx', 'gc', 'overlap', 'alphapolis', 'hifumi', 'ichijinshairis', 'ichijinshairisspecial', 'earthstar'} and (not previous_ids and reference_id in stable_references
+            if provider in {'futaba', 'kadokawa', 'kadokawaprint', 'kadokawatrade', 'tobooks', 'gagaga', 'kodansha', 'overlapdetails', 'shueishadx', 'gc', 'overlap', 'alphapolis', 'hifumi', 'ichijinshairis', 'ichijinshairisspecial', 'earthstar', 'dre'} and (not previous_ids and reference_id in stable_references
                     or previous_ids and any(records[identity]['title'] != reference['title'] for identity in previous_ids)):
                 result['held'] += 1
                 reason = 'source_reference_scope_or_title_changed'
@@ -2194,7 +2207,37 @@ class LightNovelCatalogue:
                               'kind': 'rdf_title_isbd_main', 'source_value': value})
         return {**source, '_cataloguing_main_titles': parts}
 
+    @staticmethod
+    def _dre_label_assertion(assertion, record):
+        """Bind a literal English imprint only to its explicit own member ISBN."""
+        from .normalization import normalize_isbn
+        from .light_novel_ndl_series_v1 import person_key
+        source = record['source_record']
+        imprint = unicodedata.normalize('NFKC',source.get('series') or '').split(';')[0].strip()
+        if imprint != 'DRE NOVELS':
+            return assertion, None
+        isbns = {normalize_isbn(i['value']) for i in source['identifiers'] if i['source']=='isbn'} - {None}
+        members = [m for m in assertion.get('explicit_book_memberships',[]) if m['isbn'] in isbns
+            and {person_key(n) for n in m['authors']}=={person_key(n) for n in assertion['authors']}]
+        if len(members)!=1:
+            return None
+        key=normalize_search(assertion['title']);member_key=normalize_search(members[0]['title'])
+        suffix=member_key[len(key):] if member_key.startswith(key) else ''
+        number=re.match(r'^([0-9]{1,4})(?:$|[^0-9])',suffix)
+        volume=unicodedata.normalize('NFKC',source.get('volume') or '').strip()
+        if not number or not volume.isdecimal() or int(number[1])!=int(volume):
+            return None
+        witness={'official_label':'DREノベルス','ndl_literal_imprint':'DRE NOVELS',
+            'explicit_member_isbn':members[0]['isbn'],'official_member_url':members[0]['source_url'],
+            'edition_scoped_only':True}
+        return {**assertion,'label_aliases':['DRE NOVELS']}, witness
+
     def _publisher_series_match(self, assertion, edition_record, cache, *, allow_unnumbered=False):
+        if assertion.get('index_id') == 'dre-novels-series':
+            scoped = self._dre_label_assertion(assertion, edition_record)
+            if scoped is None:
+                return None
+            assertion, _ = scoped
         if assertion.get('index_id') == 'earthstar-explicit-work-group':
             from .light_novel_earthstar_match_v1 import match_earthstar_member
             parts = self._edition_primary_bibliographic_parts(edition_record, cache)
@@ -3911,7 +3954,85 @@ class LightNovelCatalogue:
         return self._resolve_scoped_wikidata_memberships(manifest_path, expected_sha256,
             edition_ids=edition_ids, own_roles=True)
 
-    def _resolve_scoped_wikidata_memberships(self, manifest_path, expected_sha256, *, edition_ids, own_roles):
+    def resolve_dre_edition_memberships(self, manifest_path, expected_sha256, *, edition_ids):
+        """Use explicit DRE series identity and independently checked NDL volumes."""
+        return self._resolve_scoped_wikidata_memberships(manifest_path, expected_sha256,
+            edition_ids=edition_ids, own_roles=True, dre_series=True)
+
+    def _dre_series_assertions(self, manifest_path, expected_sha256, cache):
+        from .light_novel_ndl_series_v1 import publisher_assertions
+        manifest = self._payload(manifest_path, expected_sha256, cache)
+        assertions = publisher_assertions(manifest['dre_series_proof'], self._artifact, cache)
+        if not assertions or any(a['index_id'] != 'dre-novels-series' for a in assertions.values()):
+            raise ValueError('explicit DRE series sources required')
+        return assertions
+
+    def _dre_membership_candidates(self, rows, stored, authorities, assertions, cache):
+        from .light_novel_ndl_series_v1 import person_key
+        result = {}
+        for row in rows:
+            if row['entry_kind'] != 'edition':
+                continue
+            candidates = []
+            record = json.loads(stored[row['entry_id']]['record_json'])
+            for assertion in assertions.values():
+                scoped = self._dre_label_assertion(assertion, record)
+                if scoped is None:
+                    continue
+                scoped_assertion, label_witness = scoped
+                match = self._publisher_series_match(scoped_assertion, record, cache)
+                if match is None:
+                    continue
+                series = [s for s in rows if s['entry_kind'] == 'series' and s['entry_id'].startswith('lns:wd:')
+                    and normalize_search(assertion['title']) in
+                        {normalize_search(t) for t in [s['title'], *s['aliases']]}]
+                if len(series) != 1:
+                    continue
+                parent = series[0]
+                parent_record = json.loads(stored[parent['entry_id']]['record_json'])
+                origin = parent_record['provenance']
+                entity = self._payload(origin['raw_path'],origin['raw_sha256'],cache)['entities'][parent_record['id']]
+                official_urls = {s.get('mainsnak',{}).get('datavalue',{}).get('value')
+                    for s in entity.get('claims',{}).get('P856',[]) if s.get('rank')!='deprecated'
+                    and s.get('mainsnak',{}).get('snaktype')=='value'
+                    and isinstance(s.get('mainsnak',{}).get('datavalue',{}).get('value'),str)}
+                official_identity = assertion['source_url'] in official_urls
+                named_authors = {person_key(a['name']) for a in parent['authors']}
+                official_authors = {person_key(n) for n in assertion['authors']}
+                if (parent['original_language'] != 'ja'
+                        or named_authors and named_authors != official_authors
+                        or not official_identity and (not parent['authors'] or normalize_search(assertion['publisher']) not in
+                            {normalize_search(p['label']) for p in parent['publishers']})):
+                    continue
+                ndl_authors = {identifier.rsplit('/', 1)[-1] for author in match['authors']
+                               for identifier in author['authority_ids']}
+                own_author_ids = {identifier['value'].rsplit('/',1)[-1]
+                    for author in record['source_record']['contributors'] if author['role']=='author'
+                    for identifier in author['identifiers'] if identifier['source']=='ndl-authority'}
+                if not ndl_authors or own_author_ids != ndl_authors:
+                    continue
+                author_matches = []
+                for author in ([] if official_identity else parent['authors']):
+                    shared = authorities.get(author['qid'], set()) & ndl_authors
+                    if not shared:
+                        break
+                    author_matches.append({'author_qid':author['qid'],'ndl_authorities':sorted(shared)})
+                else:
+                    if not official_identity and ndl_authors != {v for a in author_matches for v in a['ndl_authorities']}:
+                        continue
+                    candidates.append({'rule_version':'dre-publisher-wikidata-edition-membership-v1',
+                        'scope':'edition_membership_only','edition_id':row['entry_id'],
+                        'series_entry_id':parent['entry_id'],'volume_number':match['volume_number'],
+                        'official_series_url':assertion['source_url'],'author_matches':author_matches,
+                        'series_identity_basis':'exact_wikidata_P856_and_explicit_publisher_series' if official_identity else 'independent_author_authority_crosswalk',
+                        'person_identity_asserted':False,
+                        'edition_label_witness':label_witness,
+                        'ndl_bibliography_match':match})
+            if len(candidates) == 1:
+                result[row['entry_id']] = candidates[0]
+        return result
+
+    def _resolve_scoped_wikidata_memberships(self, manifest_path, expected_sha256, *, edition_ids, own_roles, dre_series=False):
         if isinstance(edition_ids, (str, bytes)) or edition_ids is None:
             raise ValueError('an explicit edition ID collection is required')
         requested = list(edition_ids)
@@ -3920,7 +4041,7 @@ class LightNovelCatalogue:
                 raise ValueError('only typed NDL edition IDs may be requested')
         if len(requested) != len(set(requested)):
             raise ValueError('duplicate requested edition ID')
-        result = {'scope': 'wikidata_series_own_direct_roles_only' if own_roles else 'wikidata_series_only',
+        result = {'scope': 'dre_publisher_and_wikidata_series_only' if dre_series else 'wikidata_series_own_direct_roles_only' if own_roles else 'wikidata_series_only',
                   'requested_editions': len(requested),
                   'candidate_series': 0, 'linked': 0, 'unchanged': 0,
                   'protected_existing': 0, 'unresolved_editions': 0}
@@ -3937,7 +4058,9 @@ class LightNovelCatalogue:
             series = db.execute("SELECT * FROM entries WHERE "
                 "json_extract(record_json,'$.schema_version')='light-novel-metadata-v1' "
                 "AND (kind='series' OR json_extract(record_json,'$.kind')='series')").fetchall()
-        titles = set()
+        cache = {}
+        assertions = self._dre_series_assertions(manifest_path, expected_sha256, cache) if dre_series else None
+        titles = {normalize_search(a['title']) for a in assertions.values()} if assertions else set()
         for entry in editions.values():
             if hashlib.sha256(entry['record_json'].encode()).hexdigest() != entry['record_sha256']:
                 raise ValueError('stored metadata SHA mismatch')
@@ -3956,10 +4079,10 @@ class LightNovelCatalogue:
                     raise ValueError('candidate is not a typed Wikidata series')
                 selected[identity] = dict(entry)
         result['candidate_series'] = len(selected) - len(editions)
-        cache = {}
         rows = self._membership_base_rows(selected, cache)
         authorities = self._author_authorities(manifest_path, expected_sha256, cache)
-        candidates = (self._own_role_membership_candidates(rows, selected, authorities, cache)
+        candidates = (self._dre_membership_candidates(rows, selected, authorities, assertions, cache) if dre_series
+            else self._own_role_membership_candidates(rows, selected, authorities, cache)
             if own_roles else self._membership_candidates(rows, selected, authorities))
         result['unresolved_editions'] = len(requested) - len(candidates)
         with self._connect() as db:
@@ -3994,7 +4117,9 @@ class LightNovelCatalogue:
                 proof = {'manifest_path': str(Path(manifest_path).resolve()), 'manifest_sha256': expected_sha256,
                          'edition_record_sha256': selected[edition_id]['record_sha256'],
                          'series_record_sha256': selected[series_id]['record_sha256'], 'membership': membership}
-                if own_roles:
+                if dre_series:
+                    proof['kind'] = 'dre_wikidata_series_membership'
+                elif own_roles:
                     proof['kind'] = 'wikidata_own_direct_role_membership_v2'
                 encoded = _json(proof)
                 digest = hashlib.sha256(encoded.encode()).hexdigest()
@@ -4265,6 +4390,19 @@ class LightNovelCatalogue:
                         relation_resolution='edition_series_membership_verified', light_novel_confirmed=light_novel_confirmed,
                         admission_status='edition_series_membership_verified', series_membership_evidence=membership)
                     continue
+                if proof.get('kind') == 'dre_wikidata_series_membership':
+                    key = ('dre_memberships', proof['manifest_path'], proof['manifest_sha256'])
+                    if key not in plans:
+                        assertions = self._dre_series_assertions(proof['manifest_path'], proof['manifest_sha256'], cache)
+                        authorities = self._author_authorities(proof['manifest_path'], proof['manifest_sha256'], cache)
+                        plans[key] = self._dre_membership_candidates(rows, stored, authorities, assertions, cache)
+                    membership = plans[key].get(edition_id)
+                    if membership != proof['membership'] or membership.get('series_entry_id') != series_id:
+                        continue
+                    indexed[edition_id].update(series_entry_id=series_id, volume_number=membership['volume_number'],
+                        relation_resolution='edition_series_membership_verified', light_novel_confirmed=True,
+                        admission_status='edition_series_membership_verified', series_membership_evidence=membership)
+                    continue
                 if proof.get('kind') == 'wikidata_own_direct_role_membership_v2':
                     key = ('own_direct_roles', proof['manifest_path'], proof['manifest_sha256'])
                     if key not in plans:
@@ -4482,10 +4620,25 @@ class LightNovelCatalogue:
         return selected
 
     def _rows(self, *, include_features=True, feature_entry_ids=None, _cache=None,
-              candidate_query=None, detail_entry_id=None):
+              candidate_query=None, detail_entry_id=None, recommendation_liked_ids=None):
         cache = {} if _cache is None else _cache
         with self._connect() as db:
-            stored = db.execute('SELECT e.*, r.status FROM entries e LEFT JOIN read_status r USING(entry_id)').fetchall()
+            statement = 'SELECT e.*, r.status FROM entries e LEFT JOIN read_status r USING(entry_id)'
+            parameters = ()
+            if recommendation_liked_ids is not None:
+                # Editions are leaves in _families: only liked/read leaves can
+                # change an exclusion. Authenticate those leaves and parents,
+                # keeping every ranked series/work and its Wikidata relations.
+                statement += ''' WHERE e.kind IN ('series','work') OR
+                    (e.kind='edition' AND r.status='read') OR
+                    e.entry_id IN (SELECT value FROM json_each(?)) OR
+                    e.entry_id IN (SELECT m.series_id FROM edition_series_memberships m
+                        LEFT JOIN read_status status ON status.entry_id=m.edition_id
+                        WHERE status.status='read' OR
+                        m.edition_id IN (SELECT value FROM json_each(?)))'''
+                liked_json = json.dumps(list(recommendation_liked_ids))
+                parameters = (liked_json, liked_json)
+            stored = db.execute(statement, parameters).fetchall()
             has_features = db.execute('SELECT count(*) FROM features').fetchone()[0]
         records = {}
         for entry in stored:
@@ -4575,9 +4728,9 @@ class LightNovelCatalogue:
             if row['entry_kind'] == 'publisher_reference':
                 if 'author_display' in row:
                     names.append(row['author_display'])
-                elif row.get('publisher_reference_kind') in {PUBLISHER_REFERENCE_PROVIDERS[p]['public_kind'] for p in ('kadokawa', 'kadokawaprint', 'kadokawatrade', 'tobooks', 'gagaga', 'kodansha', 'overlapdetails', 'shueishadx', 'gc', 'overlap', 'alphapolis', 'hifumi', 'ichijinshairis', 'ichijinshairisspecial', 'earthstar')}:
+                elif row.get('publisher_reference_kind') in {PUBLISHER_REFERENCE_PROVIDERS[p]['public_kind'] for p in ('kadokawa', 'kadokawaprint', 'kadokawatrade', 'tobooks', 'gagaga', 'kodansha', 'overlapdetails', 'shueishadx', 'gc', 'overlap', 'alphapolis', 'hifumi', 'ichijinshairis', 'ichijinshairisspecial', 'earthstar', 'dre')}:
                     names.extend(credit['name'] for credit in row['publisher_product_reference']['credit_literals'])
-                    if row.get('publisher_reference_kind') in {'gagaga_product_reference', 'kodansha_product_reference', 'overlap_detail_product_reference', 'shueisha_dx_product_reference', 'gc_product_reference', 'overlap_bunko_product_reference', 'alphapolis_commercial_book_reference', 'hifumi_product_reference', 'ichijinsha_iris_product_reference', 'ichijinsha_iris_promotion_reference', 'earthstar_work_reference'}:
+                    if row.get('publisher_reference_kind') in {'gagaga_product_reference', 'kodansha_product_reference', 'overlap_detail_product_reference', 'shueisha_dx_product_reference', 'gc_product_reference', 'overlap_bunko_product_reference', 'alphapolis_commercial_book_reference', 'hifumi_product_reference', 'ichijinsha_iris_product_reference', 'ichijinsha_iris_promotion_reference', 'earthstar_work_reference', 'dre_product_reference'}:
                         names.extend(credit['name'] for credit in row['publisher_product_reference']['credits'])
                 else:
                     names.extend(credit['name'] for credit in row['publisher_product_reference']['credits'] if credit['role'] == 'author')
@@ -4855,7 +5008,7 @@ class LightNovelCatalogue:
         avoided = _feature_ids(avoided_features, 'avoided_features', taxonomy)
         weights = _weights(axis_weights)
         liked = [_entry(x) for x in _normalise_list(liked_entry_ids, 'liked_entry_ids')]
-        rows = self._rows(include_features=False)
+        rows = self._rows(include_features=False, recommendation_liked_ids=liked)
         indexed = {r['entry_id']: r for r in rows}
         if any(key not in indexed for key in liked):
             raise ValueError('liked light-novel entry is absent')

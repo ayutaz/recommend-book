@@ -19,6 +19,9 @@ from urllib.parse import urlparse, urljoin
 
 
 INDEXES = {
+    'dre-novels-series': {'publisher': 'ドリコム', 'label': 'DREノベルス',
+        'host':'drecom-media.jp', 'path':'/drenovels/product/',
+        'route':r'https://drecom-media\.jp/drenovels/series/[A-Za-z0-9_-]+'},
     'hj-bunko-series': {'publisher': 'ホビージャパン', 'label': 'HJ文庫',
                         'host': 'firecross.jp', 'path': '/hjbunko/series', 'route': r'https://firecross\.jp/hjbunko/series/[0-9]+'},
     'hj-novels-series': {'publisher': 'ホビージャパン', 'label': 'HJノベルス',
@@ -212,7 +215,55 @@ def _verify_hj_alias(proof, assertions, root, artifact, cache):
 
 def _cards(index_id, document):
     rows = []
-    if index_id.startswith('hj-'):
+    if index_id == 'dre-novels-series':
+        from .light_novel_dre_references_v1 import _elements
+        labels = list(map(_text, _elements(document,'div','lineupColumn__label')))
+        titles = _elements(document,'h1','lineupColumn__title')
+        if labels != ['DREノベルス'] or len(titles) != 1:
+            raise ValueError('DRE own novel detail title/label differs')
+        links = re.findall(r'<a\b[^>]*href="(https://drecom-media\.jp/drenovels/series/[A-Za-z0-9_-]+)"[^>]*>\s*シリーズ紹介\s*</a>',document)
+        if len(links) != 1:
+            return []  # A title prefix cannot invent a series relationship.
+        authors=[]
+        for credit in _elements(document,'span','lineupColumn__author'):
+            literal=_text(credit)
+            match=re.fullmatch(r'(著|イラスト)\s*/\s*(.+)',literal)
+            if not match:
+                raise ValueError('DRE explicit main-book creator role differs')
+            if match[1]=='著':authors.append(match[2])
+        headings=[]
+        for opening,block in re.findall(r'(<a\b[^>]*class="pickupSeriesList_item"[^>]*>)(.*?)</a>',document,re.S):
+            if f'href="{links[0]}"' in opening:
+                headings.extend(map(_text,_elements(block,'p','pickupSeriesList_title')))
+        if len(headings)!=1 or not headings[0] or not authors:
+            raise ValueError('DRE explicit linked-series heading or author absent')
+        members=[]
+        section=re.search(r'<h2\b[^>]*id="series"[^>]*class="productDetail__subTitle--novels"[^>]*>\s*シリーズ既刊一覧\s*</h2>(.*?)</section>',document,re.S)
+        if section:
+            from .normalization import normalize_isbn
+            for block in _elements(section[1],'li','bookColumn__item'):
+                member_titles=_elements(block,'span','bookColumn__title')
+                member_urls=re.findall(r'<a\b[^>]*href="(https://drecom-media\.jp/drenovels/product/[1-9][0-9]*)"',block)
+                fact_labels=list(map(_text,_elements(block,'span','productColumn__infoLabel')))
+                fact_values=list(map(_text,_elements(block,'span','productColumn__infoValue')))
+                if len(member_titles)!=1 or len(member_urls)!=1 or len(fact_labels)!=len(fact_values) or len(set(fact_labels))!=len(fact_labels):
+                    raise ValueError('DRE explicit novel member card ambiguous')
+                facts=dict(zip(fact_labels,fact_values))
+                isbn=normalize_isbn(facts['ISBN']) if 'ISBN' in facts else None
+                if 'ISBN' in facts and not isbn:
+                    raise ValueError('DRE explicit member ISBN invalid')
+                writers=[]
+                for literal in _elements(block,'span','bookColumn__author'):
+                    credit=re.fullmatch(r'(著|イラスト)\s*/\s*(.+)',_text(literal))
+                    if not credit:raise ValueError('DRE explicit member author role differs')
+                    if credit[1]=='著':writers.append(credit[2])
+                members.append({'source_url':member_urls[0],'title':_text(member_titles[0]),'isbn':isbn,'authors':writers})
+            if len({m['source_url'] for m in members})!=len(members):
+                raise ValueError('DRE explicit novel members duplicated')
+        rows.append({'source_url':links[0],'title':headings[0],'authors':authors,
+            'membership_basis':'own_novel_detail_series_introduction_link_and_named_official_pickup',
+            'representative_product_title':_text(titles[0]),'explicit_book_memberships':members})
+    elif index_id.startswith('hj-'):
         for block in re.split(r'<li class="seriesList_item">', document)[1:]:
             link = re.search(r'<a class="seriesList_itemTitle[^>]+href="([^"]+)"[^>]*>(.*?)</a>', block, re.S)
             authors = []
