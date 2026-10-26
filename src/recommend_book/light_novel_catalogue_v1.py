@@ -5229,8 +5229,101 @@ class LightNovelCatalogue:
             pending.extend(added)
         return selected
 
+    @staticmethod
+    def _recommendation_prefilter_ids(records, stored, genre, liked_entry_ids,
+                                      membership_pairs=()):
+        """Return a conservative source-projection set for an explicit genre.
+
+        Stored record bytes have already passed their SHA checks before this
+        helper runs.  Their admitted structured genre fields are only used as
+        a candidate superset; every returned record still goes through the
+        ordinary raw-backed projector and the public genre filter remains the
+        final authority.  Unknown contracts stay selected so an unrecognised
+        source cannot be silently treated as a non-match.
+        """
+        wikidata_schemas = {
+            'light-novel-metadata-v1', 'light-novel-metadata-v2',
+            'light-novel-metadata-v3', 'light-novel-work-metadata-v3',
+        }
+        selected = set(liked_entry_ids or ())
+        selected.update(row['entry_id'] for row in stored if row['status'] == 'read')
+        stored_kinds = {row['entry_id']: row['kind'] for row in stored}
+        for identity, record in records.items():
+            stored_kind = stored_kinds.get(identity)
+            if stored_kind not in {'series', 'work'}:
+                continue
+            record_kind = record.get('kind')
+            if record_kind is not None and record_kind != stored_kind:
+                # The typed database row is authoritative for the projection
+                # category.  A mismatching future/malformed record remains in
+                # the authenticated set rather than being guessed away.
+                selected.add(identity)
+                continue
+            if record_kind is None and (
+                    record.get('schema_version') in wikidata_schemas
+                    and record.get('source') == 'wikidata'):
+                # A recognized Wikidata contract without its typed kind is
+                # malformed and must remain fail-closed for source replay.
+                selected.add(identity)
+                continue
+            kind = stored_kind
+            schema = record.get('schema_version')
+            if schema == 'light-novel-ndl-series-v1' and record.get('source') == 'ndl':
+                # This contract has no source genre projection.  It can still
+                # be reached through a selected family or membership below.
+                continue
+            if schema in wikidata_schemas and record.get('source') == 'wikidata':
+                genres = record.get('genres')
+                if not isinstance(genres, list):
+                    selected.add(identity)
+                    continue
+                if any(not isinstance(item, dict) or not isinstance(item.get('id'), str)
+                       for item in genres):
+                    selected.add(identity)
+                    continue
+                if any(isinstance(item, dict) and item.get('id') == genre
+                       for item in genres):
+                    selected.add(identity)
+                continue
+            # Publisher/source-group and future contracts are not safe to
+            # classify from an assumed metadata shape.  Keep them in the
+            # authenticated projection set conservatively.
+            selected.add(identity)
+
+        qid_to_identity = {
+            record.get('id'): identity
+            for identity, record in records.items()
+            if isinstance(record.get('id'), str)
+            and re.fullmatch(r'Q[1-9][0-9]*', record['id'])
+        }
+        edges = {identity: set() for identity in records}
+        for identity, record in records.items():
+            for relation in ('P179', 'P527'):
+                values = record.get('relations', {}).get(relation, [])
+                if not isinstance(values, list):
+                    continue
+                for qid in values:
+                    other = qid_to_identity.get(qid)
+                    if other is not None:
+                        edges[identity].add(other)
+                        edges[other].add(identity)
+        for edition_id, series_id in membership_pairs:
+            if edition_id in edges and series_id in edges:
+                edges[edition_id].add(series_id)
+                edges[series_id].add(edition_id)
+
+        pending = list(selected & records.keys())
+        selected &= set(records)
+        while pending:
+            identity = pending.pop()
+            for other in edges[identity] - selected:
+                selected.add(other)
+                pending.append(other)
+        return selected
+
     def _rows(self, *, include_features=True, feature_entry_ids=None, _cache=None,
-              candidate_query=None, detail_entry_id=None, recommendation_liked_ids=None):
+              candidate_query=None, detail_entry_id=None, recommendation_liked_ids=None,
+              recommendation_genre=None):
         cache = {} if _cache is None else _cache
         with self._connect() as db:
             statement = 'SELECT e.*, r.status FROM entries e LEFT JOIN read_status r USING(entry_id)'
@@ -5250,6 +5343,9 @@ class LightNovelCatalogue:
                 parameters = (liked_json, liked_json)
             stored = db.execute(statement, parameters).fetchall()
             has_features = db.execute('SELECT count(*) FROM features').fetchone()[0]
+            membership_pairs = (db.execute(
+                'SELECT edition_id,series_id FROM edition_series_memberships').fetchall()
+                if recommendation_genre else ())
         records = {}
         for entry in stored:
             if hashlib.sha256(entry['record_json'].encode()).hexdigest() != entry['record_sha256']:
@@ -5257,6 +5353,11 @@ class LightNovelCatalogue:
             records[entry['entry_id']] = json.loads(entry['record_json'])
         cache[('reference_all_stored',)] = stored
         cache[('reference_all_records',)] = records
+        if recommendation_genre:
+            selected = self._recommendation_prefilter_ids(
+                records, stored, recommendation_genre, recommendation_liked_ids,
+                membership_pairs)
+            stored = [entry for entry in stored if entry['entry_id'] in selected]
         confirmation_titles = self._saved_confirmation_search_titles(stored, records, cache) if (
             normalize_search(candidate_query or '') and detail_entry_id is None) else None
         candidate_ids = self._candidate_ids(records, query=candidate_query, entry_id=detail_entry_id,
@@ -5629,7 +5730,8 @@ class LightNovelCatalogue:
         weights = _weights(axis_weights)
         liked = [_entry(x) for x in _normalise_list(liked_entry_ids, 'liked_entry_ids')]
         feature_request_cache = {}
-        rows = self._rows(include_features=False, recommendation_liked_ids=liked)
+        rows = self._rows(include_features=False, recommendation_liked_ids=liked,
+                          recommendation_genre=genre if genre else None)
         indexed = {r['entry_id']: r for r in rows}
         if any(key not in indexed for key in liked):
             raise ValueError('liked light-novel entry is absent')
