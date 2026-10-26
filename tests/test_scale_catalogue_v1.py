@@ -13,6 +13,41 @@ from recommend_book.models import Identifier, SourceRecord, Title
 from recommend_book.scale_catalogue_v1 import ScaleCatalogue
 
 
+def partial_reviewed_document(tmp_path, *, count=24, qids=None):
+    """Build the small reviewed-publication shape used by catalogue tests.
+
+    The real publication verifier is intentionally stubbed in these tests: its
+    read-only replay is covered by its own contract tests, while this suite
+    checks the catalogue's database boundary and byte bindings.
+    """
+    pin = tmp_path / 'partial-coordinator-proof.bin'
+    pin.write_bytes(b'partial coordinator proof')
+    pin_sha = hashlib.sha256(pin.read_bytes()).hexdigest()
+    qids = list(qids or [f'Q{1000 + index}' for index in range(count)])
+    rows = []
+    for qid in qids:
+        label = {'label_id': 'genre.fantasy', 'axis': 'genre', 'decision': 'present',
+                 'scope': 'work', 'raw_confidence': None,
+                 'evidence': [{'quote': 'explicit fantasy novel'}]}
+        rows.append({'qid': qid, 'work_id': 'wd:' + qid,
+                     'admitted_labels': [label],
+                     'source_attributions': [{'source_url': 'https://en.wikipedia.org/wiki/' + qid,
+                                             'revision': 42, 'display_allowed': True}]})
+    return {
+        'version': 'world-novel-partial-reviewed-export-v1',
+        'state': 'partial_reviewed_projection',
+        'public_db_adoption_allowed': True,
+        'source_run_gate_passed': False,
+        'source_run_terminal': False,
+        'artifact_sha256': {str(pin): pin_sha},
+        'verified_projection': {
+            'rows': rows,
+            'coordinator_chain_pins': [{'path': str(pin), 'sha256': pin_sha}],
+            'publishable': True,
+        },
+    }
+
+
 def save(path, payload):
     path.write_text(json.dumps(payload), encoding='utf-8')
     return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -686,3 +721,62 @@ def test_source_only_search_and_similarity_do_not_depend_on_unused_native_output
         catalogue.work_detail('Q100')
     with pytest.raises(AssertionError, match='source-only operation'):
         catalogue.catalogue_stats()
+
+
+def test_partial_reviewed_export_requires_explicit_version_and_exact_scope(catalogue, tmp_path, monkeypatch):
+    from recommend_book import world_novel_partial_publication_v1 as publication
+
+    document = partial_reviewed_document(tmp_path, count=23)
+    manifest = tmp_path / 'partial-reviewed.json'
+    digest = save(manifest, document)
+    monkeypatch.setattr(publication, 'verify_partial_reviewed_export', lambda value: value)
+    with pytest.raises(ValueError, match='exactly 24'):
+        catalogue.import_classifications(manifest, digest)
+
+    intermediate = dict(document, version='world-novel-partial-recovery-export-v1')
+    save(manifest, intermediate)
+    intermediate_digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    with pytest.raises(ValueError, match='Unknown classification export version'):
+        catalogue.import_classifications(manifest, intermediate_digest)
+
+
+def test_partial_reviewed_export_preserves_labels_sources_and_rejects_native_overwrite(
+        catalogue, tmp_path, monkeypatch):
+    from recommend_book import world_novel_partial_publication_v1 as publication
+
+    document = partial_reviewed_document(tmp_path)
+    catalogue.ingest([record(tmp_path, f'Q{1000 + index}') for index in range(24)])
+    catalogue.set_read_status('Q1000', 'read')
+    with catalogue._connect() as db:
+        source_before = db.execute(
+            "SELECT record_json, raw_sha256 FROM source_versions WHERE qid='Q1000'"
+        ).fetchone()
+    manifest = tmp_path / 'partial-reviewed.json'
+    digest = save(manifest, document)
+    monkeypatch.setattr(publication, 'verify_partial_reviewed_export', lambda value: value)
+    result = catalogue.import_classifications(manifest, digest)
+    assert result['raw_classified'] == result['adopted'] == 24
+
+    detail = catalogue.work_detail('Q1000')
+    assert detail['llm_features'][0]['raw_confidence'] is None
+    assert detail['content_sources'] == document['verified_projection']['rows'][0]['source_attributions']
+    with catalogue._connect() as db:
+        source_after = db.execute(
+            "SELECT record_json, raw_sha256 FROM source_versions WHERE qid='Q1000'"
+        ).fetchone()
+        assert tuple(source_after) == tuple(source_before)
+        assert db.execute("SELECT status FROM read_status WHERE qid='Q1000'").fetchone()[0] == 'read'
+        stored = json.loads(db.execute(
+            "SELECT labels_json FROM native_classifications WHERE qid='Q1000'"
+        ).fetchone()[0])
+    assert stored == document['verified_projection']['rows'][0]['admitted_labels']
+
+    replacement = partial_reviewed_document(tmp_path, qids=['Q1000'] + [f'Q{2000 + i}' for i in range(23)])
+    save(manifest, replacement)
+    replacement_digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    with pytest.raises(ValueError, match='cannot overwrite existing native classification'):
+        catalogue.import_classifications(manifest, replacement_digest)
+    with catalogue._connect() as db:
+        assert json.loads(db.execute(
+            "SELECT labels_json FROM native_classifications WHERE qid='Q1000'"
+        ).fetchone()[0]) == stored
