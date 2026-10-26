@@ -1,5 +1,7 @@
 # 自動PoCの進捗と完了証拠
 
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「履歴・結果・計画・スナップショット」です。本文の件数・計画・実行状態と、本文内の「現在」「最新」「実行中」は記録日時のものとして扱い、現在の状態は[current-status.md](current-status.md)を参照してください。
+
 2026-10-20案内: 以下の件数と「完了」は2026-10-13の限定PoCの記録。現在は[実行計画v16](autonomous-next-phase-plan-v16.md)と[phase15報告](phase15-bounded-poc-and-delivery-v1.md)を参照する。分類精度・校正・本人向け改善は未検証のままである。
 
 2026-10-13時点。[最新計画](autonomous-completion-plan-v2.md)のA〜Fローカル自動PoCを、保留・未検証範囲を含めて完了した。[実行結果](autonomous-poc-final-report.md)に詳細を記録した。追加の本人評価・試読・採点・感想・履歴入力・画面確認は0件。既存335件の本人評価を再利用し、AI判断を本人評価や人手正解として登録しない。

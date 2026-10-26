@@ -1,5 +1,7 @@
 # relevance 契約の独立レビュー
 
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「履歴・結果・計画・スナップショット」です。本文の件数・計画・実行状態と、本文内の「現在」「最新」「実行中」は記録日時のものとして扱い、現在の状態は[current-status.md](current-status.md)を参照してください。
+
 2026-10-12。計画・prompt・taxonomy・schema・models・validation・job cache を読み、既存 fixture によるメモリ内検証を行った。追加 LLM / Web / 分類 CLI 呼出しはゼロ。この文書以外の live 設定・共有コード・DB・data は変更していない。以下の改善は **live v1 終了後の次版案**であり、稼働中や frozen v1 を差し替えない。
 
 ## 結論

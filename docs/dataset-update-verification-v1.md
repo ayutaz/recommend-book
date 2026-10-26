@@ -1,5 +1,7 @@
 # 小規模な更新経路の統合検証 v1
 
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「現行ガイド・仕様」です。手順・契約の再利用前に、現在の状態は[current-status.md](current-status.md)、入力・権利・版の前提は本文で確認してください。
+
 `scripts/verify_dataset_updates.py` は、2作品だけの独立した合成DBを作り、既存の
 `DatasetDB` → `build_next_database` → `load_next_world_database` → `rank_candidates`
 を通して更新結果を保存する。既存の2005作品DB、分類結果、凍結済み実装には書き込まない。

@@ -1,5 +1,7 @@
 # ユーザー追加作業0の推薦比較
 
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「履歴・結果・計画・スナップショット」です。本文の件数・計画・実行状態と、本文内の「現在」「最新」「実行中」は記録日時のものとして扱い、現在の状態は[current-status.md](current-status.md)を参照してください。
+
 **推薦のsource superiorityは未達。** innerで選定した方式のouter nDCG@10は0.573995で、人気baselineの0.633978を超えなかった。全335のinnerが選んだhybrid50は実験候補であり、品質検証済みdeploymentとは扱わない。
 
 `config/autonomous-evaluation-v1.json` に従い、保存済み335評価だけでnested grouped CVを実行した。新規LLM・通信・ユーザー追加評価は0。既存engine、feature bridge、元評価DB、元annotationは変更していない。新規分類のhuman goldは0であり、本比較から分類正解率やconfidence校正を算出しない。

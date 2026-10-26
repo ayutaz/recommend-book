@@ -1,5 +1,7 @@
 # Codex 診断 STEP3: 保存済み保留からの局所 task packet 準備
 
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「履歴・結果・計画・スナップショット」です。本文の件数・計画・実行状態と、本文内の「現在」「最新」「実行中」は記録日時のものとして扱い、現在の状態は[current-status.md](current-status.md)を参照してください。
+
 2026-10-15。STEP3 の参照固定だけを実行した。採用する出力は `data/autonomous-next-v3/evaluation/phase5-codex-diagnostic-preparation-v3/`。classification **20 works / 74 labels**、identity **3 pairs**。全 packet の診断状態は `notrun`、`execution_allowed=false`。STEP4 の診断・再分類・同定・採用、DB 更新、外部取得、モデル呼出は実行していない。本人の追加 annotation は 0 件で足りる。
 
 ## 固定された選択規則

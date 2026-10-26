@@ -1,8 +1,10 @@
 # 楽天ブックス書籍検索 API
 
+> **記録の位置づけ（2026-10-26）**: これは初回調査時点（2026-03-01）のAPI仕様メモです。エンドポイント、認証、パラメータ、ページング、レート制限、アフィリエイト条件は変更され得るため、実装・公開前に [Rakuten Developers の一次資料](https://webservice.rakuten.co.jp/) を再確認してください。現在のプロジェクト状況は [docs/current-status.md](current-status.md)、現行文書とアーカイブの区別は [docs/documentation-index.md](documentation-index.md) を参照してください。以下の上限値・例は当時の記録であり、現在の利用許諾やクォータを保証しません。
+
 ## 概要
 
-楽天ブックスの商業出版書籍を検索するREST API。ライトノベルや推理小説など商業出版物のタイトル、著者、あらすじ、表紙画像を取得可能。
+楽天ブックスの商業出版書籍を検索するREST API。初回調査では、ライトノベルや推理小説などの商業出版物について、タイトル、著者、商品説明、表紙画像を取得する候補として整理した。
 
 - エンドポイント: `https://openapi.rakuten.co.jp/services/api/BooksBook/Search/20170404`
 - 認証: **Application ID（アプリID）が必須**
@@ -136,7 +138,7 @@
 curl "https://openapi.rakuten.co.jp/services/api/BooksGenre/Search/20121128?applicationId=YOUR_APP_ID&booksGenreId=001021"
 ```
 
-## 利用制限
+## 利用制限（2026-03-01調査時の記録。現行値ではない）
 
 | 項目 | 制限値 |
 |------|--------|
@@ -146,7 +148,7 @@ curl "https://openapi.rakuten.co.jp/services/api/BooksGenre/Search/20121128?appl
 | 取得可能な最大件数 | **最大3,000件**（30件 x 100ページ） |
 | 制限超過時 | HTTP 429。継続超過でアプリID利用停止の可能性 |
 
-大量取得時はスリープ処理が必須。
+大量取得時は当時記録した制限を前提にせず、現行のレート制限と利用条件を確認して待機処理を設計する。
 
 ## リクエスト例
 
@@ -172,4 +174,4 @@ curl "https://openapi.rakuten.co.jp/services/api/BooksBook/Search/20170404?appli
 - `itemCaption` がレコメンドシステムで使う「あらすじ」に相当するが、空の場合もある
 - **タグ情報（異世界転生、悪役令嬢等）は取得不可**。ジャンルID分類のみ
 - **表紙画像URL**が取得できるためUI表示に有用
-- レートリミット（1秒1リクエスト）と最大3,000件の制約に注意
+- レートリミットとページング上限は当時の記録である。実装前に現行値を確認する

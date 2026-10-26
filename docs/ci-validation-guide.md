@@ -1,6 +1,29 @@
 # CI 検証ガイド
 
-## 作業ブランチの検証状況（2026-10-24）
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「現行ガイド・仕様」です。手順・契約の再利用前に、現在の状態は[current-status.md](current-status.md)、入力・権利・版の前提は本文で確認してください。
+
+## 現行実装の確認（2026-10-26）
+
+ライトノベル実装 `8ea2eb6bf5fd1518c3782df278667e660aa1c4d6` の[run 40286817065](https://github.com/ayutaz/recommend-book/actions/runs/40286817065)はPython 3.14のUbuntu・Windowsで成功しています。両OSのJUnit原本を取得し、次を確認しました。
+
+| OS | fixture試験 | pytest実時間 |
+|---|---|---:|
+| Ubuntu | 5,920 passed・7 skipped、failure/error 0 | 170.983秒 |
+| Windows | 5,921 passed・6 skipped、failure/error 0 | 757.972秒 |
+
+新規キャッシュ12試験とHJ関連111試験を含みます。artifact名のcheckout SHA `bd0b95b503eb08a1ac092ada21126b5b81fbbb83` はPRの試験用merge commitで、その全treeが実装8ea2eb6と一致しています。以後の文書差分はコード・試験・依存・workflowを変えず、同じ全体試験を追加しません。
+
+先行44cd4d6のrun 40283996816はUbuntu成功・Windows取消のため両OS成功には数えません。さらに前のbf6f558のrun 40274477382は当時の成功記録です。最新実装の確認へ代用しません。
+
+下の2026-10-25節は導入前後の履歴です。「次の確定実装から」は当時の予定であり、未実装の残作業ではありません。過去runの未証明・失敗を後続runの成功で書き換えません。文書だけの変更ではリンク・差分・固定文書の保持を確認し、全体試験を再実行しません。
+
+## ライトノベル実装の試験証拠（2026-10-25）
+
+最新の実装と収録状況は[ライトノベル対応の進捗](light-novels-progress-v1.md)を参照する。`c6d105b`の[run 40113726963](https://github.com/ayutaz/recommend-book/actions/runs/40113726963)は両OSの結論がsuccessだが、Windowsのログはセットアップのみで、step情報もセットアップ中のままになっている。Ubuntuの2,868 passed・7 skippedはログで確認したが、Windowsのfixture実行は未証明として扱う。
+
+次の確定実装からpytestのJUnit XMLを生成し、OSと対象commit SHAを名前に含むartifactとして7日間保存する。結果ファイルがなければ保存stepを失敗させる。CIの成功表示だけで完了とせず、各OSの結果ファイルと対象SHA、試験数、失敗・error・skipを確認する。保存対象は合成fixtureの試験結果だけで、実DB・原資料・読書履歴を含めない。全件再分類・実データ監査の代わりにはしない。
+
+## 前段階：世界小説2万分類版の検証状況（2026-10-24）
 
 最終実装`b4464aac32a4d56e89c120c99ad926c9b176c824`の[run 40093412432](https://github.com/ayutaz/recommend-book/actions/runs/40093412432)はUbuntu・WindowsのPython 3.14で成功した。lock確認・依存導入・fixture試験を両OSで通過し、2026-10-24 22:47 JSTに終了した。
 
@@ -121,7 +144,7 @@ push、pull request、手動の workflow dispatch が対象。各 OS で次の�
 ```console
 uv lock --check
 uv sync --locked --dev
-uv run --locked pytest tests -ra
+uv run --locked pytest tests -ra --junitxml=test-results.xml
 ```
 
 `uv lock --check` はプロジェクトの宣言と lockfile の整合性を確認する。`--locked` は不整合時に lockfile を更新せず失敗させる。`--dev` により既存の pytest dependency group を含める。[uv の lock / sync 仕様](https://docs.astral.sh/uv/concepts/projects/sync/)

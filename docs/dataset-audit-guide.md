@@ -1,5 +1,7 @@
 # 実データ監査レポート
 
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「現行ガイド・仕様」です。手順・契約の再利用前に、現在の状態は[current-status.md](current-status.md)、入力・権利・版の前提は本文で確認してください。
+
 `scripts/audit_dataset.py` は実SQLite DB、固定WorkInput、分類結果、任意の正解注釈から、`dataset-audit.json` とローカルHTMLを生成する。コード上のテストfixtureの成功を、実DBの品質達成へ置き換えない。
 
 ```powershell

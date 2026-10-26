@@ -1,5 +1,7 @@
 # 完了済み分類runの観測
 
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「現行ガイド・仕様」です。手順・契約の再利用前に、現在の状態は[current-status.md](current-status.md)、入力・権利・版の前提は本文で確認してください。
+
 `scripts/summarize_classification_run.py` は固定WorkInputと完了済みrunを読取り専用で再照合し、JSON・HTMLへ観測結果を出力する。人手goldを受け取る機能は持たず、意味の正しさ・precision/recall/F1・summary忠実性・関連度精度・校正・ECE/Brierは常にnull、人手gold件数0を記録する。これは実行結果の構造と判断範囲の観測であり、人手精度評価ではない。
 
 ## 実行

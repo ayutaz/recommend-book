@@ -1,5 +1,7 @@
 # 外部専門家参照 v3: 候補監査と評価契約
 
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「履歴・結果・計画・スナップショット」です。本文の件数・計画・実行状態と、本文内の「現在」「最新」「実行中」は記録日時のものとして扱い、現在の状態は[current-status.md](current-status.md)を参照してください。
+
 2026-10-15現在: 以下は2026-10-13時点の準備・契約の記録。後続の[CoNSSA実評価と適用範囲](../data/autonomous-next-v3/evaluation/phase3-reference-route-v1/report.md)および[French原文5作品の正例限定評価](../data/autonomous-next-v3/evaluation/phase3-french-native-pilot-v1/report.json)は実行済みである。下表の許可0・未観測・実行前という値を現在値へ一般化しない。Frenchは5正例中4件を検出したが、正例限定でprecision・F1・校正は評価不能。現72ラベルに適用できる独立専門家正解0は維持する。最新状況は[実施報告](autonomous-next-delivery-report-v3.md)を参照する。
 
 確認日: 2026-10-13。本人の追加作業0、新しい人手注釈0。ここでの本文候補成立は外部LLMへの送信許可・分類の実行・精度達成とは別である。既観測60作品は開発用診断であり、新しいholdoutとは呼ばない。

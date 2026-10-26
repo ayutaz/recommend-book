@@ -1,5 +1,7 @@
 # 原文 PoC の独立 DB 統合
 
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「現行ガイド・仕様」です。手順・契約の再利用前に、現在の状態は[current-status.md](current-status.md)、入力・権利・版の前提は本文で確認してください。
+
 2026-10-12 に、保存済み Wikisource 20 作品・40 抜粋と、`wikidata-resolution-v1` の identity-map / SourceRecord / raw API 応答をオフラインで照合した。出力は `data/prose-poc/database-integrated-v1/dataset.sqlite`。本処理は追加取得、追加 LLM 分類、main / frozen DB の更新を行わない。
 
 実測結果は **8 接続・12 保留**。identity-map 上の matched は 10 件だが、Alice の言語精度差と Frankenstein の言語 statement 集合の差を追加保留した。保存済み値を正規化して接続件数を増やしていない。

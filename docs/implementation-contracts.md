@@ -1,5 +1,7 @@
 # データ処理の実装契約
 
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「現行ガイド・仕様」です。手順・契約の再利用前に、現在の状態は[current-status.md](current-status.md)、入力・権利・版の前提は本文で確認してください。
+
 2026年10月12日。ステージ1〜4を並列実装するための共通契約。
 
 共通モデルは `src/recommend_book/models.py` のPydanticモデルを使う。各担当は共通モデルの変更を統合担当へ提案し、担当範囲のモジュール・テストを編集する。Python 3.14、uv、pytest、httpx、jsonschema、pydanticを使う。依存管理は統合担当が行う。

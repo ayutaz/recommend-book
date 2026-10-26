@@ -1,5 +1,7 @@
 # 推薦のローカル・オフライン評価
 
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「履歴・結果・計画・スナップショット」です。本文の件数・計画・実行状態と、本文内の「現在」「最新」「実行中」は記録日時のものとして扱い、現在の状態は[current-status.md](current-status.md)を参照してください。
+
 `src/recommend_book/recommendation/evaluation.py`は、既存の評価済み作品をgroup単位で保留し、推薦engineのpersonal、観測popularity、独立したseeded randomを同じ候補集合で比較する。APIは`evaluate_recommendations(rows, *, folds=5, seed=20261013, k=10) -> dict`。ファイルの読取り・書込み、通信、LLM呼出しは行わず、呼出し側から渡されたrowだけで計算する。
 
 これは**grouped seeded cross-validation**であり、時間順の評価でも、将来の未読作品に対する前向き評価でもない。現在のfeature snapshotからは過去の評価時点の特徴量を再構築できない。設定は固定された探索的設定であり、独立した品質証明やclassificationの人手goldを作成しない。

@@ -1,5 +1,7 @@
 # Wikidata のタイトル・原言語 assertion 独立レビュー
 
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「履歴・結果・計画・スナップショット」です。本文の件数・計画・実行状態と、本文内の「現在」「最新」「実行中」は記録日時のものとして扱い、現在の状態は[current-status.md](current-status.md)を参照してください。
+
 2026-10-12。コードと保存済み raw / identity-map / SourceRecord / 保留診断を読み、観察と次 snapshot の仕様案だけを記録した。DB、frozen 2,000 件、分類 runner / models、原文 raw / results、保留状態は変更していない。追加 LLM・WDQS・entity API 取得はゼロ。一次資料の公開説明ページだけを参照した。原文統合の現状 **8 接続・12 保留**は [統合ガイド](prose-integration-guide.md) のまま。
 
 ## 確認した現在の変換

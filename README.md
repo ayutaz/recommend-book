@@ -1,10 +1,12 @@
 # recommend-book
 
-世界の小説を整理し、読書履歴や好みに合う作品を探すためのデータ基盤です。10万作品を検索でき、資料のジャンルや審査済みの内容特徴がある作品から推薦候補を探せます。作業ブランチでは2万作品の詳細分類と最終監査を完了しました。
+世界の小説を整理し、読書履歴や好みに合う作品を探すためのデータ基盤です。10万作品を検索でき、資料のジャンルや審査済みの内容特徴がある作品から推薦候補を探せます。2万作品の詳細分類と、日本のライトノベルのシリーズ・各巻・版の検索に対応しています。
+
+最新の件数・反映状況・未評価事項は[現在の到達点](docs/current-status.md)、各資料の位置付けは[文書一覧](docs/documentation-index.md)を参照してください。
 
 ## 現在使えるもの
 
-以下は2026年10月24日の作業ブランチで確認した値です。ローカルの試作で、最終監査・利用量集計・推薦画面・実HTTPの確認を完了しています。2万分類版の[CI](https://github.com/ayutaz/recommend-book/actions/runs/40093412432)はUbuntu・Windowsとも成功し、mainへの反映が残っています。mainには前段階の1万分類版を[PR #28](https://github.com/ayutaz/recommend-book/pull/28)で反映済みです。
+世界小説の以下の値は2026年10月24日の実DBで確認しました。ローカルの試作で、最終監査・利用量集計・推薦画面・実HTTPの確認を完了しています。2万分類版の[CI](https://github.com/ayutaz/recommend-book/actions/runs/40093412432)はUbuntu・Windowsとも成功し、[PR #30](https://github.com/ayutaz/recommend-book/pull/30)でmainへ反映済みです。ライトノベル対応の変更は[PR #31](https://github.com/ayutaz/recommend-book/pull/31)で確認できます。
 
 | 項目 | 状況 |
 |---|---|
@@ -19,7 +21,9 @@
 
 資料のジャンルによる類似候補と、読書履歴に基づく個人推薦は区別します。独立した正解データによる分類精度、確信度の校正、本人向け推薦の改善は未評価です。翻訳・版の対応や独立した名寄せ精度も未検証です。
 
-日本のライトノベルは必須対象ですが、現在はシリーズ単位の収集・検索・推薦が未対応で、「魔法科高校の劣等生」も未収録です。この不足の解消を次の件数拡張より優先します。
+日本のライトノベルは、シリーズ・各巻・版を分けて検索・推薦します。「魔法科高校の劣等生」はシリーズとして検索し、好きな作品に指定できます。書名の句読点・巻数・副題の表記揺れにも対応しています。出版社の掲載書誌も検索でき、確認済みの物語シリーズや版と区別して表示します。
+
+2026年10月26日時点で物語シリーズ2,218、内容特徴あり584シリーズと個別小説1作品、版の所属5,163関係、出版社掲載書誌10,094参照です。直近ではHJの48所属、掲載書誌1参照、『空ろの箱と零のマリア』の内容特徴を追加しました。版候補などを含む台帳100,884行を、小説数とは扱いません。日本のライトノベルの全国的な網羅は未達です。[追加状況と残作業](docs/light-novels-progress-v1.md)に詳細をまとめています。
 
 詳細分類では、テーマ・物語構造・主人公・雰囲気などの根拠付き特徴を使います。根拠がない項目は不明とし、原作本文の裏付けがない文体は推定しません。
 
@@ -31,10 +35,10 @@ Python 3.14と[uv](https://docs.astral.sh/uv/)を使います。この環境の�
 
 ```powershell
 uv sync --locked
-uv run python scripts/serve_scale_catalogue_v1.py --database data/autonomous-next-v3/scale-v1/catalogue.sqlite --port 8766
+uv run --locked python scripts/serve_scale_catalogue_v1.py --database data/autonomous-next-v3/scale-v1/catalogue.sqlite --light-novels-database data/light-novels-v1/catalogue.sqlite --port 8769
 ```
 
-ブラウザで [小説の本棚](http://127.0.0.1:8766/) を開きます。
+ブラウザで [小説の本棚](http://127.0.0.1:8769/) を開きます。今回の確認環境では起動しています。停止後は上のコマンドで再起動できます。収録状況や詳しい絞込み候補は「収録状況と詳しい絞込みを表示」から読み込みます。「対象」で「日本のライトノベル」、「種別」で「シリーズ・作品グループ」を選ぶとシリーズなどの単位で探せます。ライトノベルDBを用意していない環境では、`--light-novels-database`を省略して世界小説だけを開けます。
 
 取得データ・DB・個人履歴はGit対象外の `data/` に保存します。リポジトリを取得するだけでは推薦用データは揃いません。従来の試作画面は `data/autonomous-next-v3/database/phase17-world-delivery-v1/index.html` にあります。
 
@@ -42,19 +46,19 @@ uv run python scripts/serve_scale_catalogue_v1.py --database data/autonomous-nex
 
 ## ここから進めること
 
-最新の計画は[v22：日本のライトノベル対応](docs/autonomous-next-phase-plan-v22.md)、現在地は[2万分類の到達状況](docs/scale-classification-v4.md)にまとめています。依頼された18:01の計画1〜3は完了しました。新たな不具合や変更がなければ同じ分類・監査・画面確認を繰り返しません。
+最新の計画は[v25：日本のライトノベルを広く収録する](docs/autonomous-next-phase-plan-v25.md)、現在地は[ライトノベル対応の進捗](docs/light-novels-progress-v1.md)にまとめています。[2万分類の到達状況](docs/scale-classification-v4.md)は前段階の記録です。新たな不具合や変更がなければ同じ分類・監査・画面確認を繰り返しません。
 
-1. 「魔法科高校の劣等生」を小説シリーズとして検索し、好きな作品に指定して推薦できる経路を作ります。シリーズ・各巻・版は区別します。
-2. WikidataとNDL作成の書誌を優先し、日本のライトノベル100シリーズで確認した後、1,000シリーズへ広げます。
-3. シリーズ数・巻数・内容分類数を別に管理し、その実測を基にライトノベルの追加と世界小説の3万・5万・10万作品への拡張を進めます。
+1. 世界小説の詳細分類を2万から3万へ、利用条件と内容根拠が揃う差分から拡張します。
+2. 日本のライトノベルも、検索漏れ・未接続版・新しい内容資料のある差分を追加します。
+3. 各段階の所要時間・採用率・年代や国の偏りを確認し、5万・10万分類へ進みます。
 
-2万分類版のmain反映は[PR #30](https://github.com/ayutaz/recommend-book/pull/30)で別に進めます。現在はdraftです。一般公開・商用提供は用途条件と公開構成が成立した段階で扱います。
+ライトノベル追加と応答時間改善の結果は[実行記録](docs/light-novel-delivery-2026-10-26.md)、コードの統合先は[PR #31](https://github.com/ayutaz/recommend-book/pull/31)です。書誌処理は改善しましたが、推薦には長い待ち時間が残ります。一般公開・商用提供は用途条件と公開構成が成立した段階で扱います。
 
 既存履歴と確実に結び付く範囲で評価し、追加の試読・採点・履歴入力は依頼しません。
 
 データ購入・外部委託・有料APIへの切替は行わず、無料公開資料と既存のCodex CLIを使います。データのAI入力・表示・再配布・商用利用条件は資料と用途ごとに管理します。
 
-- [次の実行計画：日本のライトノベルを検索・推薦の必須対象にする](docs/autonomous-next-phase-plan-v22.md)
+- [次の実行計画：日本のライトノベルを広く収録する](docs/autonomous-next-phase-plan-v25.md)
 - [詳細分類2万作品への実行状況と残作業](docs/scale-classification-v4.md)
 - [品質評価仕様](docs/quality-evaluation-protocol-v1.md)
 - [初期設計](docs/world-novel-dataset-plan.md)

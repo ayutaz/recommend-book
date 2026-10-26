@@ -1,5 +1,7 @@
 # CoNSSAとmain2kのタイトル一致2候補：オフライン書誌照合
 
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「履歴・結果・計画・スナップショット」です。本文の件数・計画・実行状態と、本文内の「現在」「最新」「実行中」は記録日時のものとして扱い、現在の状態は[current-status.md](current-status.md)を参照してください。
+
 2026-10-12。保存済みCoNSSA TSV、native fixture、curated reference、main2k書誌入力、Wikidataの作品・著者rawだけを照合した。追加Web/LLM取得は0、モデル結果の参照も0。元source/raw/frozen/curatedは変更していない。
 
 **結論は2件ともhold、evaluation_readyは0件。** 作者・作品authorityの一致は同一作品への支持であり、独立した人手同定、注釈された版・表現の一致、taxonomyラベルの意味確認を済ませたことにはしない。

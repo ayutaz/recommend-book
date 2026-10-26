@@ -1,5 +1,7 @@
 # 2作品の限定処理とPoC再判定
 
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「履歴・結果・計画・スナップショット」です。本文の件数・計画・実行状態と、本文内の「現在」「最新」「実行中」は記録日時のものとして扱い、現在の状態は[current-status.md](current-status.md)を参照してください。
+
 実施日: 2026-10-20。[実行時の固定計画v16](https://github.com/ayutaz/recommend-book/blob/0bdc3086b7da01cb59c67832517965670e6abcd8/docs/autonomous-next-phase-plan-v16.md)の1〜4を実行した。追加費用・外部委託・追加の本人作業は0。保存済み資料から2作品を分類・審査し、2候補・7特徴を追加した。履歴接続と独立正解は増えていない。
 
 [PR #18](https://github.com/ayutaz/recommend-book/pull/18)でmainへ統合済み（`f1606ce`）。両OSのCI成功と、審査したtreeの一致・main同期を確認した。以後の作業順序は[現行の実行計画](autonomous-next-phase-plan-v16.md)を参照する。

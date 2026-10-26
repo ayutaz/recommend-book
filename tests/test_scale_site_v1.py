@@ -311,3 +311,594 @@ def test_real_sqlite_catalogue_http_pagination_and_persistent_status(tmp_path):
         server.shutdown()
         server.server_close()
         thread.join()
+
+
+@pytest.mark.parametrize('version', ['v1', 'v2'])
+def test_wikipedia_membership_credit_is_public_bibliography_not_content_classification(version):
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    credit = {'credit': 'Wikipedia contributors: Example novel',
+        'source_url': 'https://ja.wikipedia.org/w/index.php?oldid=17',
+        'history_url': 'https://ja.wikipedia.org/w/index.php?title=Example&action=history',
+        'license': 'CC-BY-SA-4.0', 'license_url': 'https://creativecommons.org/licenses/by-sa/4.0/',
+        'changes': 'Bibliographic fields extracted', 'raw_path': 'PRIVATE_ARTICLE_PATH'}
+    row = public_work({'entry_id': 'lne:ndl:R100000002-I1', 'entry_kind': 'edition',
+        'relation_resolution': 'edition_series_membership_verified', 'content_sources': [],
+        'series_membership_evidence': {'rule_version': 'ndl-edition-wikipedia-novel-credit-membership-' + version,
+            'article_attribution': credit, 'manifest_path': 'PRIVATE_MANIFEST_PATH'}})
+    assert row['membership_source']['attribution'] == credit['credit']
+    assert row['membership_source']['source_url'] == credit['source_url']
+    assert row['membership_source']['history_url'] == credit['history_url']
+    assert row['membership_source']['license'] == 'CC-BY-SA-4.0'
+    assert row['content_sources'] == [] and not row.get('llm_features')
+    assert 'PRIVATE_' not in json.dumps(row)
+
+
+@pytest.mark.parametrize('relation', ['original_work_and_story_series_unresolved', None])
+def test_unverified_membership_does_not_publish_article_credit(relation):
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = public_work({'relation_resolution': relation, 'series_membership_evidence': {
+        'rule_version': 'ndl-edition-wikipedia-novel-credit-membership-v1',
+        'article_attribution': {'credit': 'UNVERIFIED', 'source_url': 'javascript:alert(1)'}}})
+    assert 'membership_source' not in row
+
+
+def orange_listing_association():
+    return {'rule_version': 'orange-explicit-child-ndl-bibliographic-reference-association-v1',
+        'scope': 'bibliographic_reference_association', 'group_entry_id': 'lng:pub:orange:' + 'a' * 32,
+        'source_group_title': '掲載グループ', 'official_title': '完全な子書名',
+        'official_parent_url': 'https://orangebunko.shueisha.co.jp/book/series/example',
+        'official_child_url': 'https://orangebunko.shueisha.co.jp/book/opaque-reference',
+        'official_credit_literals': [{'role_literal': '著者', 'name': '著者名', 'raw_path': 'PRIVATE'}],
+        'edition_identity_asserted': False, 'story_series_identity_asserted': False,
+        'original_work_identity_asserted': False, 'light_novel_identity_asserted': False,
+        'manifest_path': 'PRIVATE_MANIFEST', 'publisher_source_evidence': [{'raw_path': 'PRIVATE_RAW'}]}
+
+
+def test_orange_listing_public_fields_are_separate_from_identity_and_content():
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = public_work({'publisher_listing_associations': [orange_listing_association()]})
+    association, = row['publisher_listing_associations']
+    assert association['title'] == '完全な子書名' and association['group_title'] == '掲載グループ'
+    assert association['credit_literals'] == [{'role_literal': '著者', 'name': '著者名'}]
+    assert association['scope'] == 'bibliographic_reference_association'
+    assert association['edition_identity_asserted'] is False
+    assert not row.get('members') and not row.get('content_sources')
+    assert 'PRIVATE' not in json.dumps(row)
+
+
+@pytest.mark.parametrize('mutation', ['version', 'identity', 'url', 'group'])
+def test_unverified_orange_listing_claims_are_not_published(mutation):
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    value = orange_listing_association()
+    if mutation == 'version': value['rule_version'] = 'unknown-rule'
+    elif mutation == 'identity': value['edition_identity_asserted'] = True
+    elif mutation == 'url': value['official_child_url'] = 'javascript:alert(1)'
+    elif mutation == 'group': value['group_entry_id'] = 'PRIVATE_PATH'
+    row = public_work({'publisher_listing_associations': [value]})
+    assert not row.get('publisher_listing_associations')
+
+
+def kadokawa_electronic_listing():
+    return {'entry_id': 'lnr:pub:kadokawa:' + 'a' * 32, 'entry_kind': 'publisher_reference',
+        'title': '公式の完全題', 'reference_identity_basis': 'publisher_product_reference',
+        'publisher_reference_kind': 'kadokawa_product_reference',
+        'reference_scope': 'private_bibliographic_discovery',
+        'source_url': 'https://www.kadokawa.co.jp/product/322401000001/', 'read_status': 'reading',
+        'publication_label': '電撃文庫', 'isbn': [],
+        'publisher_product_reference': {'publisher_reference_id': 'kadokawa-product:322401000001',
+            'title': '公式の完全題', 'source_url': 'https://www.kadokawa.co.jp/product/322401000001/',
+            'label': '電撃文庫', 'form': '電子専売', 'credits': [],
+            'credit_literals': [{'role_literal': '著者', 'name': '公式表示名', 'raw_path': 'PRIVATE'}],
+            'media_references': [], 'evidence': {'raw_path': 'PRIVATE'}},
+        'usage_permissions': {'purpose': 'private_bibliographic_discovery',
+            'public_display': 'unknown', 'commercial_reuse': 'unknown',
+            'prose_ai_permission': False, 'images_permission': False, 'raw_redistribution_permission': False},
+        'authors': [{'name': '推定しない'}], 'members': [{'title': '推定しない'}],
+        'light_novel_confirmed': True, 'recommendable': True, 'edition_bibliography_confirmed': True,
+        'story_series_identity_asserted': True, 'original_work_identity_asserted': True,
+        'edition_identity_asserted': True, 'light_novel_identity_asserted': True,
+        'source_reference_assertions': [{'manifest_path': 'PRIVATE'}], 'llm_features': [{'label': '推定しない'}]}
+
+
+def test_kadokawa_electronic_listing_is_a_safe_reference_without_identity_or_isbn_inference():
+    from recommend_book.recommendation.scale_site_v1 import _ENTRY_ID, public_work
+    import re
+    row = kadokawa_electronic_listing()
+    assert re.fullmatch(_ENTRY_ID, row['entry_id'])
+    public = public_work(row)
+    assert public['entry_id'] == public['work_id'] == row['entry_id']
+    assert public['publisher_reference_kind'] == 'kadokawa_product_reference'
+    assert public['reference_identity_basis'] == 'publisher_product_reference'
+    assert public['reference_scope'] == 'private_bibliographic_discovery'
+    assert public['entry_kind'] == 'publisher_reference' and public['read_status'] == 'reading'
+    assert public['authors'] == public['members'] == public['isbn'] == []
+    assert public['light_novel_confirmed'] is False and public['recommendable'] is False
+    for flag in ('edition_identity_asserted', 'story_series_identity_asserted',
+                 'original_work_identity_asserted', 'light_novel_identity_asserted'):
+        assert public[flag] is False
+    assert not public.get('edition_bibliography_confirmed') and not public.get('llm_features')
+    product = public['publisher_product_reference']
+    assert product['title'] == row['title'] and product['form'] == '電子専売'
+    assert product['label'] == public['publication_label'] == '電撃文庫'
+    assert product['publisher_reference_id'] == 'kadokawa-product:322401000001'
+    assert product['credit_literals'] == [{'role_literal': '著者', 'name': '公式表示名'}]
+    assert public['usage_permissions']['public_display'] == 'unknown'
+    assert public['usage_permissions']['commercial_reuse'] == 'unknown'
+    assert public['usage_permissions']['prose_ai_permission'] is False
+    assert 'PRIVATE' not in json.dumps(public, ensure_ascii=False)
+
+
+@pytest.mark.parametrize('mutation', ['bad_id', 'wrong_kind', 'wrong_basis', 'wrong_scope'])
+def test_kadokawa_reference_requires_its_typed_identity_and_reference_scope(mutation):
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = kadokawa_electronic_listing()
+    if mutation == 'bad_id': row['entry_id'] = 'lnr:pub:kadokawa:' + 'A' * 32
+    elif mutation == 'wrong_kind': row['publisher_reference_kind'] = 'futaba_mnovels_product_reference'
+    elif mutation == 'wrong_basis': row['reference_identity_basis'] = 'publisher_source_group'
+    else: row['reference_scope'] = 'public_display_allowed'
+    public = public_work(row)
+    assert 'publisher_product_reference' not in public
+    assert 'publisher_reference_kind' not in public
+
+
+def test_kadokawa_reference_drops_nested_proof_and_unknown_permissions_never_become_allowed():
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = kadokawa_electronic_listing()
+    row['isbn'] = ['9780000000000']  # The electronic listing contract has no ISBN.
+    row['publisher_product_reference'].update(source_url='javascript:alert(1)',
+        credits=[{'role': 'author', 'name': {'raw_path': 'PRIVATE'}}],
+        credit_literals=[{'role_literal': {'path': 'PRIVATE'}, 'name': '表示名'}])
+    row['usage_permissions']['prose_ai_permission'] = 'allowed'
+    public = public_work(row)
+    assert public['isbn'] == []
+    assert public['publisher_product_reference']['source_url'] == ''
+    assert public['publisher_product_reference']['credit_literals'] == []
+    assert public.get('usage_permissions', {}).get('prose_ai_permission') != 'allowed'
+    assert 'PRIVATE' not in json.dumps(public)
+
+
+def kadokawa_paper_listing():
+    row = kadokawa_electronic_listing()
+    row.update(entry_id='lnr:pub:kadokawaprint:' + 'b' * 32,
+               publisher_reference_kind='kadokawa_print_product_reference', isbn=['978-0-306-40615-7'])
+    row['publisher_product_reference']['form'] = '文庫'
+    return row
+
+
+def test_kadokawa_paper_listing_keeps_only_valid_isbn_literals_without_asserting_an_edition():
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = kadokawa_paper_listing()
+    row['isbn'] += ['0-306-40615-2', '978-0-306-40615-8', 9780306406157, None, {'path': 'PRIVATE'}]
+    public = public_work(row)
+    assert public['entry_id'] == public['work_id'] == row['entry_id']
+    assert public['entry_kind'] == 'publisher_reference'
+    assert public['publisher_reference_kind'] == 'kadokawa_print_product_reference'
+    assert public['publisher_provider'] == 'kadokawa-print'
+    assert public['reference_scope'] == 'private_bibliographic_discovery'
+    assert public['isbn'] == ['978-0-306-40615-7', '0-306-40615-2']
+    assert public['publisher_product_reference']['form'] == '文庫'
+    assert public['publisher_product_reference']['credit_literals'] == [{'role_literal': '著者', 'name': '公式表示名'}]
+    assert public['members'] == public['authors'] == [] and public['recommendable'] is False
+    assert public['light_novel_confirmed'] is False
+    assert all(public[key] is False for key in ('edition_identity_asserted', 'story_series_identity_asserted',
+        'original_work_identity_asserted', 'light_novel_identity_asserted'))
+    assert public['usage_permissions']['public_display'] == public['usage_permissions']['commercial_reuse'] == 'unknown'
+    assert 'PRIVATE' not in json.dumps(public)
+    electronic = kadokawa_electronic_listing()
+    electronic['isbn'] = row['isbn']
+    assert public_work(electronic)['isbn'] == [], 'paper ISBN support must not supplement electronic listings'
+
+
+@pytest.mark.parametrize('mutation', ['namespace', 'marker', 'basis', 'scope'])
+def test_kadokawa_paper_reference_cannot_reuse_a_different_profile_or_purpose(mutation):
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = kadokawa_paper_listing()
+    if mutation == 'namespace': row['entry_id'] = 'lnr:pub:kadokawa:' + 'b' * 32
+    elif mutation == 'marker': row['publisher_reference_kind'] = 'kadokawa_product_reference'
+    elif mutation == 'basis': row['reference_identity_basis'] = 'edition'
+    else: row['reference_scope'] = 'public_display_allowed'
+    public = public_work(row)
+    assert 'publisher_product_reference' not in public
+    assert 'publisher_reference_kind' not in public
+    assert public['isbn'] == []
+
+
+def tobooks_listing():
+    row = kadokawa_electronic_listing()
+    row.update(entry_id='lnr:pub:tobooks:' + 'c' * 32, publisher_reference_kind='tobooks_product_reference',
+               source_url='https://www.tobooks.jp/contents/12345', isbn=['9780306406157'], publication_label=None)
+    row['publisher_product_reference'].update(publisher_reference_id='tobooks-product:12345',
+        source_url=row['source_url'], label=None, form=None,
+        credits=[{'role': 'unknown', 'name': '掲載名'}],
+        credit_literals=[{'role_literal': None, 'name': '掲載名', 'locator': 'PRIVATE'}])
+    return row
+
+
+def test_tobooks_listing_keeps_source_isbn_and_unknown_roles_without_creating_identity():
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = tobooks_listing()
+    public = public_work(row)
+    assert public['entry_id'] == row['entry_id'] and public['publisher_provider'] == 'tobooks'
+    assert public['publisher_reference_kind'] == 'tobooks_product_reference'
+    assert public['isbn'] == ['9780306406157']
+    assert public['authors'] == public['members'] == [] and public['recommendable'] is False
+    product = public['publisher_product_reference']
+    assert product['source_url'] == row['source_url']
+    assert product['publisher_reference_id'] == 'tobooks-product:12345'
+    assert product['label'] is product['form'] is None
+    assert product['credits'] == [{'role': 'unknown', 'name': '掲載名'}]
+    assert product['credit_literals'] == [{'role_literal': None, 'name': '掲載名'}]
+    assert all(public[key] is False for key in ('edition_identity_asserted', 'story_series_identity_asserted',
+        'original_work_identity_asserted', 'light_novel_identity_asserted'))
+    assert public['usage_permissions']['public_display'] == public['usage_permissions']['commercial_reuse'] == 'unknown'
+    assert 'PRIVATE' not in json.dumps(public)
+
+
+@pytest.mark.parametrize('mutation', ['marker', 'scope', 'isbn'])
+def test_tobooks_reference_rejects_other_profiles_purposes_or_non_source_isbn_values(mutation):
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = tobooks_listing()
+    if mutation == 'marker': row['publisher_reference_kind'] = 'kadokawa_product_reference'
+    elif mutation == 'scope': row['reference_scope'] = 'public_display_allowed'
+    else: row['isbn'] = ['978-0-306-40615-7', '0306406152', '9780306406158', 9780306406157, {'path': 'PRIVATE'}]
+    public = public_work(row)
+    assert public['isbn'] == []
+    if mutation != 'isbn':
+        assert 'publisher_product_reference' not in public
+
+
+def kadokawa_trade_listing():
+    row = kadokawa_paper_listing()
+    row.update(entry_id='lnr:pub:kadokawatrade:' + 'd' * 32,
+               publisher_reference_kind='kadokawa_trade_product_reference')
+    row['publisher_product_reference'].update(form='単行本', binding='PRIVATE_HARDCOVER', dimensions='PRIVATE_B6')
+    return row
+
+
+def test_kadokawa_trade_reference_keeps_explicit_form_and_isbn_without_binding_or_identity_inference():
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = kadokawa_trade_listing()
+    row['isbn'] += ['0-306-40615-2', '9780306406158', 9780306406157]
+    public = public_work(row)
+    assert public['entry_id'] == row['entry_id'] and public['publisher_provider'] == 'kadokawa-trade'
+    assert public['publisher_reference_kind'] == 'kadokawa_trade_product_reference'
+    assert public['publisher_product_reference']['form'] == '単行本'
+    assert public['isbn'] == ['978-0-306-40615-7', '0-306-40615-2']
+    assert public['publisher_product_reference']['credit_literals'] == [{'role_literal': '著者', 'name': '公式表示名'}]
+    assert public['authors'] == public['members'] == [] and public['recommendable'] is False
+    assert all(public[key] is False for key in ('edition_identity_asserted', 'story_series_identity_asserted',
+        'original_work_identity_asserted', 'light_novel_identity_asserted'))
+    assert public['usage_permissions']['public_display'] == 'unknown'
+    assert 'PRIVATE' not in json.dumps(public)
+
+
+@pytest.mark.parametrize('mutation', ['namespace', 'id', 'marker', 'form', 'scope', 'rights'])
+def test_kadokawa_trade_reference_profile_and_permission_boundaries(mutation):
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = kadokawa_trade_listing()
+    if mutation == 'namespace': row['entry_id'] = 'lnr:pub:kadokawaprint:' + 'd' * 32
+    elif mutation == 'id': row['entry_id'] = 'lnr:pub:kadokawatrade:' + 'D' * 32
+    elif mutation == 'marker': row['publisher_reference_kind'] = 'kadokawa_print_product_reference'
+    elif mutation == 'form': row['publisher_product_reference']['form'] = 'ハードカバー'
+    elif mutation == 'scope': row['reference_scope'] = 'public_display_allowed'
+    else: row['usage_permissions']['public_display'] = 'allowed'
+    public = public_work(row)
+    if mutation == 'rights':
+        assert public.get('usage_permissions', {}).get('public_display') != 'allowed'
+    else:
+        assert 'publisher_reference_kind' not in public and 'publisher_product_reference' not in public
+        assert public['isbn'] == []
+
+
+def finite_lineup_listing(provider):
+    row = tobooks_listing()
+    row.update(entry_id='lnr:pub:' + provider + ':' + 'e' * 32,
+               publisher_reference_kind=provider + '_product_reference', isbn=['9780306406157'])
+    product = row['publisher_product_reference']
+    if provider == 'gagaga':
+        row['source_url'] = 'https://gagagabunko.jp/lineup/202609.html#02'
+        product.update(publisher_reference_id='publisher-lineup:' + 'a' * 24, label='ガガガ文庫',
+            credits=[{'role': 'unknown', 'name': '掲載名'}], credit_literals=[{'role_literal': '著', 'name': '掲載名'}])
+    else:
+        row['source_url'] = 'https://www.kodansha.co.jp/comic/products/0000431602'
+        product.update(publisher_reference_id='kodansha-product:0000431602', label='講談社ラノベ文庫',
+            credits=[{'role': 'author', 'name': '掲載名'}, {'role': 'unknown', 'name': '役割不明の掲載名'}], credit_literals=[])
+    product['source_url'] = row['source_url']
+    return row
+
+
+@pytest.mark.parametrize('provider', ['gagaga', 'kodansha'])
+def test_finite_lineup_references_keep_credit_semantics_and_unknown_isbn_without_identity(provider):
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = finite_lineup_listing(provider)
+    public = public_work(row)
+    assert public['entry_id'] == row['entry_id'] and public['publisher_provider'] == provider
+    assert public['publisher_reference_kind'] == provider + '_product_reference'
+    assert public['isbn'] == (['9780306406157'] if provider == 'gagaga' else [])
+    assert public['authors'] == public['members'] == []
+    assert public['recommendable'] is public['light_novel_confirmed'] is False
+    assert public['publisher_product_reference']['source_url'] == row['source_url']
+    assert public['publisher_product_reference']['publisher_reference_id'] == row['publisher_product_reference']['publisher_reference_id']
+    if provider == 'gagaga':
+        assert public['publisher_product_reference']['credit_literals'] == [{'role_literal': '著', 'name': '掲載名'}]
+    else:
+        assert public['publisher_product_reference']['credit_literals'] == []
+        assert public['publisher_product_reference']['credits'] == row['publisher_product_reference']['credits']
+    assert all(public[key] is False for key in ('edition_identity_asserted', 'story_series_identity_asserted',
+        'original_work_identity_asserted', 'light_novel_identity_asserted'))
+    assert public['usage_permissions']['public_display'] == public['usage_permissions']['commercial_reuse'] == 'unknown'
+    assert 'PRIVATE' not in json.dumps(public)
+
+
+@pytest.mark.parametrize('provider', ['gagaga', 'kodansha'])
+@pytest.mark.parametrize('mutation', ['marker', 'scope'])
+def test_finite_lineup_references_require_matching_profile_and_private_purpose(provider, mutation):
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = finite_lineup_listing(provider)
+    if mutation == 'marker': row['publisher_reference_kind'] = 'tobooks_product_reference'
+    else: row['reference_scope'] = 'public_display_allowed'
+    public = public_work(row)
+    assert 'publisher_product_reference' not in public
+    assert public['isbn'] == []
+
+
+def overlap_detail_listing(category='nvl'):
+    row = kadokawa_paper_listing()
+    row.update(entry_id='lnr:pub:overlapdetails:' + 'a' * 32,
+               publisher_reference_kind='overlap_detail_product_reference',
+               source_url='https://over-lap.co.jp/test/product/0/opaque_1/?cat=' + category.upper() + '&swrd=')
+    row['publisher_product_reference'].update(publisher_reference_id='overlap-' + category + '-product:opaque_1',
+        source_url=row['source_url'], label='掲載カードのレーベル', form=None,
+        credits=[{'role': 'unknown', 'name': '無印の掲載名'}, {'role': 'illustrator', 'name': '明示の掲載名'}],
+        credit_literals=[{'role_literal': None, 'name': '無印の掲載名'},
+            {'role_literal': 'イラスト', 'role_marker_literal': 'イラスト/' if category == 'nvf' else 'イラスト／',
+             'name': '明示の掲載名', 'locator': 'PRIVATE'}])
+    return row
+
+
+@pytest.mark.parametrize('category', ['nvl', 'nvf', 'nvr'])
+def test_overlap_detail_reference_keeps_literal_isbn_and_explicit_illustrator_without_author_inference(category):
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = overlap_detail_listing(category)
+    public = public_work(row)
+    assert public['entry_id'] == row['entry_id'] and public['publisher_provider'] == 'overlap-details'
+    assert public['publisher_reference_kind'] == 'overlap_detail_product_reference'
+    assert public['isbn'] == ['978-0-306-40615-7']
+    product = public['publisher_product_reference']
+    assert product['publisher_reference_id'] == row['publisher_product_reference']['publisher_reference_id']
+    assert product['credit_literals'] == [{'role_literal': None, 'name': '無印の掲載名'},
+        {'role_literal': 'イラスト', 'role_marker_literal': 'イラスト/' if category == 'nvf' else 'イラスト／', 'name': '明示の掲載名'}]
+    assert product['credits'] == row['publisher_product_reference']['credits'] and product['form'] is None
+    assert public['authors'] == public['members'] == [] and public['recommendable'] is False
+    assert all(public[key] is False for key in ('edition_identity_asserted', 'story_series_identity_asserted',
+        'original_work_identity_asserted', 'light_novel_identity_asserted'))
+    assert public['usage_permissions']['public_display'] == 'unknown'
+    assert 'PRIVATE' not in json.dumps(public)
+
+
+@pytest.mark.parametrize('mutation', ['marker', 'scope', 'bnk'])
+def test_overlap_detail_reference_does_not_widen_provider_or_source_scope(mutation):
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = overlap_detail_listing()
+    if mutation == 'marker': row['publisher_reference_kind'] = 'tobooks_product_reference'
+    elif mutation == 'scope': row['reference_scope'] = 'public_display_allowed'
+    else: row['publisher_product_reference']['publisher_reference_id'] = 'overlap-product:opaque_1'
+    public = public_work(row)
+    assert 'publisher_product_reference' not in public
+    assert public['isbn'] == []
+
+
+def shueisha_dx_listing():
+    row = kadokawa_electronic_listing()
+    row.update(entry_id='lnr:pub:shueishadx:' + 'b' * 32,
+               publisher_reference_kind='shueisha_dx_product_reference',
+               source_url='https://dash.shueisha.co.jp/bookDetail/index/978-0-306-40615-7', isbn=['9780306406157'])
+    row['publisher_product_reference'].update(publisher_reference_id='978-0-306-40615-7',
+        source_url=row['source_url'], label='ダッシュエックス文庫', form=None,
+        credits=[{'role': 'unknown', 'name': '掲載名'}],
+        credit_literals=[{'role_literal': '著者・イラスト', 'name': '掲載名', 'locator': 'PRIVATE'}])
+    return row
+
+
+@pytest.mark.parametrize('source_id', ['978-0-306-40615-7', 'XXX-X-XX-XXXXXX-1'])
+def test_shueisha_dx_reference_preserves_compound_roles_but_url_is_not_an_isbn_witness(source_id):
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = shueisha_dx_listing()
+    row['publisher_product_reference']['publisher_reference_id'] = source_id
+    row['source_url'] = row['publisher_product_reference']['source_url'] = 'https://dash.shueisha.co.jp/bookDetail/index/' + source_id
+    public = public_work(row)
+    assert public['entry_id'] == row['entry_id'] and public['publisher_provider'] == 'shueisha-dx'
+    assert public['publisher_reference_kind'] == 'shueisha_dx_product_reference'
+    assert public['isbn'] == [], 'a URL-derived ISBN must not become independent publisher ISBN evidence'
+    assert public['publisher_product_reference']['publisher_reference_id'] == source_id
+    assert public['publisher_product_reference']['credit_literals'] == [{'role_literal': '著者・イラスト', 'name': '掲載名'}]
+    assert public['publisher_product_reference']['credits'] == [{'role': 'unknown', 'name': '掲載名'}]
+    assert public['authors'] == public['members'] == [] and public['recommendable'] is False
+    assert all(public[key] is False for key in ('edition_identity_asserted', 'story_series_identity_asserted',
+        'original_work_identity_asserted', 'light_novel_identity_asserted'))
+    assert public['usage_permissions']['public_display'] == 'unknown'
+    assert 'PRIVATE' not in json.dumps(public)
+
+
+@pytest.mark.parametrize('mutation', ['marker', 'scope', 'comics'])
+def test_shueisha_dx_reference_cannot_widen_profile_purpose_or_novel_label_scope(mutation):
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = shueisha_dx_listing()
+    if mutation == 'marker': row['publisher_reference_kind'] = 'tobooks_product_reference'
+    elif mutation == 'scope': row['reference_scope'] = 'public_display_allowed'
+    else: row['publisher_product_reference']['label'] = 'ダッシュエックスコミックス'
+    public = public_work(row)
+    assert 'publisher_product_reference' not in public and public['isbn'] == []
+
+
+def gc_listing():
+    row = tobooks_listing()
+    row.update(entry_id='lnr:pub:gc:' + 'c' * 32, publisher_reference_kind='gc_product_reference',
+               source_url='https://gcnovels.jp/book/123', source_frame_scope={'private': 'PRIVATE'})
+    row['publisher_product_reference'].update(publisher_reference_id='gc-product:123', source_url=row['source_url'],
+        credits=[{'role': 'author', 'name': '小説の掲載名'}, {'role': 'unknown', 'name': '別の掲載名'}],
+        credit_literals=[{'role_literal': '小説', 'name': '小説の掲載名'},
+            {'role_literal': '企画協力', 'name': '別の掲載名', 'locator': 'PRIVATE'}])
+    return row
+
+
+def test_gc_reference_keeps_source_credit_literals_and_unknown_bibliography_without_promoting_identity():
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = gc_listing()
+    public = public_work(row)
+    assert public['entry_id'] == row['entry_id'] and public['publisher_provider'] == 'gc'
+    assert public['publisher_reference_kind'] == 'gc_product_reference'
+    assert public['isbn'] == public['authors'] == public['members'] == []
+    product = public['publisher_product_reference']
+    assert product['publisher_reference_id'] == 'gc-product:123' and product['source_url'] == row['source_url']
+    assert product['label'] is product['form'] is None
+    assert product['credits'] == row['publisher_product_reference']['credits']
+    assert product['credit_literals'] == [{'role_literal': '小説', 'name': '小説の掲載名'},
+        {'role_literal': '企画協力', 'name': '別の掲載名'}]
+    assert public['recommendable'] is public['light_novel_confirmed'] is False
+    assert all(public[key] is False for key in ('edition_identity_asserted', 'story_series_identity_asserted',
+        'original_work_identity_asserted', 'light_novel_identity_asserted'))
+    assert public['usage_permissions']['public_display'] == 'unknown'
+    assert 'PRIVATE' not in json.dumps(public) and 'source_frame_scope' not in public
+
+
+@pytest.mark.parametrize('mutation', ['marker', 'scope'])
+def test_gc_reference_requires_its_own_profile_and_private_purpose(mutation):
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = gc_listing()
+    if mutation == 'marker': row['publisher_reference_kind'] = 'tobooks_product_reference'
+    else: row['reference_scope'] = 'public_display_allowed'
+    public = public_work(row)
+    assert 'publisher_product_reference' not in public and public['isbn'] == []
+
+
+def overlap_bunko_listing():
+    row = kadokawa_electronic_listing()
+    row.update(entry_id='lnr:pub:overlap:' + 'd' * 32,
+               publisher_reference_kind='overlap_bunko_product_reference', publication_label='オーバーラップ文庫',
+               source_url='https://over-lap.co.jp/test/product/0/opaque_1/?cat=BNK&swrd=', isbn=['9780306406157'])
+    row['publisher_product_reference'].update(publisher_reference_id='overlap-product:opaque_1',
+        source_url=row['source_url'], label='オーバーラップ文庫', form='推定しない',
+        credits=[{'role': 'author', 'name': '推定しない'}], credit_literals=[{'role_literal': '著者', 'name': '推定しない'}])
+    return row
+
+
+def test_overlap_bunko_card_reference_does_not_invent_unobserved_bibliographic_fields():
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = overlap_bunko_listing()
+    public = public_work(row)
+    assert public['entry_id'] == row['entry_id'] and public['publisher_provider'] == 'overlap-bunko'
+    assert public['publisher_reference_kind'] == 'overlap_bunko_product_reference'
+    assert public['isbn'] == public['authors'] == public['members'] == []
+    product = public['publisher_product_reference']
+    assert product['publisher_reference_id'] == 'overlap-product:opaque_1'
+    assert product['label'] == 'オーバーラップ文庫' and product['source_url'] == row['source_url']
+    assert product['form'] is None and product['credits'] == product['credit_literals'] == []
+    assert public['recommendable'] is public['light_novel_confirmed'] is False
+    assert all(public[key] is False for key in ('edition_identity_asserted', 'story_series_identity_asserted',
+        'original_work_identity_asserted', 'light_novel_identity_asserted'))
+    assert public['usage_permissions']['public_display'] == 'unknown'
+    assert 'PRIVATE' not in json.dumps(public)
+
+
+@pytest.mark.parametrize('mutation', ['marker', 'scope', 'other_source_kind'])
+def test_overlap_bunko_card_reference_cannot_become_a_detail_reference_or_other_scope(mutation):
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = overlap_bunko_listing()
+    if mutation == 'marker': row['publisher_reference_kind'] = 'overlap_detail_product_reference'
+    elif mutation == 'scope': row['reference_scope'] = 'public_display_allowed'
+    else: row['publisher_product_reference']['publisher_reference_id'] = 'overlap-nvl-product:opaque_1'
+    public = public_work(row)
+    assert 'publisher_product_reference' not in public and public['isbn'] == []
+
+
+def alphapolis_listing(label='アルファポリス', subtitle='副題を省略しない'):
+    row = kadokawa_electronic_listing()
+    main = '完全な主題'
+    title = main + ('\n' + subtitle if subtitle else '')
+    row.update(entry_id='lnr:pub:alphapolis:' + 'e' * 32,
+        publisher_reference_kind='alphapolis_commercial_book_reference', title=title, publication_label=label,
+        source_url='https://www.alphapolis.co.jp/book/detail/9780306406157/12345', isbn=['9780306406157'])
+    row['publisher_product_reference'].update(publisher_reference_id='alphapolis-commercial-book:9780306406157/12345',
+        source_url=row['source_url'], title=title, title_literal=main, subtitle_literal=subtitle, complete_display_title=title,
+        label=label, form=None, credits=[{'role': 'author', 'name': '掲載名'}, {'role': 'unknown', 'name': '複合役割名'},
+            {'role': 'original_story_credit', 'name': '原作クレジット名'}],
+        credit_literals=[{'role_literal': '著', 'name': '掲載名'}, {'role_literal': '編・訳', 'name': '複合役割名'},
+            {'role_literal': '原作', 'name': '原作クレジット名', 'locator': 'PRIVATE'}])
+    return row
+
+
+@pytest.mark.parametrize('label, subtitle', [('アルファポリス', '副題を省略しない'), ('レジーナブックス', '')])
+def test_alphapolis_reference_keeps_complete_title_and_display_roles_without_identity_or_isbn_inference(label, subtitle):
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = alphapolis_listing(label, subtitle)
+    public = public_work(row)
+    assert public['entry_id'] == row['entry_id'] and public['publisher_provider'] == 'alphapolis'
+    assert public['publisher_reference_kind'] == 'alphapolis_commercial_book_reference'
+    assert public['title'] == row['title'] and public['isbn'] == public['authors'] == public['members'] == []
+    product = public['publisher_product_reference']
+    assert product['title'] == product['complete_display_title'] == row['title']
+    assert product['title_literal'] == '完全な主題' and product['subtitle_literal'] == subtitle
+    assert product['publisher_reference_id'] == 'alphapolis-commercial-book:9780306406157/12345'
+    assert product['label'] == label and product['form'] is None
+    assert product['credits'] == row['publisher_product_reference']['credits']
+    assert product['credit_literals'] == [{'role_literal': '著', 'name': '掲載名'},
+        {'role_literal': '編・訳', 'name': '複合役割名'}, {'role_literal': '原作', 'name': '原作クレジット名'}]
+    assert public['recommendable'] is public['light_novel_confirmed'] is False
+    assert all(public[key] is False for key in ('edition_identity_asserted', 'story_series_identity_asserted',
+        'original_work_identity_asserted', 'light_novel_identity_asserted'))
+    assert public['usage_permissions']['public_display'] == 'unknown'
+    assert 'PRIVATE' not in json.dumps(public)
+
+
+@pytest.mark.parametrize('mutation', ['marker', 'scope', 'subtitle'])
+def test_alphapolis_reference_rejects_wrong_profile_or_truncated_title_parts(mutation):
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = alphapolis_listing()
+    if mutation == 'marker': row['publisher_reference_kind'] = 'tobooks_product_reference'
+    elif mutation == 'scope': row['reference_scope'] = 'public_display_allowed'
+    else: row['publisher_product_reference']['subtitle_literal'] = '元の副題と違う'
+    public = public_work(row)
+    assert 'publisher_product_reference' not in public and public['isbn'] == []
+
+
+def hifumi_listing(label='サーガフォレスト'):
+    row = kadokawa_electronic_listing()
+    row.update(entry_id='lnr:pub:hifumi:' + 'f' * 32, publisher_reference_kind='hifumi_product_reference',
+               source_url='https://hifumi.co.jp/lineup/9780306406157/', publication_label=label, isbn=['9780306406157'])
+    row['publisher_product_reference'].update(publisher_reference_id='hifumi-product:9780306406157',
+        source_url=row['source_url'], label=label, form='推定しない',
+        credits=[{'role': 'author', 'name': '明示役割の掲載名'}, {'role': 'unknown', 'name': '役割不明の掲載名'}],
+        credit_literals=[{'role_literal': '推定しない', 'name': 'PRIVATE'}])
+    return row
+
+
+@pytest.mark.parametrize('label', ['サーガフォレスト', 'メルティアブックス', 'ブレイブ文庫'])
+def test_hifumi_reference_keeps_canonical_roles_and_unknown_isbn_within_three_observed_labels(label):
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = hifumi_listing(label)
+    public = public_work(row)
+    assert public['entry_id'] == row['entry_id'] and public['publisher_provider'] == 'hifumi'
+    assert public['publisher_reference_kind'] == 'hifumi_product_reference'
+    assert public['isbn'] == public['authors'] == public['members'] == []
+    product = public['publisher_product_reference']
+    assert product['label'] == label and product['form'] is None
+    assert product['publisher_reference_id'] == 'hifumi-product:9780306406157'
+    assert product['credits'] == row['publisher_product_reference']['credits']
+    assert product['credit_literals'] == [], 'absent original role spellings must not be reconstructed'
+    assert public['recommendable'] is public['light_novel_confirmed'] is False
+    assert all(public[key] is False for key in ('edition_identity_asserted', 'story_series_identity_asserted',
+        'original_work_identity_asserted', 'light_novel_identity_asserted'))
+    assert public['usage_permissions']['public_display'] == 'unknown'
+    assert 'PRIVATE' not in json.dumps(public)
+
+
+@pytest.mark.parametrize('mutation', ['marker', 'scope', 'label'])
+def test_hifumi_reference_cannot_widen_its_profile_or_three_label_scope(mutation):
+    from recommend_book.recommendation.scale_site_v1 import public_work
+    row = hifumi_listing()
+    if mutation == 'marker': row['publisher_reference_kind'] = 'tobooks_product_reference'
+    elif mutation == 'scope': row['reference_scope'] = 'public_display_allowed'
+    else: row['publisher_product_reference']['label'] = '未確認の別レーベル'
+    public = public_work(row)
+    assert 'publisher_product_reference' not in public and public['isbn'] == []

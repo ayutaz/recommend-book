@@ -1,5 +1,7 @@
 # 著者・シリーズを保持した400作品の分布調整
 
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「履歴・結果・計画・スナップショット」です。本文の件数・計画・実行状態と、本文内の「現在」「最新」「実行中」は記録日時のものとして扱い、現在の状態は[current-status.md](current-status.md)を参照してください。
+
 2026年10月12日。freeze v2の2,000作品を固定元とし、旧blind packを保持して評価設計を修正した。利用予定の新packは `data/evaluation/poc-frozen-v2/400-review-balanced-v1/review.html`、試行20作品は `pilot20-review-balanced-v1/review.html` である。モデル判定は両方0件、人手gold0件、実人手時間null、分類品質・校正は未評価のままである。
 
 ## 旧設計の偏りと新設計

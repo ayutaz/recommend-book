@@ -1,5 +1,7 @@
 # 校正候補の offline prediction capacity 診断 v1
 
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「履歴・結果・計画・スナップショット」です。本文の件数・計画・実行状態と、本文内の「現在」「最新」「実行中」は記録日時のものとして扱い、現在の状態は[current-status.md](current-status.md)を参照してください。
+
 `scripts/diagnose_calibration_candidates.py` は、外部で process exit を観測した後の分類結果について、追加人手校正 pack を設計するための数量上限を出力する。実装・テストは合成 fixture のみで行った。本番 run・モデル結果・人手回答はこの作業で読んでいない。
 
 対象は main frozen 2000 の既存 calibration 100 と、固定 400 のどの connected group にも属さない未選択 pool。実行全体の selected 2020（main 2000 + canonical 古典 20）の入力・job・結果を検証するが、追加 20 は scope 件数へ加えない。元 dev 150 / calibration 100 / holdout 150、taxonomy、閾値、分類結果は変更しない。

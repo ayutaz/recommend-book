@@ -1,5 +1,7 @@
 # v3 外部ジャンル・テーマ参照の追加調査
 
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「履歴・結果・計画・スナップショット」です。本文の件数・計画・実行状態と、本文内の「現在」「最新」「実行中」は記録日時のものとして扱い、現在の状態は[current-status.md](current-status.md)を参照してください。
+
 確認日2026-10-13。既存taxonomy72ラベル、既存参照、core、DB、権利configは変更していない。保存先は private `data/autonomous-next-v3/reference/external-genre/`。モデル呼び出し0。ユーザーの追加注釈作業0。
 
 ## 実数と成立範囲

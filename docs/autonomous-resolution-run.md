@@ -1,5 +1,7 @@
 # 自動名寄せ審査 v1
 
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「履歴・結果・計画・スナップショット」です。本文の件数・計画・実行状態と、本文内の「現在」「最新」「実行中」は記録日時のものとして扱い、現在の状態は[current-status.md](current-status.md)を参照してください。
+
 2026-10-13。既存400難例ペアと最新Open Library補充DBの未解決26件を、独立したAI審査として扱う。DB、旧人手pack、classification coreを変更せず、人手gold・precisionは作成しない。
 
 `src/recommend_book/autonomous_resolution.py`の新モジュール未作成によるREDを確認し、引用所属・原物引用・両側の根拠・単一未解決レコードの過剰同定・第三審査・AI provenance・NDL原物record境界を検証する5テストが成功した。
