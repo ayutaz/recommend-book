@@ -4754,6 +4754,19 @@ class LightNovelCatalogue:
                         or stored[edition_id]['record_sha256'] != proof['edition_record_sha256']
                         or stored[series_id]['record_sha256'] != proof['series_record_sha256']):
                     continue
+                if proof.get('kind') == 'hj_wikipedia_novel_membership_v1':
+                    from .light_novel_hj_wikipedia_links_v1 import verify_links, membership_candidates
+                    key = ('hj_wikipedia_novel_memberships', proof['manifest_path'], proof['manifest_sha256'])
+                    if key not in plans:
+                        assertions = verify_links(proof['manifest_path'], proof['manifest_sha256'], self._artifact, cache)
+                        plans[key] = membership_candidates(self, rows, stored, assertions, cache)
+                    membership = plans[key].get(edition_id)
+                    if not membership or membership != proof['membership'] or membership.get('series_entry_id') != series_id:
+                        continue
+                    indexed[edition_id].update(series_entry_id=series_id, volume_number=membership['volume_number'],
+                        relation_resolution='edition_series_membership_verified', light_novel_confirmed=True,
+                        admission_status='edition_series_membership_verified', series_membership_evidence=membership)
+                    continue
                 if proof.get('kind') == 'futaba_mnovels_workgroup_membership':
                     record = json.loads(stored[series_id]['record_json'])
                     source = record['publisher_series_proof']
@@ -4877,7 +4890,7 @@ class LightNovelCatalogue:
                 'record_sha256': pin, 'record': json.loads(encoded)})
         return witnesses
 
-    def _feature_rows(self, entry_ids=None):
+    def _feature_rows(self, entry_ids=None, *, _request_cache=None):
         from .light_novel_feature_exports_v1 import verify_feature_export
         with self._connect() as db:
             if entry_ids is None:
@@ -4894,7 +4907,36 @@ class LightNovelCatalogue:
             try:
                 if key not in manifests:
                     try:
-                        manifests[key] = verify_feature_export(*key)
+                        # A recommendation request can ask for the same export
+                        # once for its liked rows and again for its candidate
+                        # rows.  Keep the expensive verifier result on this
+                        # current operation.  The complete verifier has already
+                        # run before this request-local reuse; no cache state is
+                        # retained for a later request.
+                        export_cache = _request_cache
+                        cache_key = (str(Path(key[0]).resolve()), key[1])
+                        cached = export_cache.get(cache_key) if export_cache is not None else None
+                        if cached is None:
+                            document = verify_feature_export(*key)
+                            raw_pins = document.get('artifact_sha256') if isinstance(document, dict) else None
+                            # An absent/empty pin map is never memoized.  This
+                            # keeps the optimization bounded to exports that
+                            # explicitly expose their authenticated artifacts.
+                            if export_cache is not None and isinstance(raw_pins, dict) and raw_pins:
+                                # The full verifier already authenticated these
+                                # paths. Re-resolving every artifact here adds
+                                # thousands of redundant filesystem operations.
+                                pins = dict(raw_pins)
+                                pins[str(Path(key[0]).resolve())] = key[1]
+                                export_cache[cache_key] = (document, pins)
+                            manifests[key] = document
+                        else:
+                            document, pins = cached
+                            for artifact, expected in pins.items():
+                                raw = Path(artifact).read_bytes()
+                                if not isinstance(expected, str) or hashlib.sha256(raw).hexdigest() != expected:
+                                    raise ValueError('cached LN feature export dependency SHA differs')
+                            manifests[key] = document
                     except (ValueError, OSError, KeyError, TypeError):
                         # Retry on the next operation, not for each binding.
                         manifests[key] = {'rows': []}
@@ -4915,6 +4957,15 @@ class LightNovelCatalogue:
                 # Invalid features cannot erase still-valid bibliographic access.
                 continue
         return result
+
+    def _feature_rows_request(self, entry_ids, cache):
+        """Authenticate feature exports once within one public operation.
+
+        The cache is supplied by the caller and is never retained on the
+        catalogue instance.  This permits recommendation's three projections
+        to share work while forcing a fresh full verifier on the next request.
+        """
+        return self._feature_rows(entry_ids, _request_cache=cache)
 
     def import_features(self, manifest_path, expected_sha256):
         from .light_novel_feature_exports_v1 import verify_feature_export, target_allowed
@@ -5029,7 +5080,9 @@ class LightNovelCatalogue:
             return None
         values, title_keys, series_titles, qids = {}, {}, {}, {}
         edges = {identity: set() for identity in records}
-        for identity, record in records.items():
+
+        def titles_for(identity):
+            record = records[identity]
             base = record.get('anchor_edition_record', record)
             source = base.get('source_record', {})
             titles = [base.get('title', ''), *base.get('aliases', []),
@@ -5043,6 +5096,29 @@ class LightNovelCatalogue:
                     or record.get('publisher_series_proof', {}).get('earthstar_series_path')
                     or record.get('publisher_series_proof', {}).get('kind') in {'futaba_mnovels_workgroup', 'dre-novels-series-v2'}) and record.get('title'):
                 titles.append(record['title'])
+            return titles
+
+        def keys_for(identity):
+            if identity not in title_keys:
+                titles = titles_for(identity)
+                keys = {normalize_search(t) for t in titles if t}
+                # ISBD main-title candidates widen verification scope only.
+                for title in titles:
+                    if title and len(parts := re.split(r' (?:=|:) ', title, maxsplit=1)) > 1:
+                        keys.add(normalize_search(parts[0]))
+                title_keys[identity] = keys
+            return title_keys[identity]
+
+        for identity, record in records.items():
+            if record.get('source') == 'wikidata':
+                qids[record['id']] = identity
+            # Exact detail needs every potentially competing series, but an
+            # unrelated edition's title cannot change that graph closure.
+            # Reached editions and works get their keys lazily in traversal.
+            if entry_id is not None and not identity.startswith('lns:'):
+                continue
+            titles = titles_for(identity)
+            base = record.get('anchor_edition_record', record)
             authors = [a.get('label', '') if isinstance(a, dict) else a for a in base.get('authors', [])]
             if record.get('schema_version') in {profile['schema'] for profile in SOURCE_GROUP_PROVIDERS.values()}:
                 children = record['publisher_product_references']
@@ -5067,17 +5143,9 @@ class LightNovelCatalogue:
                 child_titles = []
             if entry_id is None:
                 values[identity] = (_search_text([*titles, *child_titles]), _search_text(authors))
-            title_keys[identity] = {normalize_search(t) for t in titles if t}
-            # A possible RDF ISBD main title widens selection only. Its literal
-            # source-field structure is checked later by _source_with_title_parts.
-            for title in titles:
-                if title and len(parts := re.split(r' (?:=|:) ', title, maxsplit=1)) > 1:
-                    title_keys[identity].add(normalize_search(parts[0]))
             if identity.startswith('lns:'):
-                for title in title_keys[identity]:
+                for title in keys_for(identity):
                     series_titles.setdefault(title, set()).add(identity)
-            if record.get('source') == 'wikidata':
-                qids[record['id']] = identity
         for identity, record in records.items():
             for prop in ('P179', 'P527'):
                 for qid in record.get('relations', {}).get(prop, []):
@@ -5099,7 +5167,7 @@ class LightNovelCatalogue:
         while pending:
             identity = pending.pop()
             relatives = set(edges[identity])
-            for title in title_keys[identity]:
+            for title in keys_for(identity):
                 relatives.update(series_titles.get(title, ()))
             added = relatives - selected
             selected.update(added)
@@ -5505,11 +5573,12 @@ class LightNovelCatalogue:
         avoided = _feature_ids(avoided_features, 'avoided_features', taxonomy)
         weights = _weights(axis_weights)
         liked = [_entry(x) for x in _normalise_list(liked_entry_ids, 'liked_entry_ids')]
+        feature_request_cache = {}
         rows = self._rows(include_features=False, recommendation_liked_ids=liked)
         indexed = {r['entry_id']: r for r in rows}
         if any(key not in indexed for key in liked):
             raise ValueError('liked light-novel entry is absent')
-        liked_features = self._feature_rows(set(liked))
+        liked_features = self._feature_rows_request(set(liked), feature_request_cache)
         for key in liked:
             self._apply_feature(indexed[key], liked_features.get(key))
         families = self._families(rows)
@@ -5535,7 +5604,7 @@ class LightNovelCatalogue:
             feature_ids = {row['entry_id'] for row in candidates
                 if families[row['entry_id']] not in excluded and row['entry_kind'] not in {'edition', 'publisher_group', 'publisher_reference'}
                 and not (row['entry_kind'] == 'work' and families[row['entry_id']] in series_families)}
-            features = self._feature_rows(feature_ids)
+            features = self._feature_rows_request(feature_ids, feature_request_cache)
             for row in candidates:
                 self._apply_feature(row, features.get(row['entry_id']))
         ranked = []
@@ -5584,7 +5653,7 @@ class LightNovelCatalogue:
         if not uses_native_scores:
             # Native labels cannot affect a genre-only score. Authenticate the
             # selected cards' labels for display, retaining the source reasons.
-            features = self._feature_rows({row['entry_id'] for row in chosen})
+            features = self._feature_rows_request({row['entry_id'] for row in chosen}, feature_request_cache)
             for row in chosen:
                 self._apply_feature(row, features.get(row['entry_id']))
         for row in chosen:

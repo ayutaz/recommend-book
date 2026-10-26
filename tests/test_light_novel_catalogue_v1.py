@@ -4206,7 +4206,7 @@ def test_source_only_recommendation_verifies_liked_and_selected_features_only(se
     cat, records = setup_catalogue
     cat.ingest(records)
     calls = []
-    def verify(entry_ids=None):
+    def verify(entry_ids=None, **kwargs):
         calls.append(entry_ids)
         assert entry_ids is not None  # An irrelevant native window must not be opened.
         return {}
@@ -4308,7 +4308,7 @@ def test_unknown_avoided_feature_warns_without_claiming_absence(setup_catalogue,
     cat, records = setup_catalogue
     cat.ingest(records)
     features = {'lns:wd:Q2': _avoidance_feature(label_id, axis)} if label_id else {}
-    monkeypatch.setattr(cat, '_feature_rows', lambda ids=None: {key: row for key, row in features.items() if ids is None or key in ids})
+    monkeypatch.setattr(cat, '_feature_rows', lambda ids=None, **kwargs: {key: row for key, row in features.items() if ids is None or key in ids})
     result = cat.recommend_preferences(liked_entry_ids=['lns:wd:Q1'], avoided_features=['theme.revenge'])
     assert [row['entry_id'] for row in result['items']] == ['lns:wd:Q2']
     row = result['items'][0]
@@ -4324,7 +4324,7 @@ def test_adopted_avoided_feature_still_excludes_candidate(setup_catalogue, monke
     cat, records = setup_catalogue
     cat.ingest(records)
     features = {'lns:wd:Q2': _avoidance_feature('theme.revenge', 'theme')}
-    monkeypatch.setattr(cat, '_feature_rows', lambda ids=None: {key: row for key, row in features.items() if ids is None or key in ids})
+    monkeypatch.setattr(cat, '_feature_rows', lambda ids=None, **kwargs: {key: row for key, row in features.items() if ids is None or key in ids})
     assert cat.recommend_preferences(liked_entry_ids=['lns:wd:Q1'], avoided_features=['theme.revenge'])['items'] == []
 
 
@@ -4334,7 +4334,7 @@ def test_nullable_relevance_preserves_match_without_inventing_score(setup_catalo
     cat.ingest(records)
     feature = _avoidance_feature('theme.family', 'theme')
     feature['labels'][0]['relevance'] = relevance
-    monkeypatch.setattr(cat, '_feature_rows', lambda ids=None: {'lns:wd:Q2': feature} if ids is None or 'lns:wd:Q2' in ids else {})
+    monkeypatch.setattr(cat, '_feature_rows', lambda ids=None, **kwargs: {'lns:wd:Q2': feature} if ids is None or 'lns:wd:Q2' in ids else {})
     result = cat.recommend_preferences(preferred_features=['theme.family'], axis_weights={'theme': .7})
     assert [row['entry_id'] for row in result['items']] == ['lns:wd:Q2']
     row = result['items'][0]
@@ -4350,7 +4350,7 @@ def test_nullable_relevance_still_excludes_adopted_avoided_label(setup_catalogue
     cat.ingest(records)
     feature = _avoidance_feature('theme.revenge', 'theme')
     feature['labels'][0]['relevance'] = None
-    monkeypatch.setattr(cat, '_feature_rows', lambda ids=None: {'lns:wd:Q2': feature} if ids is None or 'lns:wd:Q2' in ids else {})
+    monkeypatch.setattr(cat, '_feature_rows', lambda ids=None, **kwargs: {'lns:wd:Q2': feature} if ids is None or 'lns:wd:Q2' in ids else {})
     assert cat.recommend_preferences(liked_entry_ids=['lns:wd:Q1'], avoided_features=['theme.revenge'])['items'] == []
 
 

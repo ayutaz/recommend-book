@@ -1,3 +1,7 @@
+import hashlib
+import json
+from recommend_book.light_novel_catalogue_v1 import LightNovelCatalogue
+
 import pytest
 from recommend_book import light_novel_catalogue_v1 as module
 
@@ -31,3 +35,43 @@ def test_query_candidates_still_match_author(tmp_path):
 ])
 def test_search_normalization_preserves_japanese_unicode_and_whitespace(value, expected):
     assert module.normalize_search(value) == expected
+
+
+
+def records():
+    return {
+        'lns:wd:Q1': {'id': 'Q1', 'source': 'wikidata', 'title': '本編',
+            'aliases': [], 'relations': {'P527': ['Q4']}},
+        'lnw:wd:Q4': {'id': 'Q4', 'source': 'wikidata', 'title': '関連する巻',
+            'aliases': [], 'relations': {}},
+        # A competing series title must still widen the verification scope
+        # when reached through the work's title, rather than the requested ID.
+        'lns:wd:Q2': {'id': 'Q2', 'source': 'wikidata', 'title': '別シリーズ',
+            'aliases': ['関連する巻'], 'relations': {'P179': ['Q3']}},
+        'lns:wd:Q3': {'id': 'Q3', 'source': 'wikidata', 'title': '上位シリーズ',
+            'aliases': [], 'relations': {}},
+        'lne:ndl:R100000002-E1': {'id': 'R100000002-E1', 'source': 'ndl',
+            'title': '所属する版', 'aliases': [], 'relations': {}},
+        'lne:ndl:R100000002-E2': {'id': 'R100000002-E2', 'source': 'ndl',
+            'title': '無関係な版', 'aliases': [], 'relations': {}},
+        'lnr:pub:tobooks:' + 'a' * 32: {'title': '関連する巻', 'aliases': [], 'relations': {}},
+    }
+
+
+def test_detail_scope_keeps_recursive_relations_memberships_and_competing_series(tmp_path):
+    cat = LightNovelCatalogue(tmp_path / 'catalogue.sqlite')
+    with cat._connect() as db:
+        for identity, kind in [('lne:ndl:R100000002-E1', 'edition'), ('lns:wd:Q1', 'series')]:
+            payload = json.dumps(records()[identity])
+            db.execute('INSERT INTO entries VALUES(?,?,?,?)',
+                       (identity, kind, payload, hashlib.sha256(payload.encode()).hexdigest()))
+        db.execute('INSERT INTO edition_series_memberships VALUES(?,?,?,?)',
+                   ('lne:ndl:R100000002-E1', 'lns:wd:Q1', '{}', 'a' * 64))
+    assert cat._candidate_ids(records(), entry_id='lns:wd:Q1') == {
+        'lns:wd:Q1', 'lnw:wd:Q4', 'lns:wd:Q2', 'lns:wd:Q3', 'lne:ndl:R100000002-E1'}
+
+
+def test_exact_detail_of_missing_entry_is_empty_and_search_still_finds_unrelated_title(tmp_path):
+    cat = LightNovelCatalogue(tmp_path / 'catalogue.sqlite')
+    assert cat._candidate_ids(records(), entry_id='lns:wd:Q99') == set()
+    assert cat._candidate_ids(records(), query='無関係な版') == {'lne:ndl:R100000002-E2'}

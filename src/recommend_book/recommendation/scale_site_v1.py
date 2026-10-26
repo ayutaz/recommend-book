@@ -747,6 +747,26 @@ def public_work(row):
                 'license_url': _link(credit.get('license_url')),
                 'changes': _text(credit.get('changes')),
             }
+    if (row.get('relation_resolution') == 'edition_series_membership_verified'
+            and isinstance(membership, dict)
+            and membership.get('rule_version') == 'hj-wikipedia-novel-isbn-edition-membership-v1'
+            and membership.get('scope') == 'edition_membership_only'):
+        credit = membership.get('wikipedia_attribution')
+        official = membership.get('official_series_url')
+        if (isinstance(credit, dict) and isinstance(official, str)
+                and re.fullmatch(r'https://firecross\.jp/hjbunko/series/[1-9][0-9]*', official)
+                and re.fullmatch(r'https://ja\.wikipedia\.org/w/index\.php\?oldid=[1-9][0-9]*',
+                                 _text(credit.get('source_url')))
+                and credit.get('license') == 'CC-BY-SA-4.0'
+                and credit.get('license_url') == 'https://creativecommons.org/licenses/by-sa/4.0/'
+                and credit.get('quote_allowed') is False):
+            result['membership_source'] = {
+                'source_url': credit['source_url'], 'publisher_source_url': official,
+                'history_url': _link(credit.get('history_url')),
+                'attribution': _text(credit.get('credit')),
+                'license': credit['license'], 'license_url': credit['license_url'],
+                'changes': _text(credit.get('changes')), 'scope': 'edition_membership_only',
+            }
     listings = row.get('publisher_listing_associations')
     if isinstance(listings, list):
         public_listings = []
@@ -1011,7 +1031,7 @@ async function showDetail(identifier){
   if(row.work_feature_context==='historical_mixed_metadata_lead_and_plot')body.append(node('p','既存分類のあらすじ根拠を再検証した特徴です。元の入力には書誌・記事冒頭も含まれます。','muted'));
   if(row.relation_resolution==='original_work_and_story_series_unresolved')body.append(node('p','原作・物語シリーズとの対応は未確認です。','muted'));
   if(row.relation_resolution==='edition_series_membership_verified')body.append(node('p','物語シリーズへの所属を出典で確認済みです。版と原作品は別の項目として扱います。','muted'));
-  if(row.membership_source){const source=row.membership_source,p=node('p','シリーズ所属の照合資料：');for(const [url,label]of [[source.source_url,source.source_kind==='publisher_official_series'?'出版社の公式シリーズページ':'Wikipediaの参照版'],[source.history_url,'寄稿者の履歴'],[source.license_url,source.license]]){if(!url||!label)continue;const a=node('a',label);a.href=url;a.target='_blank';a.rel='noopener noreferrer';p.append(a,node('span',' ・ '));}body.append(p,node('p',source.attribution,'muted'),node('p','明示された書誌情報を抽出し、NDL書誌と照合しています。内容分類の根拠とは別に扱います。','muted'));}
+  if(row.membership_source){const source=row.membership_source,p=node('p','シリーズ所属の照合資料：');for(const [url,label]of [[source.source_url,source.source_kind==='publisher_official_series'?'出版社の公式シリーズページ':'Wikipediaの参照版'],[source.publisher_source_url,'出版社の公式シリーズページ'],[source.history_url,'寄稿者の履歴'],[source.license_url,source.license]]){if(!url||!label)continue;const a=node('a',label);a.href=url;a.target='_blank';a.rel='noopener noreferrer';p.append(a,node('span',' ・ '));}body.append(p,node('p',source.attribution,'muted'));if(source.changes)body.append(node('p',source.changes,'muted'));body.append(node('p','明示された書誌情報を抽出し、NDL書誌と照合しています。内容分類の根拠とは別に扱います。','muted'));}
   if(row.membership_part)body.append(node('p',row.membership_part.context+' '+row.membership_part.label+'（巻順未確定）','muted'));
   if(row.publisher_listing_associations?.length){
    const associations=section(body,'出版社の掲載書誌との対応');
