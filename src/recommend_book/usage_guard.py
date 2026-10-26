@@ -722,7 +722,13 @@ class UsageGuard:
             raise ValueError('prose target raw identity differs')
         pages = json.loads(payload)['query']['pages']
         pages = list(pages.values()) if isinstance(pages, dict) else pages
-        page = next(p for p in pages if p['pageid'] == attribution['page_id'])
+        matching_pages = [
+            page for page in pages
+            if isinstance(page, dict) and page.get('pageid') == attribution['page_id']
+        ]
+        if len(matching_pages) != 1:
+            raise ValueError('prose page identity is not uniquely bound')
+        page = matching_pages[0]
         revision = page['revisions'][0]
         if page.get('ns') != 0 or page.get('pageprops', {}).get('wikibase_item') != record.source_id or 'disambiguation' in page.get('pageprops', {}):
             raise ValueError('prose page identity differs')
