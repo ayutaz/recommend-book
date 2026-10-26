@@ -1,13 +1,14 @@
 """Separate, raw-backed Japanese light-novel catalogue with typed identities.
 
 Metadata never grants permission over Wikipedia prose. Every public operation
-revalidates its local evidence; request-local caches only avoid duplicate reads.
+revalidates its local evidence; parsed bulk nodes are reused only after rehashing.
 Series features are verified by their own export verifier and never copied to a
 volume. Read state and the original scale catalogue remain independent.
 """
 from __future__ import annotations
 
 from contextlib import contextmanager
+from collections import OrderedDict
 from datetime import datetime, timezone
 import hashlib
 import importlib
@@ -16,6 +17,7 @@ import math
 from pathlib import Path
 import re
 import sqlite3
+from threading import Lock
 import unicodedata
 import uuid
 
@@ -389,8 +391,14 @@ def _content_source(source, *, work_id=None, archive_context=None, fresh_classif
 
 
 class LightNovelCatalogue:
+    _bulk_node_limit = 512
+    _bulk_node_bytes_limit = 16 * 1024 * 1024
+
     def __init__(self, db_path):
         self.db_path = Path(db_path)
+        self._bulk_nodes = OrderedDict()
+        self._bulk_nodes_bytes = 0
+        self._bulk_nodes_lock = Lock()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as db:
             db.executescript('''
@@ -595,6 +603,58 @@ class LightNovelCatalogue:
                 'classification_scope': kind, 'content_features_adopted': False,
                 'recommendation_mode': 'source_similarity' if genres else 'insufficient_evidence'}
 
+    def _national_document(self, proof, source_id, cache):
+        """Reuse isolated XML bytes, never a prior request's mutable tree.
+
+        Receipt and full raw bytes are SHA-checked in every new request. Only
+        nodes actually used by the catalogue are retained; the unchanged bulk
+        verifier still checks every document on a miss.
+        """
+        import xml.etree.ElementTree as ET
+        from . import light_novel_ndl_bulk_v1 as bulk
+        receipt = self._payload(proof['receipt_path'], proof['receipt_sha256'], cache)
+        self._artifact(receipt['raw_path'], receipt['raw_sha256'], cache)
+        authority_key = ('bulk_verifier_authority',)
+        if authority_key not in cache:
+            cache[authority_key] = hashlib.sha256(Path(bulk.__file__).read_bytes()).hexdigest()
+        memo_key = (str(_resolved_path(proof['receipt_path'], cache)), proof['receipt_sha256'],
+                    str(_resolved_path(receipt['raw_path'], cache)), receipt['raw_sha256'], source_id,
+                    cache[authority_key], bulk.verify_bulk_receipt, bulk.parse_bulk_documents)
+        request_key = ('national_receipt', proof['receipt_path'], proof['receipt_sha256'])
+        current = cache.get(request_key)
+        if current is None or source_id not in current[1]:
+            with self._bulk_nodes_lock:
+                saved = self._bulk_nodes.get(memo_key)
+                if saved is not None:
+                    self._bulk_nodes.move_to_end(memo_key)
+            if saved is not None:
+                receipt_bytes, node_bytes, index = saved
+                receipt = json.loads(receipt_bytes)
+                document = {'source_id': source_id, 'index': index, 'node': ET.fromstring(node_bytes)}
+                documents = {} if current is None else dict(current[1])
+                documents[source_id] = document
+            else:
+                receipt, rows = bulk.verify_bulk_receipt(
+                    proof['receipt_path'], proof['receipt_sha256'], self._artifact, cache)
+                documents = {row['source_id']: row for row in rows}
+            cache[request_key] = current = (receipt, documents)
+        receipt, documents = current
+        if source_id not in documents:
+            raise ValueError('bulk own bibliography identity absent')
+        document = documents[source_id]
+        with self._bulk_nodes_lock:
+            if memo_key not in self._bulk_nodes:
+                saved = (json.dumps(receipt).encode(), ET.tostring(document['node']), document['index'])
+                size = len(saved[0]) + len(saved[1])
+                if size <= self._bulk_node_bytes_limit:
+                    self._bulk_nodes[memo_key] = saved
+                    self._bulk_nodes_bytes += size
+                    while (len(self._bulk_nodes) > self._bulk_node_limit
+                           or self._bulk_nodes_bytes > self._bulk_node_bytes_limit):
+                        _, removed = self._bulk_nodes.popitem(last=False)
+                        self._bulk_nodes_bytes -= len(removed[0]) + len(removed[1])
+        return receipt, document
+
     def _project_edition(self, record, cache):
         """Reproduce NDL-created editions, leaving story/work relations unknown."""
         import xml.etree.ElementTree as ET
@@ -617,15 +677,10 @@ class LightNovelCatalogue:
         node_key = ('ndl_nodes', proof['raw_path'], proof['raw_sha256'])
         receipt = None
         if national:
-            from .light_novel_ndl_bulk_v1 import verify_bulk_receipt
-            receipt_key = ('national_receipt', proof['receipt_path'], proof['receipt_sha256'])
-            if receipt_key not in cache:
-                cache[receipt_key] = verify_bulk_receipt(proof['receipt_path'], proof['receipt_sha256'], self._artifact, cache)
-            receipt, documents = cache[receipt_key]
+            receipt, document = self._national_document(proof, source_id, cache)
             if any(proof.get(k) != receipt.get(k) for k in ('raw_path', 'raw_sha256', 'conditions_path', 'conditions_sha256')):
                 raise ValueError('bulk provenance differs from fixed receipt')
-            if node_key not in cache:
-                cache[node_key] = {row['source_id']: (row['node'], row['index']) for row in documents}
+            cache.setdefault(node_key, {})[source_id] = (document['node'], document['index'])
             if source_id not in cache[node_key] or proof.get('document_index') != cache[node_key][source_id][1]:
                 raise ValueError('bulk own bibliography document index differs')
         if node_key not in cache:
