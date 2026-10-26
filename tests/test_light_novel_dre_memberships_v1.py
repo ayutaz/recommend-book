@@ -80,6 +80,35 @@ def test_new_official_series_uses_existing_ndl_admission_and_member_replay(dre_m
     assert row['series_entry_id']=='lns:ndl:R100000002-I1'
 
 
+def test_explicit_refresh_adds_later_volume_without_changing_existing_binding(dre_membership,tmp_path):
+    from copy import deepcopy
+    cat,_,_,_,value=dre_membership
+    with cat._connect() as db:
+        db.execute('DELETE FROM entries WHERE entry_id=?',('lns:wd:Q1',))
+        first=json.loads(db.execute('SELECT record_json FROM entries WHERE entry_id=?',('lne:ndl:R100000002-I1',)).fetchone()[0])
+    proof=value['dre_series_proof']
+    reference='publisher-series:'+hashlib.sha256(b'https://drecom-media.jp/drenovels/series/example').hexdigest()[:24]
+    def adopt(**options):
+        return cat.import_ndl_series_from_publishers(proof['frames_path'],proof['frames_sha256'],source_root=tmp_path,reference_ids=[reference],**options)
+    assert adopt()['new_edition_memberships']==1
+    with cat._connect() as db:
+        previous=tuple(db.execute('SELECT * FROM edition_series_memberships WHERE edition_id=?',('lne:ndl:R100000002-I1',)).fetchone())
+    second=deepcopy(first);raw=tmp_path/'later-volume.xml'
+    xml=Path(first['provenance']['raw_path']).read_text(encoding='utf-8').replace('R100000002-I1','R100000002-I2').replace('<n:volume>1</n:volume>','<n:volume>2</n:volume>')
+    raw.write_text(xml,encoding='utf-8');pin=hashlib.sha256(raw.read_bytes()).hexdigest()
+    source=NDLAdapter(None)._normalize(ET.fromstring(xml),RawArtifact(pin,str(raw),len(raw.read_bytes()),
+        '2026-10-26T00:00:00Z','https://ndlsearch.ndl.go.jp/api/sru'),'iss-ndl-opac',locator='records[1]/recordData').model_dump(mode='json')
+    second.update(id=source['source_id'],source_url=source['source_url'],source_record=source,volume=source['volume'])
+    second['provenance'].update(raw_path=str(raw),raw_sha256=pin,url=source['source_url'])
+    assert cat.import_editions([second])['inserted']==1
+    assert adopt()['new_edition_memberships']==0
+    result=adopt(refresh_memberships=True)
+    assert result['new_edition_memberships']==1 and result['unchanged_edition_memberships']==1
+    with cat._connect() as db:
+        assert tuple(db.execute('SELECT * FROM edition_series_memberships WHERE edition_id=?',('lne:ndl:R100000002-I1',)).fetchone())==previous
+    assert cat.work_detail('lne:ndl:R100000002-I2')['series_entry_id']=='lns:ndl:R100000002-I1'
+
+
 @pytest.mark.parametrize('url,rank,linked',[
     ('https://drecom-media.jp/drenovels/series/example','normal',1),
     ('https://drecom-media.jp/drenovels/series/other','normal',0),

@@ -2427,8 +2427,10 @@ class LightNovelCatalogue:
                                          label_aliases_path=None, label_aliases_sha256=None,
                                          cobalt_series_path=None, cobalt_series_sha256=None,
                                          earthstar_series_path=None, earthstar_series_sha256=None,
-                                         reference_ids=None):
+                                         reference_ids=None, refresh_memberships=False):
         """Admit uniquely cross-checked series; retain a stable NDL anchor ID."""
+        if type(refresh_memberships) is not bool or refresh_memberships and reference_ids is None:
+            raise ValueError('membership refresh requires a boolean and explicit series references')
         from .light_novel_ndl_series_v1 import publisher_assertions, match_bibliography
         cache = {}
         # Freeze the small receipt document; later collection may extend its source.
@@ -2486,11 +2488,12 @@ class LightNovelCatalogue:
             raise ValueError('unknown publisher series reference')
         completed = requested & existing.keys() if scoped else set()
         active = requested - completed
-        target_titles = {normalize_search(assertions[key]['title']) for key in active}
+        matching_references = requested if refresh_memberships else active
+        target_titles = {normalize_search(assertions[key]['title']) for key in matching_references}
         explicit_titles = set()
         if cobalt_series_path or earthstar_series_path:
             from .light_novel_explicit_series_match_v1 import candidate_title_keys, candidate_ndl_title_keys
-            for key in active:
+            for key in matching_references:
                 if assertions[key].get('index_id') in ('cobalt-explicit-series', 'earthstar-explicit-work-group'):
                     explicit_titles.update(candidate_title_keys(assertions[key]))
         selected = set(stored) if not scoped else set()
@@ -3398,7 +3401,7 @@ class LightNovelCatalogue:
         bindings = self._book_confirmation_bindings(cache)
         indexed = {row['entry_id']: row for row in rows}
         stored = {row['entry_id']: row for row in stored}
-        documents = {}
+        documents = cache.setdefault(('book_confirmation_documents',), {})
         for binding in bindings:
             try:
                 if hashlib.sha256(binding['proof_json'].encode()).hexdigest() != binding['proof_sha256']:
@@ -3959,6 +3962,85 @@ class LightNovelCatalogue:
         return self._resolve_scoped_wikidata_memberships(manifest_path, expected_sha256,
             edition_ids=edition_ids, own_roles=True, dre_series=True)
 
+    def resolve_kadokawa_promotion_memberships(self, manifest_path, expected_sha256, *, edition_ids):
+        """Connect confirmed editions explicitly linked by their official novel page."""
+        return self._resolve_scoped_wikidata_memberships(manifest_path, expected_sha256,
+            edition_ids=edition_ids, own_roles=True, kadokawa_promotions=True)
+
+    def _kadokawa_promotion_assertions(self, manifest_path, expected_sha256, cache):
+        from .light_novel_kadokawa_promotions_v1 import verify_promotions
+        key=('kadokawa_novel_promotions',str(_resolved_path(manifest_path,cache)),expected_sha256)
+        if key not in cache:
+            cache[key]=verify_promotions(manifest_path,expected_sha256)
+        return cache[key]
+
+    def _kadokawa_promotion_membership_candidates(self, rows, stored, assertions, cache):
+        from .light_novel_reference_match_v1 import _parent
+        from .light_novel_ndl_series_v1 import person_key
+        editions=[dict(r) for r in rows if r['entry_kind']=='edition']
+        self._attach_book_confirmations(editions,list(stored.values()),cache)
+        bindings={r['edition_id']:r for r in self._book_confirmation_bindings(cache) if r['provider']=='kadokawa'}
+        parents=[r for r in rows if r['entry_kind']=='series' and r['entry_id'].startswith('lns:wd:')]
+        result={}
+        for edition in editions:
+            identity=edition['entry_id'];binding=bindings.get(identity)
+            if not binding or edition.get('edition_bibliography_confirmed') is not True:
+                continue
+            confirmation=json.loads(binding['proof_json']);match=edition.get('edition_confirmation_evidence')
+            if (match!=confirmation.get('match') or match.get('scope')!='edition_only'
+                    or match.get('official_product_form_id')!=3
+                    or confirmation.get('publisher_book_id') is None):
+                continue
+            record=json.loads(stored[identity]['record_json'])
+            parts=self._edition_primary_bibliographic_parts(record,cache)
+            if not parts or not parts['volume']:
+                continue
+            volume=parts['volume'];value=unicodedata.normalize('NFKC',volume['value']).strip()
+            number=re.match(r'^(?:第|その)?([0-9]{1,4})(?:巻)?(?:$|\s|[(:])',value)
+            if not number or not 1<=int(number[1])<=10000:
+                continue
+            source=record['source_record']
+            if source['language'] not in ('ja','jpn') or not any(c.startswith('913') for c in source['extra'].get('ndc_codes',[])):
+                continue
+            mains=[]
+            for title in parts['titles']:
+                if '/{http://purl.org/dc/terms/}title[' not in title['locator'] or _parent(title['locator'])!=_parent(volume['locator']):
+                    continue
+                text=unicodedata.normalize('NFKC',title['value']).strip()
+                if text.endswith('. '+value):text=text[:-len('. '+value)]
+                main=re.split(r' (?:=|:) ',text,maxsplit=1)[0].strip()
+                if main:mains.append({'main':main,'raw_value':title['value'],'locator':title['locator']})
+            if not mains:
+                continue
+            candidates=[p for p in parents if all(normalize_search(t['main']) in
+                {normalize_search(n) for n in [p['title'],*p['aliases']]} for t in mains)]
+            if len(candidates)!=1:
+                continue
+            parent=candidates[0];assertion=assertions.get(parent['entry_id'])
+            if (not assertion or parent['original_language']!='ja'
+                    or normalize_search(assertion['title'])!=normalize_search(parent['title'])
+                    or confirmation['publisher_book_id'] not in assertion['books']):
+                continue
+            origin=json.loads(stored[parent['entry_id']]['record_json'])['provenance']
+            entity=self._payload(origin['raw_path'],origin['raw_sha256'],cache)['entities'][parent['qid']]
+            urls={s.get('mainsnak',{}).get('datavalue',{}).get('value') for s in entity.get('claims',{}).get('P856',[])
+                if s.get('rank')!='deprecated' and s.get('mainsnak',{}).get('snaktype')=='value'
+                and isinstance(s.get('mainsnak',{}).get('datavalue',{}).get('value'),str)}
+            if assertion['source_url'] not in urls:
+                continue
+            if parent['authors'] and {person_key(a['name']) for a in parent['authors']}!={person_key(a['official_credit']) for a in match['authors']}:
+                continue
+            result[identity]={'rule_version':'kadokawa-official-promotion-edition-membership-v1',
+                'scope':'edition_membership_only','edition_id':identity,'series_entry_id':parent['entry_id'],
+                'volume_number':int(number[1]),'volume':volume,'main_titles':mains,
+                'publisher_book_id':confirmation['publisher_book_id'],
+                'publisher_confirmation_proof_sha256':binding['proof_sha256'],
+                'official_series_url':assertion['source_url'],'promotion_raw_sha256':assertion['raw_sha256'],
+                'explicit_book_link_evidence':assertion['books'][confirmation['publisher_book_id']],
+                'series_identity_basis':'exact_wikidata_P856_and_explicit_official_novel_book_list',
+                'person_identity_asserted':False,'original_work_identity_asserted':False}
+        return result
+
     def _dre_series_assertions(self, manifest_path, expected_sha256, cache):
         from .light_novel_ndl_series_v1 import publisher_assertions
         manifest = self._payload(manifest_path, expected_sha256, cache)
@@ -4032,7 +4114,7 @@ class LightNovelCatalogue:
                 result[row['entry_id']] = candidates[0]
         return result
 
-    def _resolve_scoped_wikidata_memberships(self, manifest_path, expected_sha256, *, edition_ids, own_roles, dre_series=False):
+    def _resolve_scoped_wikidata_memberships(self, manifest_path, expected_sha256, *, edition_ids, own_roles, dre_series=False, kadokawa_promotions=False):
         if isinstance(edition_ids, (str, bytes)) or edition_ids is None:
             raise ValueError('an explicit edition ID collection is required')
         requested = list(edition_ids)
@@ -4041,7 +4123,7 @@ class LightNovelCatalogue:
                 raise ValueError('only typed NDL edition IDs may be requested')
         if len(requested) != len(set(requested)):
             raise ValueError('duplicate requested edition ID')
-        result = {'scope': 'dre_publisher_and_wikidata_series_only' if dre_series else 'wikidata_series_own_direct_roles_only' if own_roles else 'wikidata_series_only',
+        result = {'scope': 'kadokawa_promotion_and_wikidata_series_only' if kadokawa_promotions else 'dre_publisher_and_wikidata_series_only' if dre_series else 'wikidata_series_own_direct_roles_only' if own_roles else 'wikidata_series_only',
                   'requested_editions': len(requested),
                   'candidate_series': 0, 'linked': 0, 'unchanged': 0,
                   'protected_existing': 0, 'unresolved_editions': 0}
@@ -4059,7 +4141,8 @@ class LightNovelCatalogue:
                 "json_extract(record_json,'$.schema_version')='light-novel-metadata-v1' "
                 "AND (kind='series' OR json_extract(record_json,'$.kind')='series')").fetchall()
         cache = {}
-        assertions = self._dre_series_assertions(manifest_path, expected_sha256, cache) if dre_series else None
+        assertions = (self._kadokawa_promotion_assertions(manifest_path,expected_sha256,cache) if kadokawa_promotions
+            else self._dre_series_assertions(manifest_path, expected_sha256, cache) if dre_series else None)
         titles = {normalize_search(a['title']) for a in assertions.values()} if assertions else set()
         for entry in editions.values():
             if hashlib.sha256(entry['record_json'].encode()).hexdigest() != entry['record_sha256']:
@@ -4080,8 +4163,9 @@ class LightNovelCatalogue:
                 selected[identity] = dict(entry)
         result['candidate_series'] = len(selected) - len(editions)
         rows = self._membership_base_rows(selected, cache)
-        authorities = self._author_authorities(manifest_path, expected_sha256, cache)
-        candidates = (self._dre_membership_candidates(rows, selected, authorities, assertions, cache) if dre_series
+        authorities = {} if kadokawa_promotions else self._author_authorities(manifest_path, expected_sha256, cache)
+        candidates = (self._kadokawa_promotion_membership_candidates(rows,selected,assertions,cache) if kadokawa_promotions
+            else self._dre_membership_candidates(rows, selected, authorities, assertions, cache) if dre_series
             else self._own_role_membership_candidates(rows, selected, authorities, cache)
             if own_roles else self._membership_candidates(rows, selected, authorities))
         result['unresolved_editions'] = len(requested) - len(candidates)
@@ -4117,7 +4201,12 @@ class LightNovelCatalogue:
                 proof = {'manifest_path': str(Path(manifest_path).resolve()), 'manifest_sha256': expected_sha256,
                          'edition_record_sha256': selected[edition_id]['record_sha256'],
                          'series_record_sha256': selected[series_id]['record_sha256'], 'membership': membership}
-                if dre_series:
+                if kadokawa_promotions:
+                    current_binding=db.execute('SELECT proof_sha256 FROM edition_book_confirmations WHERE edition_id=? AND provider=?',(edition_id,'kadokawa')).fetchone()
+                    if current_binding is None or current_binding[0]!=membership['publisher_confirmation_proof_sha256']:
+                        raise ValueError('publisher confirmation changed during membership resolution')
+                    proof['kind']='kadokawa_promotion_membership_v1'
+                elif dre_series:
                     proof['kind'] = 'dre_wikidata_series_membership'
                 elif own_roles:
                     proof['kind'] = 'wikidata_own_direct_role_membership_v2'
@@ -4389,6 +4478,18 @@ class LightNovelCatalogue:
                     indexed[edition_id].update(series_entry_id=series_id, volume_number=membership['volume_number'],
                         relation_resolution='edition_series_membership_verified', light_novel_confirmed=light_novel_confirmed,
                         admission_status='edition_series_membership_verified', series_membership_evidence=membership)
+                    continue
+                if proof.get('kind') == 'kadokawa_promotion_membership_v1':
+                    key=('kadokawa_promotion_memberships',proof['manifest_path'],proof['manifest_sha256'])
+                    if key not in plans:
+                        assertions=self._kadokawa_promotion_assertions(proof['manifest_path'],proof['manifest_sha256'],cache)
+                        plans[key]=self._kadokawa_promotion_membership_candidates(rows,stored,assertions,cache)
+                    membership=plans[key].get(edition_id)
+                    if membership!=proof['membership'] or membership.get('series_entry_id')!=series_id:
+                        continue
+                    indexed[edition_id].update(series_entry_id=series_id,volume_number=membership['volume_number'],
+                        relation_resolution='edition_series_membership_verified',light_novel_confirmed=True,
+                        admission_status='edition_series_membership_verified',series_membership_evidence=membership)
                     continue
                 if proof.get('kind') == 'dre_wikidata_series_membership':
                     key = ('dre_memberships', proof['manifest_path'], proof['manifest_sha256'])

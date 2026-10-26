@@ -681,6 +681,17 @@ def public_work(row):
                                          'publisher_source_group_verified'):
         result['relation_resolution'] = row['relation_resolution']
     membership = row.get('series_membership_evidence')
+    if row.get('relation_resolution') == 'edition_series_membership_verified' and isinstance(membership,dict):
+        rule=membership.get('rule_version');url=membership.get('official_series_url')
+        allowed=(rule=='dre-publisher-wikidata-edition-membership-v1' and isinstance(url,str)
+            and re.fullmatch(r'https://drecom-media\.jp/drenovels/series/[A-Za-z0-9_-]+',url))
+        if rule=='kadokawa-official-promotion-edition-membership-v1':
+            from recommend_book.light_novel_kadokawa_promotions_v1 import PROMOTION
+            allowed=isinstance(url,str) and PROMOTION.fullmatch(url)
+        if allowed:
+            result['membership_source']={'source_url':url,'source_kind':'publisher_official_series',
+                'attribution':'シリーズ所属の書誌照合: 出版社の公式掲載資料',
+                'scope':'edition_membership_only'}
     if (row.get('relation_resolution') == 'edition_series_membership_verified'
             and isinstance(membership, dict)
             and membership.get('rule_version') in {
@@ -951,7 +962,7 @@ async function showDetail(identifier){
   if(row.publisher_work_group_kind==='futaba_mnovels_grouping'){if(Number.isInteger(row.source_frame_member_count)&&Number.isInteger(row.verified_bibliographic_member_count))body.append(node('p','保存一覧内の掲載参照 '+row.source_frame_member_count+'件に対し、対応を確認した書誌 '+row.verified_bibliographic_member_count+'件を表示しています。','muted'));body.append(node('p','全媒体・全期間の収録範囲は未確認です。','muted'));}
   if(row.relation_resolution==='original_work_and_story_series_unresolved')body.append(node('p','原作・物語シリーズとの対応は未確認です。','muted'));
   if(row.relation_resolution==='edition_series_membership_verified')body.append(node('p','物語シリーズへの所属を出典で確認済みです。版と原作品は別の項目として扱います。','muted'));
-  if(row.membership_source){const source=row.membership_source,p=node('p','シリーズ所属の照合資料：');for(const [url,label]of [[source.source_url,'Wikipediaの参照版'],[source.history_url,'寄稿者の履歴'],[source.license_url,source.license]]){if(!url||!label)continue;const a=node('a',label);a.href=url;a.target='_blank';a.rel='noopener noreferrer';p.append(a,node('span',' ・ '));}body.append(p,node('p',source.attribution,'muted'),node('p','明示された書誌情報を抽出し、NDL書誌と照合しています。内容分類の根拠とは別に扱います。','muted'));}
+  if(row.membership_source){const source=row.membership_source,p=node('p','シリーズ所属の照合資料：');for(const [url,label]of [[source.source_url,source.source_kind==='publisher_official_series'?'出版社の公式シリーズページ':'Wikipediaの参照版'],[source.history_url,'寄稿者の履歴'],[source.license_url,source.license]]){if(!url||!label)continue;const a=node('a',label);a.href=url;a.target='_blank';a.rel='noopener noreferrer';p.append(a,node('span',' ・ '));}body.append(p,node('p',source.attribution,'muted'),node('p','明示された書誌情報を抽出し、NDL書誌と照合しています。内容分類の根拠とは別に扱います。','muted'));}
   if(row.publisher_listing_associations?.length){
    const associations=section(body,'出版社の掲載書誌との対応');
    associations.append(node('p','完全な書名と著者表示の対応を確認した掲載参照です。原作品・物語シリーズ・版の同一性は未確認です。','muted'));
