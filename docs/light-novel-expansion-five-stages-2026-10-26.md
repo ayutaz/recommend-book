@@ -1,8 +1,10 @@
 # ライトノベル追加：5段階の実行記録
 
-## 現時点の検証済みスナップショット（2026-10-26）
+続くHJ48所属・掲載参照1・内容分類1シリーズ・応答時間改善の結果は[後続区間の記録](light-novel-delivery-2026-10-26.md)、現在値は[現在の到達点](current-status.md)を参照してください。以下は前の区間の確定記録です。
 
-この節が現行値である。運用上の短い入口は[現状](current-status.md)、文書の対応表は[documentation-index.md](documentation-index.md)を参照する。ブランチは`feat/japanese-light-novels-v1`で、`bf6f558049c1d0ee9322739ca7080d7b277ac4f8`とoriginの同期を確認した。PR #31はOPEN・draftで、未mergeである。最新CI run [40274477382](https://github.com/ayutaz/recommend-book/actions/runs/40274477382) は`bf6f558049c1d0ee9322739ca7080d7b277ac4f8`を対象にUbuntu／Windowsの両方が成功した。正確なcase数はこの文書更新では再取得していない。
+## 前の区間の検証済みスナップショット（2026-10-26）
+
+この節は当該区間の確定値であり、後続区間の現行値ではない。運用上の短い入口は[現状](current-status.md)、文書の対応表は[documentation-index.md](documentation-index.md)を参照する。ブランチは`feat/japanese-light-novels-v1`で、`bf6f558049c1d0ee9322739ca7080d7b277ac4f8`とoriginの同期を確認した。PR #31はOPEN・draftで、未mergeである。最新CI run [40274477382](https://github.com/ayutaz/recommend-book/actions/runs/40274477382) は`bf6f558049c1d0ee9322739ca7080d7b277ac4f8`を対象にUbuntu／Windowsの両方が成功した。正確なcase数はこの文書更新では再取得していない。
 
 DBの検証済み件数は、全entry 100,883（ライトノベル確定数ではない）、版候補`edition` 87,278、raw series 2,388（出版社グループへ接続済み170を含み、物語シリーズは2,218）、独立出版社グループ870（出版社グループ合計1,040）、出版社掲載参照10,093、work 254（今回追加した個別小説work 19を含む）、所属5,115、feature export 753、内容特徴は物語シリーズ583＋個別work 1、読書状態0である。異なる単位を合算せず、全entryを作品数とは扱わない。
 
