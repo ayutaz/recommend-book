@@ -119,7 +119,11 @@ class Store:
 
     def recommend_preferences(self, **kw):
         self.calls.append(('recommend', kw))
-        return {'items': [dict(r, score=.9, reasons=[{'kind': 'source_genre'}]) for r in self.rows]}
+        liked = set(kw.get('liked_entry_ids') or [])
+        member_qids = {member.get('qid') for row in self.rows if row.get('entry_id') in liked
+                       for member in row.get('members', []) if member.get('qid')}
+        return {'items': [dict(r, score=.9, reasons=[{'kind': 'source_genre'}]) for r in self.rows
+                          if r.get('entry_id') not in liked and r.get('qid') not in member_qids]}
 
     def catalogue_stats(self):
         return {'works': len(self.rows), 'searchable_works': len(self.rows), 'series': 2,
@@ -638,6 +642,52 @@ def test_recommendation_bridge_never_promotes_series_features_to_volume_labels(s
     references = light.calls[-1][1]['reference_genres']
     assert references[0]['qid'] == 'Q1' and references[0]['scope'] == 'work'
     assert all(r.get('qid') != 'Q10' for r in result['items'])
+
+
+def test_light_novel_only_recommendation_skips_duplicate_liked_detail(stores, monkeypatch):
+    _, light, combined = stores
+    calls = []
+
+    def forbidden_detail(_entry_id):
+        raise AssertionError('light-novel-only recommendation must not prefetch liked detail')
+
+    def recommendation(**kwargs):
+        calls.append(kwargs)
+        return {'items': [dict(light.rows[1], score=.5, reasons=[])]}
+
+    monkeypatch.setattr(light, 'work_detail', forbidden_detail)
+    monkeypatch.setattr(light, 'recommend_preferences', recommendation)
+
+    result = combined.recommend_preferences(
+        liked_entry_ids=['lns:wd:Q30'], family='light_novel', genre='Q1', limit=1)
+
+    assert calls == [{'liked_entry_ids': ['lns:wd:Q30'], 'reference_genres': [],
+                      'limit': 1, 'genre': 'Q1'}]
+    assert [row['entry_id'] for row in result['items']] == ['lns:wd:Q40']
+
+
+def test_mixed_recommendation_keeps_liked_detail_for_cross_catalogue_context(stores, monkeypatch):
+    _, light, combined = stores
+    observed = []
+    original = light.work_detail
+
+    def record_detail(entry_id):
+        observed.append(entry_id)
+        return original(entry_id)
+
+    monkeypatch.setattr(light, 'work_detail', record_detail)
+    monkeypatch.setattr(light, 'recommend_preferences', lambda **kwargs: {'items': []})
+
+    combined.recommend_preferences(liked_entry_ids=['lns:wd:Q30'], family='all', limit=1)
+
+    assert observed == ['lns:wd:Q30']
+
+
+@pytest.mark.parametrize('invalid', ['lng:pub:other:' + 'a' * 32, 'not-an-entry'])
+def test_invalid_liked_entry_is_rejected_before_light_novel_only_shortcut(stores, invalid):
+    _, _, combined = stores
+    with pytest.raises(ValueError):
+        combined.recommend_preferences(liked_entry_ids=[invalid], family='light_novel')
 
 
 def test_world_stats_are_not_inflated_by_series_or_editions(stores):
