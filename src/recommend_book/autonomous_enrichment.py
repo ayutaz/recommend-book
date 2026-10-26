@@ -29,7 +29,7 @@ SECTIONS = {
     'fr': ['lead', 'Résumé', 'Intrigue'], 'de': ['lead', 'Handlung', 'Inhalt'],
     'es': ['lead', 'Argumento', 'Sinopsis'], 'it': ['lead', 'Trama'],
     'pt': ['lead', 'Enredo', 'Sinopse'], 'ko': ['lead', '줄거리'],
-    'ru': ['lead', 'Сюжет'], 'zh': ['lead', '情节', '情節', '故事简介', '故事簡介', '内容', '內容'],
+    'ru': ['lead', 'Сюжет'], 'zh': ['lead', '情节', '情節', '故事简介', '故事簡介', '内容', '內容', '劇情', '情節概述', '概要'],
     'ar': ['lead', 'حبكة', 'ملخص', 'القصة'], 'bn': ['lead', 'কাহিনী', 'সারসংক্ষেপ'],
     'uz': ['lead'], 'fa': ['lead'], 'tr': ['lead'], 'nl': ['lead'], 'pl': ['lead'],
     'sv': ['lead'], 'uk': ['lead'], 'cs': ['lead'], 'id': ['lead'], 'he': ['lead'],

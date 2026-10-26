@@ -263,7 +263,7 @@ def test_only_cli_path_serialization_can_differ(tmp_path):
     assert not equivalent_cli_argv(altered, expected)
 
 
-def build_verified_export_fixture(tmp_path, monkeypatch):
+def build_verified_export_fixture(tmp_path, monkeypatch, *, concurrency=4):
     """Exercise real child process witnesses with a deterministic local fake CLI."""
     series, source, _ = source_bundle(tmp_path)
     child = tmp_path / "fake_cli.py"
@@ -292,7 +292,7 @@ print(json.dumps(dict(type="turn.completed",usage=dict(input_tokens=1,output_tok
     import recommend_book.light_novel_classification_v1 as module
     monkeypatch.setattr(module, "resolve_executable", lambda _: [sys.executable, str(child)])
     result = run_window([series], tmp_path / "native", source_manifest=source, source_sha256=sha(source),
-        reservations=tmp_path / "reservations", concurrency=4)
+        reservations=tmp_path / "reservations", concurrency=concurrency)
     return result
 
 
@@ -365,3 +365,21 @@ def test_failure_rate_uses_actual_calls_instead_of_all_planned_inputs():
     value = check_gate(selected=100, failed=1, pending=90, adopted=0, attempted=10)
     assert value["failure_rate"] == .1 and value["actual_unstarted_series"] == 90
     assert "failure_rate_above_5_percent" in value["reasons"]
+
+
+@pytest.mark.parametrize("slots", [1, 2])
+def test_reduced_parallelism_limits_both_classification_and_review(tmp_path, monkeypatch, slots):
+    import recommend_book.light_novel_classification_v1 as module
+    original = module.ThreadPoolExecutor
+    scheduled = []
+
+    def bounded_pool(*, max_workers):
+        scheduled.append(max_workers)
+        return original(max_workers=max_workers)
+
+    monkeypatch.setattr(module, "ThreadPoolExecutor", bounded_pool)
+    result = build_verified_export_fixture(tmp_path, monkeypatch, concurrency=slots)
+    verified = verify_feature_export(result["manifest_path"], result["manifest_sha256"])
+    assert scheduled == [slots, slots]
+    assert verified["gate"]["passed"]
+    assert verified["content_features_adopted_series"] == 1
