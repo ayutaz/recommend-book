@@ -472,3 +472,133 @@ def admission_conflict(assertion, records, anchor_id, memberships=()):
         if binding['edition_id'] == 'lne:ndl:' + anchor_id and binding['series_id'] != own_id:
             return 'existing_edition_membership_anchor_conflict'
     return None
+
+
+_V4_DCT = 'http://purl.org/dc/terms/'
+_V4_DC = 'http://purl.org/dc/elements/1.1/'
+_V4_NDL = 'http://ndl.go.jp/dcndl/terms/'
+_V4_RDF = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#'
+
+def _own_title_grammar_v4(parts, own):
+    """Reconstruct every primary title from direct Japanese/parallel/volume fields.
+
+Only the finite observed ISBD layouts are accepted; no title text is removed."""
+    if own.tag != '{' + _V4_NDL + '}BibResource' or own.get('{' + _V4_RDF + '}about', '').split('#')[0] != parts['source']['source_url']:
+        return None
+    parent = _parent(parts['publisher_agents'][0]['locator'])
+    primary = []
+    catalogued = []
+    alternatives = []
+    volumes = []
+    for i, ch in enumerate(own, 1):
+        locator = parent + '/' + ch.tag + '[' + str(i) + ']'
+        if ch.tag == '{' + _V4_DCT + '}title':
+            raw = ch.text or ''
+            if ch.attrib or len(ch) or (not raw) or (raw != raw.strip()):
+                return None
+            primary.append({'value': raw, 'locator': locator})
+        elif ch.tag in ('{' + _V4_DC + '}title', '{' + _V4_NDL + '}alternative'):
+            value = _structured_value(ch, locator)
+            if value is None:
+                return None
+            (catalogued if ch.tag == '{' + _V4_DC + '}title' else alternatives).append(value)
+        elif ch.tag == '{' + _V4_NDL + '}volume':
+            value = _structured_value(ch, locator)
+            if value is None:
+                return None
+            volumes.append(value)
+    if len(catalogued) != 1 or not primary or len(alternatives) not in (1, 2) or (len(volumes) > 1):
+        return None
+    dc = catalogued[0]
+    alt = alternatives[0]['raw_literal']
+    if any((x['raw_literal'] != alt for x in alternatives)) or any((x in alt for x in (' = ', ' : '))):
+        return None
+    if sorted(parts['titles'], key=lambda r: r['locator']) != sorted(primary + [{'value': dc['value'], 'locator': dc['locator']}], key=lambda r: r['locator']):
+        return None
+    if (volumes[0]['value'] if volumes else None) != (parts['volume']['value'] if parts['volume'] else None):
+        return None
+    if volumes and (volumes[0]['locator'] != parts['volume']['locator'] or not re.fullmatch('[1-9][0-9]{0,3}', volumes[0]['value'])):
+        return None
+    split = dc['raw_literal'].split(' : ')
+    if len(split) not in (1, 2) or not all(split) or any((' = ' in x for x in split)):
+        return None
+    main = split[0]
+    subtitle = split[1] if len(split) == 2 else None
+    volume = volumes[0]['value'] if volumes else None
+    forms = {}
+    if subtitle is None:
+        base = main + ' = ' + alt
+        if volume:
+            forms = {'parallel_main_explicit_dot_volume': base + '. ' + volume, 'parallel_main_explicit_space_volume': base + ' ' + volume}
+        else:
+            forms = {'parallel_main_no_volume': base}
+    else:
+        for separator, name in [(' : ', 'parallel_subtitle'), ('. : ', 'parallel_period_subtitle')]:
+            forms[name + ('_dot_volume' if volume else '_no_volume')] = main + ' = ' + alt + separator + subtitle + ('. ' + volume if volume else '')
+    selected = [name for name, value in forms.items() if all((p['value'] == value for p in primary))]
+    if len(selected) != 1:
+        return None
+    return {'rule': 'own_structured_Japanese_title_and_exact_parallel_fields_v4', 'raw_grammar': selected[0], 'Japanese_main': main, 'Japanese_subtitle': subtitle, 'volume': volume, 'source_value': primary[0]['value'], 'primary_titles': primary, 'catalogued_title': dc, 'parallel_alternatives': alternatives, 'explicit_volume': volumes[0] if volumes else None, 'locators': [p['locator'] for p in primary] + [dc['value_locator']] + [a['value_locator'] for a in alternatives] + [v['value_locator'] for v in volumes]}
+
+def _official_title_grammar_witness_v4(assertion, member, g, artifact, cache):
+    """Replay both primary pages and bind each provided title to its own book.
+
+The representative product may be another volume: its h1 must agree with its
+actual own ISBN and URL card, present identically in both novel lists."""
+    main, sub, vol = (g['Japanese_main'], g['Japanese_subtitle'], g['volume'])
+    tail = ' ～' + sub + '～' if sub is not None else ''
+    base = main + tail
+    selected = main + (vol or '') + tail
+    if _key(member['title']) != _key(selected) or _key(assertion['title']) != _key(base):
+        return None
+    fields = []
+    for kind, route, heading in [('product', PRODUCT, 'productDetail__subTitle--novels'), ('series', SERIES, 'seriesDetail__subTitle--novels')]:
+        snapshot = assertion['primary_source_snapshots'][kind]
+        p = Path(snapshot['receipt_path'])
+        tree, actual = _snapshot(p.parent, {'receipt_path': p.name, 'receipt_sha256': snapshot['receipt_sha256']}, artifact, cache, route)
+        if actual != snapshot:
+            return None
+        books = _members(tree, heading)
+        if {_member_key(m) for m in books} != {_member_key(m) for m in assertion['explicit_book_memberships']}:
+            return None
+        own_selected = [b for b in books if b['isbn'] == member['isbn'] and b['source_url'] == member['source_url']]
+        if len(own_selected) != 1 or _key(own_selected[0]['title']) != _key(selected):
+            return None
+        for book in books:
+            if not re.fullmatch(re.escape(_key(main)) + '(?:[1-9][0-9]{0,3})?' + re.escape(_key(tail)), _key(book['title'])):
+                return None
+            fields.append({'source_url': actual['source_url'], 'raw_sha256': actual['raw_sha256'], 'locator': book['locator'] + ' span.bookColumn__title', 'value': book['title'], 'isbn': book['isbn']})
+        if kind == 'product':
+            boundary = _one(tree.nodes(tag='section', cls='lineupColumn__item'), 'product boundary')
+            title = _literal(_one(boundary.nodes(tag='h1', cls='lineupColumn__title'), 'product h1'))
+            isbn, literal = _facts(boundary, 'lineupColumn')
+            own_cards = [b for b in books if b['isbn'] == isbn and b['source_url'] == actual['source_url']]
+            if len(own_cards) != 1 or _key(title) != _key(own_cards[0]['title']):
+                return None
+            fields.append({'source_url': actual['source_url'], 'raw_sha256': actual['raw_sha256'], 'locator': 'section.lineupColumn__item h1.lineupColumn__title + own ISBN', 'value': title, 'isbn': isbn, 'source_product_is_selected_member': isbn == member['isbn']})
+        else:
+            boundary = _one(tree.nodes(tag='section', cls='seriesDetail__main'), 'series boundary')
+            title = _literal(_one(boundary.nodes(tag='h1', cls='seriesDetail__mainTitle'), 'series h1'))
+            if _key(title) != _key(base):
+                return None
+            fields.append({'source_url': actual['source_url'], 'raw_sha256': actual['raw_sha256'], 'locator': 'section.seriesDetail__main h1.seriesDetail__mainTitle', 'value': title})
+    return fields
+
+def match_member_v4(assertion, parts, own, artifact, cache):
+    """Return existing v2/v3 matches unchanged, then try the closed v4 recipe."""
+    legacy = match_member_v3(assertion, parts, own, artifact, cache)
+    if legacy is not None:
+        return legacy
+    try:
+        grammar = _own_title_grammar_v4(parts, own)
+        if grammar is None:
+            return None
+        matched = _match_member(assertion, parts, title_grammar=grammar)
+        if matched is None:
+            return None
+        fields = _official_title_grammar_witness_v4(assertion, matched['official_member'], grammar, artifact, cache)
+        if fields is None:
+            return None
+        return {**matched, 'rule_version': 'dre-dual-source-explicit-ndl-member-match-v4', 'own_title_grammar': {**grammar, 'official_title_fields': fields, 'source_raw_sha256': parts['source_raw_sha256']}}
+    except (OSError, KeyError, TypeError, ValueError, AttributeError, IndexError):
+        return None

@@ -1,4 +1,4 @@
-"""Public DRE v2/v3 attribution is narrow and never mutates stored proofs."""
+"""Public DRE attribution is narrow and never mutates stored proofs."""
 from copy import deepcopy
 import json
 
@@ -9,7 +9,8 @@ from recommend_book.recommendation.scale_site_v1 import public_work as public_en
 NDL = 'https://ndlsearch.ndl.go.jp/books/R100000002-I1'
 OFFICIAL = 'https://drecom-media.jp/drenovels/series/example'
 RULES = ('dre-explicit-dual-source-ndl-series-membership-v2',
-         'dre-explicit-dual-source-ndl-series-membership-v3')
+         'dre-explicit-dual-source-ndl-series-membership-v3',
+         'dre-explicit-dual-source-ndl-series-membership-v4')
 
 
 def row(rule=RULES[0], *, sources=None):
@@ -63,7 +64,7 @@ def test_nonunique_or_malformed_official_source_list_fails_closed(rule, sources)
 
 
 @pytest.mark.parametrize('rule', ['dre-explicit-dual-source-ndl-series-membership-v1',
-    'dre-explicit-dual-source-ndl-series-membership-v4', 'unknown', None])
+    'dre-explicit-dual-source-ndl-series-membership-v5', 'unknown', None])
 def test_unknown_rule_cannot_borrow_official_source(rule):
     value = row(rule); value['series_membership_evidence']['official_series_url'] = OFFICIAL
     assert 'membership_source' not in public_entry(value)

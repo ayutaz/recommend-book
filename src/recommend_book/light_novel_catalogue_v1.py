@@ -2321,7 +2321,7 @@ class LightNovelCatalogue:
 
     def _publisher_series_match(self, assertion, edition_record, cache, *, allow_unnumbered=False):
         if assertion.get('index_id') == 'dre-novels-series-v2':
-            from .light_novel_dre_dual_series_v2 import match_member, match_member_v3
+            from .light_novel_dre_dual_series_v2 import match_member, match_member_v4
             parts = self._edition_primary_bibliographic_parts(edition_record, cache)
             if not parts:
                 return None
@@ -2329,7 +2329,7 @@ class LightNovelCatalogue:
             if matched is not None:
                 return matched
             own = self._authenticated_own_primary_resource(edition_record, parts, cache)
-            return match_member_v3(assertion, parts, own, self._artifact, cache)
+            return match_member_v4(assertion, parts, own, self._artifact, cache)
         if assertion.get('index_id') == 'dre-novels-series':
             scoped = self._dre_label_assertion(assertion, edition_record)
             if scoped is None:
@@ -2465,7 +2465,9 @@ class LightNovelCatalogue:
                 'sources': [source['source_url'], assertion['source_url']], 'explicit_member_match': match,
                 'story_series_identity_asserted': False, 'original_work_identity_asserted': False}
         if assertion.get('index_id') == 'dre-novels-series-v2':
-            return {'rule_version': ('dre-explicit-dual-source-ndl-series-membership-v3'
+            return {'rule_version': ('dre-explicit-dual-source-ndl-series-membership-v4'
+                    if any(m.get('rule_version') == 'dre-dual-source-explicit-ndl-member-match-v4' for m in (match, anchor_match))
+                    else 'dre-explicit-dual-source-ndl-series-membership-v3'
                     if any(m.get('rule_version') == 'dre-dual-source-explicit-ndl-member-match-v3' for m in (match, anchor_match))
                     else 'dre-explicit-dual-source-ndl-series-membership-v2'),
                 'scope': 'edition_membership_only',

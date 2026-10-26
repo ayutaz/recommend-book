@@ -175,7 +175,7 @@ def test_full_catalogue_v3_own_grammar_positive_replay_preserves_existing_v2(dre
 
 @pytest.mark.parametrize('change', ['numeric_missing_dc', 'numeric_unstructured_dc', 'numeric_wrong_volume', 'numeric_wrong_subtitle',
     'parallel_one', 'parallel_conflict', 'parallel_wrong_composite', 'parallel_unstructured_dc', 'parallel_extra_primary', 'official_Japanese_conflict'])
-def test_full_catalogue_v3_rejects_nonexact_own_fields_without_proposals(dre_membership, tmp_path, change):
+def test_full_catalogue_own_fields_reject_conflicts_and_accept_exact_v4_layouts(dre_membership, tmp_path, change):
     cat, _, _, _, _ = dre_membership; numeric = change.startswith('numeric')
     root = tmp_path / 'grammar'; path, pin, ref = grammar_source(root, numeric=numeric,
         subtitle='別の副題' if change == 'official_Japanese_conflict' else '完全副題')
@@ -200,6 +200,14 @@ def test_full_catalogue_v3_rejects_nonexact_own_fields_without_proposals(dre_mem
         before = [tuple(r) for r in db.execute('SELECT * FROM entries ORDER BY entry_id')]
         bindings = [tuple(r) for r in db.execute('SELECT * FROM edition_series_memberships ORDER BY edition_id')]
     result = cat.import_ndl_series_from_publishers(path, pin, source_root=root, reference_ids=[ref])
+    if change in {'parallel_one', 'parallel_wrong_composite'}:
+        # These exact, independently printed layouts are now supported by v4.
+        assert result['inserted'] == result['new_edition_memberships'] == 1
+        evidence = cat.work_detail('lne:ndl:R100000002-I2')['series_membership_evidence']
+        assert evidence['rule_version'] == 'dre-explicit-dual-source-ndl-series-membership-v4'
+        assert evidence['explicit_member_match']['rule_version'] == 'dre-dual-source-explicit-ndl-member-match-v4'
+        assert evidence['volume_number'] is None
+        return
     assert result['inserted'] == result['new_edition_memberships'] == 0
     assert result['held_reasons'] == {'no_qualified_ndl_anchor': 1}
     with cat._connect() as db:

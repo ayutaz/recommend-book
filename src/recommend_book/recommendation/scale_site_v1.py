@@ -710,7 +710,8 @@ def public_work(row):
     if row.get('relation_resolution') == 'edition_series_membership_verified' and isinstance(membership,dict):
         rule=membership.get('rule_version');url=membership.get('official_series_url')
         if rule in {'dre-explicit-dual-source-ndl-series-membership-v2',
-                    'dre-explicit-dual-source-ndl-series-membership-v3'}:
+                    'dre-explicit-dual-source-ndl-series-membership-v3',
+                    'dre-explicit-dual-source-ndl-series-membership-v4'}:
             sources=membership.get('sources')
             official=[value for value in sources if isinstance(value,str) and re.fullmatch(
                 r'https://drecom-media\.jp/drenovels/series/[A-Za-z0-9_-]+',value)] if isinstance(sources,list) else []
@@ -718,7 +719,8 @@ def public_work(row):
         allowed=(rule=='dre-publisher-wikidata-edition-membership-v1' and isinstance(url,str)
             and re.fullmatch(r'https://drecom-media\.jp/drenovels/series/[A-Za-z0-9_-]+',url))
         if rule in {'dre-explicit-dual-source-ndl-series-membership-v2',
-                    'dre-explicit-dual-source-ndl-series-membership-v3'}:
+                    'dre-explicit-dual-source-ndl-series-membership-v3',
+                    'dre-explicit-dual-source-ndl-series-membership-v4'}:
             allowed=url is not None
         if rule in {'kadokawa-official-promotion-edition-membership-v1','kadokawa-official-promotion-edition-membership-v2','kadokawa-official-promotion-edition-membership-v3','kadokawa-official-named-part-edition-membership-v1'}:
             from recommend_book.light_novel_kadokawa_promotions_v1 import PROMOTION
