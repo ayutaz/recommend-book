@@ -654,6 +654,23 @@ def _public_publisher_reference(row):
     return result
 
 
+def _public_named_part(row):
+    from recommend_book.light_novel_kadokawa_promotions_v1 import PROMOTION
+    membership=row.get('series_membership_evidence')
+    if (row.get('relation_resolution')!='edition_series_membership_verified' or not isinstance(membership,dict)
+            or membership.get('rule_version')!='kadokawa-official-named-part-edition-membership-v1'
+            or membership.get('part_label') not in {'上','下'} or membership.get('volume_number') is not None
+            or membership.get('part_order') is not None or membership.get('numeric_order_inferred') is not False):
+        return None
+    if not isinstance(membership.get('official_series_url'),str) or not PROMOTION.fullmatch(membership['official_series_url']):
+        return None
+    context=membership.get('part_context')
+    value=context.get('value') if isinstance(context,dict) else None
+    if not isinstance(value,str) or not value.strip() or len(value)>200:
+        return None
+    return {'label':membership['part_label'],'context':_text(value),'numeric_order':None}
+
+
 def public_work(row):
     """Explicit boundary: never serialize a database row or provenance packet wholesale."""
     if row.get('entry_kind') == 'publisher_reference':
@@ -689,15 +706,27 @@ def public_work(row):
     membership = row.get('series_membership_evidence')
     if row.get('relation_resolution') == 'edition_series_membership_verified' and isinstance(membership,dict):
         rule=membership.get('rule_version');url=membership.get('official_series_url')
+        if rule in {'dre-explicit-dual-source-ndl-series-membership-v2',
+                    'dre-explicit-dual-source-ndl-series-membership-v3'}:
+            sources=membership.get('sources')
+            official=[value for value in sources if isinstance(value,str) and re.fullmatch(
+                r'https://drecom-media\.jp/drenovels/series/[A-Za-z0-9_-]+',value)] if isinstance(sources,list) else []
+            url=official[0] if len(official)==1 else None
         allowed=(rule=='dre-publisher-wikidata-edition-membership-v1' and isinstance(url,str)
             and re.fullmatch(r'https://drecom-media\.jp/drenovels/series/[A-Za-z0-9_-]+',url))
-        if rule in {'kadokawa-official-promotion-edition-membership-v1','kadokawa-official-promotion-edition-membership-v2','kadokawa-official-promotion-edition-membership-v3'}:
+        if rule in {'dre-explicit-dual-source-ndl-series-membership-v2',
+                    'dre-explicit-dual-source-ndl-series-membership-v3'}:
+            allowed=url is not None
+        if rule in {'kadokawa-official-promotion-edition-membership-v1','kadokawa-official-promotion-edition-membership-v2','kadokawa-official-promotion-edition-membership-v3','kadokawa-official-named-part-edition-membership-v1'}:
             from recommend_book.light_novel_kadokawa_promotions_v1 import PROMOTION
             allowed=isinstance(url,str) and PROMOTION.fullmatch(url)
         if allowed:
             result['membership_source']={'source_url':url,'source_kind':'publisher_official_series',
                 'attribution':'シリーズ所属の書誌照合: 出版社の公式掲載資料',
                 'scope':'edition_membership_only'}
+    part=_public_named_part(row)
+    if part is not None and 'membership_source' in result:
+        result['membership_part']=part
     if (row.get('relation_resolution') == 'edition_series_membership_verified'
             and isinstance(membership, dict)
             and membership.get('rule_version') in {
@@ -787,6 +816,8 @@ def public_work(row):
             if member.get('entry_kind') == 'edition' and member.get('edition_bibliography_confirmed') is True:
                 item['confirmation_source_url'] = _link(member.get('confirmation_source_url'))
             item.update(_public_bibliography_correspondence(member))
+            part=_public_named_part(member)
+            if part is not None:item['membership_part']=part
             result['members'].append(item)
     if 'rights' in row:
         result['rights'] = {key: row['rights'].get(key) if row['rights'].get(key) in ('allowed', 'hold') else 'hold'
@@ -969,6 +1000,7 @@ async function showDetail(identifier){
   if(row.relation_resolution==='original_work_and_story_series_unresolved')body.append(node('p','原作・物語シリーズとの対応は未確認です。','muted'));
   if(row.relation_resolution==='edition_series_membership_verified')body.append(node('p','物語シリーズへの所属を出典で確認済みです。版と原作品は別の項目として扱います。','muted'));
   if(row.membership_source){const source=row.membership_source,p=node('p','シリーズ所属の照合資料：');for(const [url,label]of [[source.source_url,source.source_kind==='publisher_official_series'?'出版社の公式シリーズページ':'Wikipediaの参照版'],[source.history_url,'寄稿者の履歴'],[source.license_url,source.license]]){if(!url||!label)continue;const a=node('a',label);a.href=url;a.target='_blank';a.rel='noopener noreferrer';p.append(a,node('span',' ・ '));}body.append(p,node('p',source.attribution,'muted'),node('p','明示された書誌情報を抽出し、NDL書誌と照合しています。内容分類の根拠とは別に扱います。','muted'));}
+  if(row.membership_part)body.append(node('p',row.membership_part.context+' '+row.membership_part.label+'（巻順未確定）','muted'));
   if(row.publisher_listing_associations?.length){
    const associations=section(body,'出版社の掲載書誌との対応');
    associations.append(node('p','完全な書名と著者表示の対応を確認した掲載参照です。原作品・物語シリーズ・版の同一性は未確認です。','muted'));
@@ -996,7 +1028,7 @@ async function showDetail(identifier){
   for(const f of features){const n=node('p',f.label||f.label_id||f.feature_id||'分類特徴');if(f.relevance!==undefined)n.append(node('span',' ・ 関連度 '+(f.relevance===null?'不明':f.relevance)));if(f.confidence!==undefined)n.append(node('span',' ・ モデル確信度 '+(f.confidence===null?'不明':f.confidence)));rich.append(n);if(f.evidence)rich.append(node('p','出典の引用：'+f.evidence,'muted'));if(f.evidence_summary)rich.append(node('p','AIによる根拠の要約：'+f.evidence_summary,'muted'));}
   rich.append(node('p','関連度とモデル確信度は校正されていない生の値です。正解の確率や個人向け推薦スコアではありません。','muted'));
   sourceCredits(body,row.content_sources||[]);
-  if(row.members?.length){const members=section(body,'収録巻・関連する版');members.append(node('p','出典で対応関係を確認できた巻・版です。各項目の読書状態はシリーズとは別に保存します。','muted'));for(const member of row.members){const div=node('div',undefined,'similar-row'),button=node('button',member.title||'書名不明');button.addEventListener('click',()=>showDetail(entryKey(member)));div.append(button,node('p',entryLabel(member),'muted'),statusControl(member));members.append(div);}}
+  if(row.members?.length){const members=section(body,'収録巻・関連する版');members.append(node('p','出典で対応関係を確認できた巻・版です。各項目の読書状態はシリーズとは別に保存します。','muted'));for(const member of row.members){const div=node('div',undefined,'similar-row'),button=node('button',member.title||'書名不明');button.addEventListener('click',()=>showDetail(entryKey(member)));div.append(button,node('p',entryLabel(member),'muted'),statusControl(member));if(member.membership_part)div.append(node('p',member.membership_part.context+' '+member.membership_part.label+'（巻順未確定）','muted'));members.append(div);}}
   const similar=section(body,'この作品に近い候補');similar.append(node('p','内容特徴と資料記載のジャンル・書誌特徴を区別して表示します。個人の読書履歴に基づく推薦ではありません。','muted'));
   if(row.entry_kind==='edition'&&!row.recommendable){similar.append(node('p','この版は推薦に使える特徴が未収録です。'));return;}
   const data=await api(entryPath(identifier)+'/similar?exclude_read='+($('exclude-read').checked?'1':'0'));

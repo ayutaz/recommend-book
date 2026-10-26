@@ -459,7 +459,7 @@ class LightNovelCatalogue:
             return self._project_ndl_series(record, cache)
         if record.get('schema_version') in {'light-novel-edition-v1', 'light-novel-edition-bulk-v1'}:
             return self._project_edition(record, cache)
-        if record.get('schema_version') not in {'light-novel-metadata-v1', 'light-novel-metadata-v2'} or record.get('source') != 'wikidata':
+        if record.get('schema_version') not in {'light-novel-metadata-v1', 'light-novel-metadata-v2', 'light-novel-metadata-v3', 'light-novel-work-metadata-v3'} or record.get('source') != 'wikidata':
             raise ValueError('unsupported metadata contract')
         if record.get('admission', {}).get('accepted') is not True or record['admission'].get('reasons'):
             raise ValueError('metadata admission held')
@@ -473,7 +473,16 @@ class LightNovelCatalogue:
         if proof.get('url') != f'https://www.wikidata.org/wiki/{qid}' or proof.get('entity_revision') != entity.get('lastrevid'):
             raise ValueError('source URL/revision differs')
         types = set(_items(entity, 'P31') + _items(entity, 'P7937'))
-        kind = 'series' if 'Q104213567' in types else 'work' if 'Q747381' in types else None
+        if record.get('schema_version') == 'light-novel-metadata-v3':
+            from .light_novel_admission_v3 import verify_metadata
+            verify_metadata(record)
+            kind = 'series'
+        elif record.get('schema_version') == 'light-novel-work-metadata-v3':
+            from .light_novel_work_admission_v3 import verify_metadata
+            verify_metadata(record)
+            kind = 'work'
+        else:
+            kind = 'series' if 'Q104213567' in types else 'work' if 'Q747381' in types else None
         if kind is None or record.get('kind') != kind or types & CONFLICT_TYPES or _items(entity, 'P629'):
             raise ValueError('light novel scope absent or conflicting')
         languages = _items(entity, 'P407')
@@ -667,7 +676,24 @@ class LightNovelCatalogue:
                         raise ValueError('publisher source references require their dedicated importer')
                     encoded = _json(record)
                     digest = hashlib.sha256(encoded.encode()).hexdigest()
+                    if record.get('schema_version') in {'light-novel-metadata-v3', 'light-novel-work-metadata-v3'} and not db.in_transaction:
+                        db.execute('BEGIN IMMEDIATE')
                     previous = db.execute('SELECT record_sha256 FROM entries WHERE entry_id=?', (row['entry_id'],)).fetchone()
+                    if record.get('schema_version') in {'light-novel-metadata-v3', 'light-novel-work-metadata-v3'} and previous is None:
+                        if record.get('schema_version') == 'light-novel-work-metadata-v3':
+                            from .light_novel_work_admission_v3 import check_duplicate_titles
+                        else:
+                            from .light_novel_admission_v3 import check_duplicate_titles
+                        occupied = []
+                        for identity, kind, saved, saved_sha in db.execute(
+                                "SELECT entry_id,kind,record_json,record_sha256 FROM entries WHERE kind IN ('series','work','publisher_group') OR entry_id=?",
+                                ('lnw:wd:' + record['id'],)):
+                            if hashlib.sha256(saved.encode()).hexdigest() != saved_sha:
+                                raise ValueError('v3 duplicate-title witness metadata SHA differs')
+                            witness = json.loads(saved)
+                            occupied.append({'entry_id': identity, 'entry_kind': kind,
+                                'record': witness})
+                        check_duplicate_titles(record, occupied)
                     if _projected is not None:
                         _projected[row['entry_id']] = row
                     if previous and previous['record_sha256'] == digest:
@@ -725,7 +751,8 @@ class LightNovelCatalogue:
             raise ValueError('NDL anchor does not reproduce publisher series identity')
         cobalt = assertion.get('index_id') == 'cobalt-explicit-series'
         earthstar = assertion.get('index_id') == 'earthstar-explicit-work-group'
-        explicit = cobalt or earthstar
+        dre_dual = assertion.get('index_id') == 'dre-novels-series-v2'
+        explicit = cobalt or earthstar or dre_dual
         if explicit and record.get('title') != assertion['title']:
             raise ValueError('explicit series search title differs from official source')
         entry_id = 'lns:ndl:' + anchor['id']
@@ -747,7 +774,7 @@ class LightNovelCatalogue:
                 **({'series_title_source': 'publisher_explicit_work_group' if earthstar else 'publisher_explicit_group',
                     'publication_label': None, 'publishers': [],
                     'content_sources': [
-                        {'source_url': assertion['source_url'], 'attribution': '作品名・著者・収録参照: アース・スター公式資料' if earthstar else 'シリーズ名・著者・収録参照: 集英社公式資料'},
+                        {'source_url': assertion['source_url'], 'attribution': '作品名・著者・収録参照: アース・スター公式資料' if earthstar else 'シリーズ名・著者・収録参照: DREノベルス公式資料' if dre_dual else 'シリーズ名・著者・収録参照: 集英社公式資料'},
                         {'source_url': base['source_url'], 'attribution': base['source_attributions'][0]['credit'],
                          'license_url': base['source_attributions'][0]['license_url']}]}
                    if explicit else {}),
@@ -2257,6 +2284,16 @@ class LightNovelCatalogue:
         return {**assertion,'label_aliases':['DRE NOVELS']}, witness
 
     def _publisher_series_match(self, assertion, edition_record, cache, *, allow_unnumbered=False):
+        if assertion.get('index_id') == 'dre-novels-series-v2':
+            from .light_novel_dre_dual_series_v2 import match_member, match_member_v3
+            parts = self._edition_primary_bibliographic_parts(edition_record, cache)
+            if not parts:
+                return None
+            matched = match_member(assertion, parts)
+            if matched is not None:
+                return matched
+            own = self._authenticated_own_primary_resource(edition_record, parts, cache)
+            return match_member_v3(assertion, parts, own, self._artifact, cache)
         if assertion.get('index_id') == 'dre-novels-series':
             scoped = self._dre_label_assertion(assertion, edition_record)
             if scoped is None:
@@ -2391,6 +2428,17 @@ class LightNovelCatalogue:
                 'author_authority_ids': sorted(ids(match)), 'imprint': match['imprint'], 'ndc_codes': match['ndc_codes'],
                 'sources': [source['source_url'], assertion['source_url']], 'explicit_member_match': match,
                 'story_series_identity_asserted': False, 'original_work_identity_asserted': False}
+        if assertion.get('index_id') == 'dre-novels-series-v2':
+            return {'rule_version': ('dre-explicit-dual-source-ndl-series-membership-v3'
+                    if any(m.get('rule_version') == 'dre-dual-source-explicit-ndl-member-match-v3' for m in (match, anchor_match))
+                    else 'dre-explicit-dual-source-ndl-series-membership-v2'),
+                'scope': 'edition_membership_only',
+                'edition_id': 'lne:ndl:' + source['source_id'], 'series_entry_id': series['entry_id'],
+                'matched_title': match['matched_ndl_title'], 'official_series_title': assertion['title'],
+                'volume': match['volume'], 'volume_number': match['volume_number'],
+                'author_authority_ids': sorted(ids(match)), 'imprint': match['imprint'], 'ndc_codes': match['ndc_codes'],
+                'sources': [source['source_url'], assertion['source_url']], 'explicit_member_match': match,
+                'original_work_identity_asserted': False}
         if assertion.get('index_id') == 'cobalt-explicit-series':
             return {'rule_version': 'cobalt-explicit-ndl-series-membership-v1', 'scope': 'edition_membership_only',
                 'edition_id': 'lne:ndl:' + source['source_id'], 'series_entry_id': series['entry_id'],
@@ -2417,10 +2465,16 @@ class LightNovelCatalogue:
         records = {key: json.loads(value['record_json']) for key, value in stored.items()}
         series_rows = [r for r in rows if r['entry_id'].startswith('lns:ndl:')
                        and records[r['entry_id']].get('publisher_series_proof', {}).get('kind') != 'futaba_mnovels_workgroup']
-        index, explicit_index = {}, {}
+        index, explicit_index, dre_v2_isbn_index = {}, {}, {}
         for series in series_rows:
             index.setdefault(normalize_search(series['title']), []).append(series)
             proof = records[series['entry_id']]['publisher_series_proof']
+            if proof.get('kind') == 'dre-novels-series-v2':
+                from .light_novel_ndl_series_v1 import publisher_assertions
+                assertion = publisher_assertions(proof, self._artifact, cache).get(proof['reference_id'])
+                if assertion and assertion.get('index_id') == 'dre-novels-series-v2':
+                    for member in assertion['explicit_book_memberships']:
+                        dre_v2_isbn_index.setdefault(member['isbn'], []).append(series)
             if proof.get('cobalt_series_path') or proof.get('earthstar_series_path'):
                 from .light_novel_ndl_series_v1 import publisher_assertions
                 from .light_novel_explicit_series_match_v1 import candidate_title_keys
@@ -2436,6 +2490,11 @@ class LightNovelCatalogue:
             source = self._source_with_title_parts(record, cache)
             candidates = {s['entry_id']: s for t in [*source['titles'], *source.get('_cataloguing_main_titles', [])]
                           for s in index.get(normalize_search(t['value']), [])}
+            if dre_v2_isbn_index:
+                from .normalization import normalize_isbn
+                candidates.update({s['entry_id']: s for identifier in source['identifiers']
+                    if identifier['source'] == 'isbn'
+                    for s in dre_v2_isbn_index.get(normalize_isbn(identifier['value']), [])})
             if explicit_index:
                 from .light_novel_explicit_series_match_v1 import candidate_ndl_title_keys
                 candidates.update({s['entry_id']: s for key in candidate_ndl_title_keys(source)
@@ -2514,6 +2573,10 @@ class LightNovelCatalogue:
         active = requested - completed
         matching_references = requested if refresh_memberships else active
         target_titles = {normalize_search(assertions[key]['title']) for key in matching_references}
+        from .normalization import normalize_isbn
+        dre_v2_isbns = {m['isbn'] for ref in matching_references
+            if assertions[ref].get('index_id') == 'dre-novels-series-v2'
+            for m in assertions[ref]['explicit_book_memberships']}
         explicit_titles = set()
         if cobalt_series_path or earthstar_series_path:
             from .light_novel_explicit_series_match_v1 import candidate_title_keys, candidate_ndl_title_keys
@@ -2530,6 +2593,8 @@ class LightNovelCatalogue:
             for key, record in records.items():
                 if stored[key]['kind'] == 'edition' or record.get('schema_version') in {
                         'light-novel-edition-v1', 'light-novel-edition-bulk-v1'}:
+                    if dre_v2_isbns & {normalize_isbn(v) for v in record.get('isbn', [])}:
+                        selected.add(key)
                     titles = [row['value'] for row in record['source_record']['titles']]
                     title_keys = {normalize_search(value) for title in titles
                         for value in (title, re.split(r' (?:=|:) ', title, maxsplit=1)[0])}
@@ -2551,10 +2616,15 @@ class LightNovelCatalogue:
                 raise ValueError('stored typed identity differs')
             projected[key] = row
         rows = list(projected.values())
-        editions, explicit_editions = {}, {}
+        editions, explicit_editions, dre_v2_editions = {}, {}, {}
         for row in rows:
             if row['entry_kind'] == 'edition':
                 source = self._source_with_title_parts(records[row['entry_id']], cache)
+                for identifier in source['identifiers']:
+                    if identifier['source'] == 'isbn':
+                        isbn = normalize_isbn(identifier['value'])
+                        if isbn in dre_v2_isbns:
+                            dre_v2_editions.setdefault(isbn, {})[row['entry_id']] = records[row['entry_id']]
                 for title in [*source['titles'], *source.get('_cataloguing_main_titles', [])]:
                     editions.setdefault(normalize_search(title['value']), {})[row['entry_id']] = records[row['entry_id']]
                 if explicit_titles:
@@ -2577,7 +2647,12 @@ class LightNovelCatalogue:
                 hold('potential_wikidata_series_overlap_requires_authority_review')
                 continue
             qualified = []
-            if assertion.get('index_id') in ('cobalt-explicit-series', 'earthstar-explicit-work-group'):
+            if assertion.get('index_id') == 'dre-novels-series-v2':
+                matching_editions = {}
+                for member in assertion['explicit_book_memberships']:
+                    matching_editions.update(dre_v2_editions.get(member['isbn'], {}))
+                candidates = matching_editions.values()
+            elif assertion.get('index_id') in ('cobalt-explicit-series', 'earthstar-explicit-work-group'):
                 matching_editions = {}
                 for title_key in candidate_title_keys(assertion):
                     matching_editions.update(explicit_editions.get(title_key, {}))
@@ -2599,13 +2674,23 @@ class LightNovelCatalogue:
             anchor = previous['anchor_edition_record'] if previous else min(qualified, key=lambda pair: (
                 pair[1]['volume_number'] is None, pair[1]['volume_number'] or 0,
                 pair[0]['source_record']['publication_year'] or 9999, pair[0]['id']))[0]
+            if assertion.get('index_id') == 'dre-novels-series-v2':
+                from .light_novel_dre_dual_series_v2 import admission_conflict
+                with self._connect() as db:
+                    existing_memberships = db.execute('SELECT edition_id,series_id FROM edition_series_memberships').fetchall()
+                conflict = admission_conflict(assertion, records, anchor['id'], existing_memberships)
+                if conflict:
+                    hold(conflict)
+                    continue
             if any(record['id'] == anchor['id'] and owner != reference for owner, record in existing.items()):
                 hold('ambiguous_publisher_series_for_same_ndl_anchor')
                 continue
             proposals.append({'schema_version': 'light-novel-ndl-series-v1', 'source': 'ndl', 'id': anchor['id'],
                               'anchor_edition_record': anchor, 'publisher_series_proof': {**source_proof, 'reference_id': reference}})
-            if assertion.get('index_id') in ('cobalt-explicit-series', 'earthstar-explicit-work-group'):
+            if assertion.get('index_id') in ('cobalt-explicit-series', 'earthstar-explicit-work-group', 'dre-novels-series-v2'):
                 proposals[-1]['title'] = assertion['title']
+            if assertion.get('index_id') == 'dre-novels-series-v2':
+                proposals[-1]['publisher_series_proof']['kind'] = 'dre-novels-series-v2'
         anchors = {}
         for proposal in proposals:
             anchors.setdefault(proposal['id'], []).append(proposal)
@@ -3991,6 +4076,11 @@ class LightNovelCatalogue:
         return self._resolve_scoped_wikidata_memberships(manifest_path, expected_sha256,
             edition_ids=edition_ids, own_roles=True, kadokawa_promotions=True)
 
+    def resolve_kadokawa_named_part_memberships(self, manifest_path, expected_sha256, *, edition_ids):
+        """Bind explicit 上/下 editions without asserting a numeric sequence."""
+        return self._resolve_scoped_wikidata_memberships(manifest_path, expected_sha256,
+            edition_ids=edition_ids, own_roles=True, kadokawa_promotions=True, named_parts=True)
+
     def _kadokawa_promotion_assertions(self, manifest_path, expected_sha256, cache):
         from .light_novel_kadokawa_promotions_v1 import verify_promotions
         key=('kadokawa_novel_promotions',str(_resolved_path(manifest_path,cache)),expected_sha256)
@@ -4145,6 +4235,97 @@ class LightNovelCatalogue:
                     legacy_paper_form_witness=paper_witness)
         return result
 
+    def _kadokawa_named_part_membership_candidates(self, rows, stored, assertions, cache):
+        from .light_novel_reference_match_v1 import _parent, _key
+        from .light_novel_ndl_series_v1 import person_key
+        from .normalization import normalize_isbn
+        from .ingestion.ndl import DCNDL
+        editions=[dict(r) for r in rows if r['entry_kind']=='edition']
+        self._attach_book_confirmations(editions,list(stored.values()),cache)
+        bindings={r['edition_id']:r for r in self._book_confirmation_bindings(cache) if r['provider']=='kadokawa'}
+        parents=[r for r in rows if r['entry_kind']=='series' and r['entry_id'].startswith('lns:wd:')]
+        result={}
+        for edition in editions:
+            identity=edition['entry_id'];binding=bindings.get(identity)
+            if not binding or edition.get('edition_bibliography_confirmed') is not True:
+                continue
+            confirmation=json.loads(binding['proof_json']);match=edition.get('edition_confirmation_evidence')
+            if match!=confirmation.get('match') or match.get('scope')!='edition_only':
+                continue
+            paper_witness=None
+            if type(match.get('official_product_form_id')) is not int or match['official_product_form_id']!=3:
+                paper_witness=self._legacy_kadokawa_paper_form_witness(binding,confirmation,cache)
+                if paper_witness is None:continue
+            record=json.loads(stored[identity]['record_json'])
+            parts=self._edition_primary_bibliographic_parts(record,cache)
+            if not parts or not parts['volume']:continue
+            own=self._authenticated_own_primary_resource(record,parts,cache)
+            if own is None or len(own.findall('{'+DCNDL+'}volume'))!=1:continue
+            volume=parts['volume'];label=volume['value']
+            if label not in {'上','下'}:continue
+            source=parts['source'];isbn=match.get('isbn13')
+            if (source['language'] not in ('ja','jpn') or not source['extra'].get('ndc_codes')
+                    or any(not re.fullmatch(r'913(?:\.[0-9]+)?',n) for n in source['extra']['ndc_codes'])
+                    or not isbn or {normalize_isbn(i['value']) for i in source['identifiers'] if i['source']=='isbn'}!={isbn}
+                    or source['publisher']!=match.get('ndl_publisher')
+                    or unicodedata.normalize('NFKC',source.get('series') or '').split(';')[0].strip()!=match.get('ndl_imprint')):
+                continue
+            own_ids={i['value'] for a in source['contributors'] if a['role']=='author'
+                for i in a['identifiers'] if i['source']=='ndl-authority'}
+            if any(not set(a['ndl_authorities'])<=own_ids or not any(
+                    person_key(literal['name'])==person_key(a['official_credit'])
+                    and _parent(literal['locator'])==_parent(volume['locator'])
+                    for literal in parts['literal_authors']) for a in match['authors']):continue
+            primary=[t for t in parts['titles'] if '/{http://purl.org/dc/terms/}title[' in t['locator']]
+            mains=[];contexts=[]
+            for title in primary:
+                text=unicodedata.normalize('NFKC',title['value']).strip()
+                if _parent(title['locator'])!=_parent(volume['locator']) or not text.endswith('. '+label):break
+                text=text[:-len('. '+label)]
+                fields=text.split(' : ')
+                if len(fields)!=2 or not all(fields) or any(c in fields[1] for c in ':='):
+                    break
+                mains.append({'main':fields[0],'raw_value':title['value'],'locator':title['locator']})
+                contexts.append(fields[1])
+            else:
+                if not primary or len({_key(c) for c in contexts})!=1 or any(len(c)>200 for c in contexts):continue
+                candidates=[p for p in parents if all(normalize_search(t['main']) in
+                    {normalize_search(n) for n in [p['title'],*p['aliases']]} for t in mains)]
+                if len(candidates)!=1:continue
+                parent=candidates[0];assertion=assertions.get(parent['entry_id'])
+                if (not assertion or parent['original_language']!='ja'
+                        or normalize_search(assertion['title'])!=normalize_search(parent['title'])
+                        or confirmation['publisher_book_id'] not in assertion['books']):continue
+                origin=json.loads(stored[parent['entry_id']]['record_json'])['provenance']
+                entity=self._payload(origin['raw_path'],origin['raw_sha256'],cache)['entities'][parent['qid']]
+                urls={s.get('mainsnak',{}).get('datavalue',{}).get('value') for s in entity.get('claims',{}).get('P856',[])
+                    if s.get('rank')!='deprecated' and s.get('mainsnak',{}).get('snaktype')=='value'
+                    and isinstance(s.get('mainsnak',{}).get('datavalue',{}).get('value'),str)}
+                if assertion.get('wikidata_source_url',assertion['source_url']) not in urls:continue
+                if parent['authors'] and {person_key(a['name']) for a in parent['authors']}!={person_key(a['official_credit']) for a in match['authors']}:continue
+                books=cache.get(('book_confirmation_documents',),{}).get(
+                    ('kadokawa',confirmation['manifest_path'],confirmation['manifest_sha256']),{})
+                book=books.get(confirmation['publisher_book_id'])
+                if not book or any(_key(book['title'])!=_key(t['main']+' '+context+' '+label)
+                        for t,context in zip(mains,contexts)):continue
+                membership={'rule_version':'kadokawa-official-named-part-edition-membership-v1',
+                    'scope':'edition_membership_only','edition_id':identity,'series_entry_id':parent['entry_id'],
+                    'volume_number':None,'volume':volume,'part_label':label,'part_order':None,
+                    'part_context':{'value':contexts[0],'locator':primary[0]['locator'],'source_value':primary[0]['value']},
+                    'numeric_order_inferred':False,'main_titles':mains,
+                    'publisher_book_id':confirmation['publisher_book_id'],
+                    'publisher_confirmation_proof_sha256':binding['proof_sha256'],
+                    'official_series_url':assertion['source_url'],'promotion_raw_sha256':assertion['raw_sha256'],
+                    'explicit_book_link_evidence':assertion['books'][confirmation['publisher_book_id']],
+                    'series_identity_basis':'exact_wikidata_P856_and_explicit_official_novel_book_list',
+                    'person_identity_asserted':False,'original_work_identity_asserted':False}
+                if 'redirect_evidence' in assertion:
+                    membership.update(wikidata_source_url=assertion['wikidata_source_url'],redirect_evidence=assertion['redirect_evidence'],
+                        series_identity_basis='exact_wikidata_P856_direct_official_relocation_and_explicit_novel_book_list')
+                if paper_witness is not None:membership['legacy_paper_form_witness']=paper_witness
+                result[identity]=membership
+        return result
+
     def _dre_series_assertions(self, manifest_path, expected_sha256, cache):
         from .light_novel_ndl_series_v1 import publisher_assertions
         manifest = self._payload(manifest_path, expected_sha256, cache)
@@ -4218,7 +4399,7 @@ class LightNovelCatalogue:
                 result[row['entry_id']] = candidates[0]
         return result
 
-    def _resolve_scoped_wikidata_memberships(self, manifest_path, expected_sha256, *, edition_ids, own_roles, dre_series=False, kadokawa_promotions=False):
+    def _resolve_scoped_wikidata_memberships(self, manifest_path, expected_sha256, *, edition_ids, own_roles, dre_series=False, kadokawa_promotions=False, named_parts=False):
         if isinstance(edition_ids, (str, bytes)) or edition_ids is None:
             raise ValueError('an explicit edition ID collection is required')
         requested = list(edition_ids)
@@ -4227,7 +4408,7 @@ class LightNovelCatalogue:
                 raise ValueError('only typed NDL edition IDs may be requested')
         if len(requested) != len(set(requested)):
             raise ValueError('duplicate requested edition ID')
-        result = {'scope': 'kadokawa_promotion_and_wikidata_series_only' if kadokawa_promotions else 'dre_publisher_and_wikidata_series_only' if dre_series else 'wikidata_series_own_direct_roles_only' if own_roles else 'wikidata_series_only',
+        result = {'scope': 'kadokawa_named_part_and_wikidata_series_only' if named_parts else 'kadokawa_promotion_and_wikidata_series_only' if kadokawa_promotions else 'dre_publisher_and_wikidata_series_only' if dre_series else 'wikidata_series_own_direct_roles_only' if own_roles else 'wikidata_series_only',
                   'requested_editions': len(requested),
                   'candidate_series': 0, 'linked': 0, 'unchanged': 0,
                   'protected_existing': 0, 'unresolved_editions': 0}
@@ -4268,7 +4449,8 @@ class LightNovelCatalogue:
         result['candidate_series'] = len(selected) - len(editions)
         rows = self._membership_base_rows(selected, cache)
         authorities = {} if kadokawa_promotions else self._author_authorities(manifest_path, expected_sha256, cache)
-        candidates = (self._kadokawa_promotion_membership_candidates(rows,selected,assertions,cache) if kadokawa_promotions
+        candidates = (self._kadokawa_named_part_membership_candidates(rows,selected,assertions,cache) if named_parts
+            else self._kadokawa_promotion_membership_candidates(rows,selected,assertions,cache) if kadokawa_promotions
             else self._dre_membership_candidates(rows, selected, authorities, assertions, cache) if dre_series
             else self._own_role_membership_candidates(rows, selected, authorities, cache)
             if own_roles else self._membership_candidates(rows, selected, authorities))
@@ -4309,7 +4491,7 @@ class LightNovelCatalogue:
                     current_binding=db.execute('SELECT proof_sha256 FROM edition_book_confirmations WHERE edition_id=? AND provider=?',(edition_id,'kadokawa')).fetchone()
                     if current_binding is None or current_binding[0]!=membership['publisher_confirmation_proof_sha256']:
                         raise ValueError('publisher confirmation changed during membership resolution')
-                    proof['kind']='kadokawa_promotion_membership_v1'
+                    proof['kind']='kadokawa_named_part_membership_v1' if named_parts else 'kadokawa_promotion_membership_v1'
                 elif dre_series:
                     proof['kind'] = 'dre_wikidata_series_membership'
                 elif own_roles:
@@ -4583,6 +4765,18 @@ class LightNovelCatalogue:
                         relation_resolution='edition_series_membership_verified', light_novel_confirmed=light_novel_confirmed,
                         admission_status='edition_series_membership_verified', series_membership_evidence=membership)
                     continue
+                if proof.get('kind') == 'kadokawa_named_part_membership_v1':
+                    key=('kadokawa_named_part_memberships',proof['manifest_path'],proof['manifest_sha256'])
+                    if key not in plans:
+                        assertions=self._kadokawa_promotion_assertions(proof['manifest_path'],proof['manifest_sha256'],cache)
+                        plans[key]=self._kadokawa_named_part_membership_candidates(rows,stored,assertions,cache)
+                    membership=plans[key].get(edition_id)
+                    if membership!=proof['membership'] or membership.get('series_entry_id')!=series_id:
+                        continue
+                    indexed[edition_id].update(series_entry_id=series_id,volume_number=None,
+                        relation_resolution='edition_series_membership_verified',light_novel_confirmed=True,
+                        admission_status='edition_series_membership_verified',series_membership_evidence=membership)
+                    continue
                 if proof.get('kind') == 'kadokawa_promotion_membership_v1':
                     key=('kadokawa_promotion_memberships',proof['manifest_path'],proof['manifest_sha256'])
                     if key not in plans:
@@ -4762,7 +4956,7 @@ class LightNovelCatalogue:
                 titles.extend(re.sub(r'[^0-9Xx]', '', isbn) for isbn in record.get('isbn', []))
             if (record.get('publisher_series_proof', {}).get('cobalt_series_path')
                     or record.get('publisher_series_proof', {}).get('earthstar_series_path')
-                    or record.get('publisher_series_proof', {}).get('kind') == 'futaba_mnovels_workgroup') and record.get('title'):
+                    or record.get('publisher_series_proof', {}).get('kind') in {'futaba_mnovels_workgroup', 'dre-novels-series-v2'}) and record.get('title'):
                 titles.append(record['title'])
             authors = [a.get('label', '') if isinstance(a, dict) else a for a in base.get('authors', [])]
             if record.get('schema_version') in {profile['schema'] for profile in SOURCE_GROUP_PROVIDERS.values()}:
@@ -5088,7 +5282,9 @@ class LightNovelCatalogue:
                            'frame_membership_complete', 'exact_grouping_filter_complete', 'global_membership_complete')
             row['members'] = [{k: r[k] for k in member_keys if k in r}
                               for r in rows if r['entry_id'] != entry_id and families[r['entry_id']] == families[entry_id]]
-            row['members'].sort(key=lambda r: (r.get('volume_number') or 0, r['title'], r['entry_id']))
+            row['members'].sort(key=lambda r: (
+                r.get('series_membership_evidence',{}).get('rule_version')=='kadokawa-official-named-part-edition-membership-v1',
+                r.get('volume_number') or 0, r['title'], r['entry_id']))
             row.setdefault('relation_resolution', 'explicit_source_assertions_only')
         return row
 

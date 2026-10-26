@@ -42,7 +42,15 @@ def promotion_bundle(setup_catalogue,publisher_edition_v2,tmp_path,request):
     parent=records[0];title=parent['title']
     volume=getattr(request,'param','3')
     config=volume if isinstance(volume,dict) else None
-    if config:
+    if config and config.get('named_part'):
+        volume=config.get('volume','上');context=config.get('context','春の舞')
+        complete=title+' : '+context+'. '+volume
+        extra='<d:title>矛盾する別作品 : 春の舞. '+volume+'</d:title>' if config.get('contradiction') else ''
+        if config.get('ambiguous_context'):extra='<d:title>'+title+' : 秋の舞. '+volume+'</d:title>'
+        if config.get('duplicate_volume'):extra+='<n:volume>'+volume+'</n:volume>'
+        cat,edition,book=publisher_edition_v2(title=title+' : '+context,volume=volume,dct_title=complete,
+            official_title=title+' '+context+' '+volume,imprint='電撃文庫',label='電撃文庫',label_id=330,extra=extra)
+    elif config:
         volume=config.get('volume','2')
         if config.get('canonical_digit'):
             title+=' 2';parent['title']=title
@@ -64,7 +72,7 @@ def promotion_bundle(setup_catalogue,publisher_edition_v2,tmp_path,request):
     imported=cat.ingest([parent,edition])
     assert imported['failed']==0,imported
     publisher=tmp_path/'books.json'
-    publisher_pin=write(publisher,{**({'product_form': {'3': {'name': '文庫'}}} if config and config.get('legacy') else {}), 'count_raw':{'book':1},'result':{'book':[
+    publisher_pin=write(publisher,{**({'product_form': {'3': {'name': '文庫'}}} if config and (config.get('legacy') or config.get('named_part')) else {}), 'count_raw':{'book':1},'result':{'book':[
         {'itemCode':'123456789012','title':book['title'],'isbn':book['isbn'],'label_id':book['official_label_id'],
          'product_form_id':3,'disp_author_name':'<li>著者 著者</li>'}]}})
     books_manifest=tmp_path/'book-manifest.json'
@@ -373,3 +381,144 @@ def test_legacy_paper_witness_fails_closed_without_rewriting_binding(promotion_b
         cache = {('book_confirmation_documents',): {('kadokawa', confirmation['manifest_path'], confirmation['manifest_sha256']):
             {book['publisher_book_id']: book for book in replayed}}}
     assert cat._legacy_kadokawa_paper_form_witness(binding, confirmation, cache) is None
+
+
+@pytest.mark.parametrize('promotion_bundle',[{'named_part':True,'volume':'上'},{'named_part':True,'volume':'下'}],indirect=True)
+def test_named_part_preserves_literal_and_context_with_no_numeric_order(promotion_bundle):
+    cat,_,edition,manifest,pin,_,_=promotion_bundle
+    identity='lne:ndl:R100000002-I1'
+    assert cat.resolve_kadokawa_promotion_memberships(manifest,pin,edition_ids=[identity])['linked']==0
+    with cat._connect() as db:old_binding=tuple(db.execute('SELECT * FROM edition_book_confirmations').fetchone())
+    result=cat.resolve_kadokawa_named_part_memberships(manifest,pin,edition_ids=[identity])
+    assert result['linked']==1 and result['scope']=='kadokawa_named_part_and_wikidata_series_only'
+    row=cat.work_detail(identity);proof=row['series_membership_evidence']
+    assert proof['rule_version']=='kadokawa-official-named-part-edition-membership-v1'
+    assert proof['volume']['value']==proof['part_label']==edition['volume']
+    assert proof['volume_number'] is proof['part_order'] is None and proof['numeric_order_inferred'] is False
+    assert proof['part_context']['value']=='春の舞' and proof['legacy_paper_form_witness']['product_form_id']==3
+    assert row['volume_number'] is None and row['series_entry_id']=='lns:wd:Q1'
+    shown=public_work(row)
+    assert shown['membership_part']=={'label':edition['volume'],'context':'春の舞','numeric_order':None}
+    assert shown['membership_source']['source_url']==URL
+    compact=next(x for x in public_work(cat.work_detail('lns:wd:Q1'))['members'] if x['entry_id']==identity)
+    assert compact['membership_part']==shown['membership_part']
+    assert not any(secret in json.dumps(shown,ensure_ascii=False) for secret in ['raw_path','proof_sha256','rule_version'])
+    assert cat.resolve_kadokawa_named_part_memberships(manifest,pin,edition_ids=[identity])['unchanged']==1
+    with cat._connect() as db:
+        assert tuple(db.execute('SELECT * FROM edition_book_confirmations').fetchone())==old_binding
+        assert json.loads(db.execute('SELECT proof_json FROM edition_series_memberships').fetchone()[0])['kind']=='kadokawa_named_part_membership_v1'
+    genres=[{'qid':'Q100','label':'ファンタジー','scope':'work','source_url':'https://www.wikidata.org/wiki/Q100'}]
+    assert [r['entry_id'] for r in cat.recommend_preferences(reference_genres=genres,exclude_read=False)['items']]==['lns:wd:Q1']
+    cat.set_read_status(identity,'read')
+    assert cat.work_detail('lns:wd:Q1')['read_status']=='unknown'
+    assert cat.recommend_preferences(reference_genres=genres,exclude_read=True)['items']==[]
+
+
+@pytest.mark.parametrize('promotion_bundle',[
+    {'named_part':True,'volume':'DX.3'}, {'named_part':True,'volume':'中'},
+    {'named_part':True,'volume':'上巻'}, {'named_part':True,'volume':'1'},
+    {'named_part':True,'volume':'上','contradiction':True},
+    {'named_part':True,'volume':'上','ambiguous_context':True},
+    {'named_part':True,'volume':'上','duplicate_volume':True},
+    {'named_part':True,'volume':'上','context':'春の舞 : 別編'},
+],indirect=True)
+def test_named_part_closed_grammar_and_all_own_primary_fields_hold(promotion_bundle):
+    cat,_,_,manifest,pin,_,_=promotion_bundle
+    assert cat.resolve_kadokawa_named_part_memberships(manifest,pin,edition_ids=['lne:ndl:R100000002-I1'])['linked']==0
+
+
+@pytest.mark.parametrize('promotion_bundle',[{'named_part':True,'volume':'上'}],indirect=True)
+@pytest.mark.parametrize('change',['promotion','book','old_binding','non3','wrong_p856','competing_parent'])
+def test_named_part_expiry_and_identity_gates(promotion_bundle,change,tmp_path):
+    from copy import deepcopy
+    cat,parent,_,manifest,pin,source,_=promotion_bundle
+    identity='lne:ndl:R100000002-I1'
+    if change in {'promotion','book','old_binding'}:
+        assert cat.resolve_kadokawa_named_part_memberships(manifest,pin,edition_ids=[identity])['linked']==1
+        before=cat.work_detail(identity)['series_membership_evidence']
+        if change=='old_binding':
+            with cat._connect() as db:db.execute("UPDATE edition_book_confirmations SET proof_sha256=?",('0'*64,))
+            assert 'series_entry_id' not in cat.work_detail(identity)
+            return
+        path=source if change=='promotion' else tmp_path/'books.json';original=path.read_bytes();path.write_bytes(b'changed')
+        row=cat.work_detail(identity)
+        assert 'series_entry_id' not in row
+        if change=='promotion':assert row['edition_bibliography_confirmed'] is True
+        path.write_bytes(original)
+        assert cat.work_detail(identity)['series_membership_evidence']==before
+        return
+    if change=='non3':
+        books=tmp_path/'books.json';value=json.loads(books.read_bytes());value['result']['book'][0]['product_form_id']=13
+        bp=tmp_path/'book-manifest.json';bm=json.loads(bp.read_bytes());bm['pages'][0]['sha256']=write(books,value)
+        assert cat.confirm_publisher_editions('kadokawa',bp,write(bp,bm))['confirmed']==1
+    elif change=='wrong_p856':
+        raw=Path(parent['provenance']['raw_path']);payload=json.loads(raw.read_bytes());payload['entities']['Q1']['claims']['P856'][0]['mainsnak']['datavalue']['value']=URL.replace('/example/','/other/')
+        parent['provenance']['raw_sha256']=write(raw,payload);assert cat.ingest([parent])['failed']==0
+    else:
+        other=deepcopy(parent);raw=Path(parent['provenance']['raw_path']);payload=json.loads(raw.read_bytes());entity=payload['entities'].pop('Q1');entity['id']='Q9';payload['entities']['Q9']=entity
+        other['id']='Q9';raw=tmp_path/'other-series.json';other['provenance'].update(url='https://www.wikidata.org/wiki/Q9',raw_path=str(raw),raw_sha256=write(raw,payload));assert cat.ingest([other])['failed']==0
+    assert cat.resolve_kadokawa_named_part_memberships(manifest,pin,edition_ids=[identity])['linked']==0
+
+
+def test_named_part_api_leaves_existing_numeric_proof_and_public_shape_unchanged(promotion_bundle):
+    cat,_,_,manifest,pin,_,_=promotion_bundle;identity='lne:ndl:R100000002-I1'
+    assert cat.resolve_kadokawa_promotion_memberships(manifest,pin,edition_ids=[identity])['linked']==1
+    with cat._connect() as db:before=tuple(db.execute('SELECT * FROM edition_series_memberships').fetchone())
+    detail=cat.work_detail(identity);public=public_work(detail)
+    assert 'membership_part' not in public
+    result=cat.resolve_kadokawa_named_part_memberships(manifest,pin,edition_ids=[identity])
+    assert result['linked']==0 and result['protected_existing']==1
+    with cat._connect() as db:assert tuple(db.execute('SELECT * FROM edition_series_memberships').fetchone())==before
+    assert cat.work_detail(identity)['series_membership_evidence']==detail['series_membership_evidence']
+    assert public_work(cat.work_detail(identity))==public
+
+
+@pytest.mark.parametrize('promotion_bundle',[{'named_part':True,'volume':'上'}],indirect=True)
+def test_named_pair_graph_and_mixed_member_sort_preserve_existing_numeric_relation(promotion_bundle,tmp_path):
+    from copy import deepcopy
+    import xml.etree.ElementTree as ET
+    from recommend_book.ingestion.core import RawArtifact
+    from recommend_book.ingestion.ndl import NDLAdapter
+    cat,parent,first,manifest,_,source,value=promotion_bundle
+    original_xml=Path(first['provenance']['raw_path']).read_text(encoding='utf8')
+    publisher=tmp_path/'books.json';payload=json.loads(publisher.read_bytes());first_book=payload['result']['book'][0]
+    for number,label,isbn in [(2,'下','9784049137538'),(3,'3','9784049135848')]:
+        record=deepcopy(first);raw=tmp_path/f'edition-{number}.xml'
+        xml=original_xml.replace('R100000002-I1',f'R100000002-I{number}').replace('. 上</d:title>','. '+label+'</d:title>').replace('<n:volume>上</n:volume>','<n:volume>'+label+'</n:volume>').replace('9784798613161',isbn)
+        raw.write_text(xml,encoding='utf8');pin=hashlib.sha256(raw.read_bytes()).hexdigest();url=first['source_url'].replace('I1',f'I{number}')
+        normalized=NDLAdapter(None)._normalize(ET.fromstring(xml),RawArtifact(pin,str(raw),len(raw.read_bytes()),'2026-10-24T00:00:00Z',url),'iss-ndl-opac',locator='records[1]/recordData').model_dump(mode='json')
+        record.update(id=normalized['source_id'],source_url=url,source_record=normalized,title=normalized['titles'][0]['value'],volume=normalized['volume'],isbn=[isbn])
+        record['provenance'].update(raw_path=str(raw),raw_sha256=pin,url=url)
+        assert cat.ingest([record])['failed']==0
+        book={**first_book,'itemCode':f'12345678901{number+1}','isbn':isbn,'title':parent['title']+' 春の舞 '+label}
+        payload['result']['book'].append(book)
+    payload['count_raw']['book']=3;book_manifest=tmp_path/'book-manifest.json';bm=json.loads(book_manifest.read_bytes());bm['pages'][0]['sha256']=write(publisher,payload)
+    assert cat.confirm_publisher_editions('kadokawa',book_manifest,write(book_manifest,bm))['confirmed']==3
+    html=source.read_text(encoding='utf8')
+    html=html.replace('<a href="https://example.com/product/222222222222/">外部</a>',
+        '<a href="https://www.kadokawa.co.jp/product/123456789013/">下</a><a href="https://www.kadokawa.co.jp/product/123456789014/">3</a>')
+    source.write_text(html,encoding='utf8');artifact=value['series'][0]['receipt']['artifact'];artifact.update(sha256=hashlib.sha256(source.read_bytes()).hexdigest(),size=len(source.read_bytes()));pin=write(manifest,value)
+    numeric='lne:ndl:R100000002-I3';named=['lne:ndl:R100000002-I1','lne:ndl:R100000002-I2']
+    assert cat.resolve_kadokawa_promotion_memberships(manifest,pin,edition_ids=[numeric])['linked']==1
+    before=cat.work_detail(numeric)['series_membership_evidence'];before_ids=[m['entry_id'] for m in cat.work_detail('lns:wd:Q1')['members']]
+    assert cat.resolve_kadokawa_named_part_memberships(manifest,pin,edition_ids=named)['linked']==2
+    detail=cat.work_detail('lns:wd:Q1');after_ids=[m['entry_id'] for m in detail['members']]
+    assert [i for i in after_ids if i not in named]==before_ids
+    assert after_ids[:len(before_ids)]==before_ids
+    assert cat.work_detail(numeric)['series_membership_evidence']==before
+    parts=[m for m in detail['members'] if m['entry_id'] in named]
+    assert {p['series_membership_evidence']['part_label'] for p in parts}=={'上','下'}
+    assert all(p['volume_number'] is None for p in parts)
+    assert [m['entry_id'] for m in cat.work_detail('lns:wd:Q1')['members']]==after_ids
+
+
+@pytest.mark.parametrize('promotion_bundle',[{'named_part':True,'volume':'上'}],indirect=True)
+def test_named_part_rejects_cross_resource_volume_projection(promotion_bundle,monkeypatch):
+    cat,_,_,manifest,pin,_,_=promotion_bundle
+    original=cat._edition_primary_bibliographic_parts
+    def foreign_volume(*args):
+        parts=original(*args)
+        if parts:parts={**parts,'volume':{**parts['volume'],'locator':'different-own-resource/{volume}[1]'}}
+        return parts
+    monkeypatch.setattr(cat,'_edition_primary_bibliographic_parts',foreign_volume)
+    assert cat.resolve_kadokawa_named_part_memberships(manifest,pin,edition_ids=['lne:ndl:R100000002-I1'])['linked']==0

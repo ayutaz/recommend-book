@@ -19,6 +19,9 @@ from urllib.parse import urlparse, urljoin
 
 
 INDEXES = {
+    'dre-novels-series-v2': {'publisher': 'ドリコム', 'label': 'DREノベルス',
+        'host': 'drecom-media.jp', 'path': '/drenovels/series/',
+        'route': r'https://drecom-media\.jp/drenovels/series/[A-Za-z0-9_-]+'},
     'dre-novels-series': {'publisher': 'ドリコム', 'label': 'DREノベルス',
         'host':'drecom-media.jp', 'path':'/drenovels/product/',
         'route':r'https://drecom-media\.jp/drenovels/series/[A-Za-z0-9_-]+'},
@@ -323,6 +326,13 @@ def publisher_assertions(proof, artifact, cache):
             continue
         if frame.get('publisher') != spec['publisher'] or frame.get('label') != spec['label']:
             raise ValueError('official publisher/index label differs')
+        if frame['id'] == 'dre-novels-series-v2':
+            from .light_novel_dre_dual_series_v2 import verify_frame
+            for reference, assertion in verify_frame(frame, root, artifact, cache).items():
+                if reference in result:
+                    raise ValueError('duplicate DRE v2 explicit series reference')
+                result[reference] = assertion
+            continue
         for receipt in frame.get('pages', []):
             url = urlparse(receipt['source_url'])
             if url.scheme != 'https' or url.netloc != spec['host'] or not url.path.startswith(spec['path']):

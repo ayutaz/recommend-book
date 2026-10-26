@@ -62,6 +62,9 @@ def prepare(metadata_path, output, *, qids=None, limit=100, languages=("ja", "en
         provenance = record["provenance"]
         for pin in [provenance, *provenance.get("linked_provenance", {}).values()]:
             pins[str(Path(pin["raw_path"]).resolve())] = pin["raw_sha256"]
+        if record.get('schema_version') == 'light-novel-metadata-v3':
+            from recommend_book.light_novel_admission_v3 import metadata_artifact_pins
+            pins.update(metadata_artifact_pins(record))
         conditions_path = Path(provenance["conditions_path"]).resolve()
         pins[str(conditions_path)] = provenance["conditions_sha256"]
         for language in languages:

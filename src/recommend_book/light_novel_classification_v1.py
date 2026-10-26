@@ -330,6 +330,9 @@ def _verify_pins(pins):
 
 
 def _entity(metadata):
+    if metadata.get('schema_version') == 'light-novel-metadata-v3':
+        from .light_novel_admission_v3 import verify_metadata
+        return verify_metadata(metadata)
     provenance = metadata["provenance"]
     raw_path = provenance["raw_path"]
     if sha(raw_path) != provenance["raw_sha256"]:
@@ -497,6 +500,11 @@ def validate_source_admission(inputs, manifest_path, expected_sha256):
         if not series.series_id.startswith("lns:wd:") or record is None or digest(record) != entry["metadata_row_sha256"]:
             raise ValueError("Series input metadata authority differs")
         _entity(record)
+        if record.get('schema_version') == 'light-novel-metadata-v3':
+            from .light_novel_admission_v3 import metadata_artifact_pins
+            if any(manifest['artifact_sha256'].get(path) != expected
+                    for path, expected in metadata_artifact_pins(record).items()):
+                raise ValueError('V3 transitive structured source is not pinned')
         if (series.title != record["title"] or series.authors != [author["label"] for author in record["authors"]]
                 or series.source_record_ids != ["wikidata:" + qid]):
             raise ValueError("Series input title/author differs from metadata authority")
@@ -1054,6 +1062,7 @@ def freeze_runtime(directory):
     directory.mkdir(parents=True, exist_ok=False)
     files = [
         "src/recommend_book/__init__.py", "src/recommend_book/light_novel_classification_v1.py",
+        "src/recommend_book/light_novel_admission_v3.py",
         "src/recommend_book/models.py", "src/recommend_book/jobs.py", "src/recommend_book/rights.py",
         "src/recommend_book/normalization.py", "src/recommend_book/autonomous_enrichment.py",
         "src/recommend_book/wikipedia_prose.py", "src/recommend_book/classification/__init__.py",
