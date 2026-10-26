@@ -4947,6 +4947,7 @@ class LightNovelCatalogue:
 
     def _feature_rows(self, entry_ids=None, *, _request_cache=None):
         from .light_novel_feature_exports_v1 import verify_feature_export
+        from concurrent.futures import ThreadPoolExecutor
         with self._connect() as db:
             if entry_ids is None:
                 bindings = db.execute('SELECT * FROM features').fetchall()
@@ -4957,44 +4958,55 @@ class LightNovelCatalogue:
                 bindings = db.execute('SELECT * FROM features WHERE entry_id IN (' + ','.join('?' for _ in entry_ids) + ')', entry_ids).fetchall()
         manifests, result = {}, {}
         bridge_witnesses = None
+        pending = []
+
+        def cached_document(key):
+            export_cache = _request_cache
+            cache_key = (str(Path(key[0]).resolve()), key[1])
+            cached = export_cache.get(cache_key) if export_cache is not None else None
+            if cached is None:
+                return cache_key, None
+            try:
+                document, pins = cached
+                for artifact, expected in pins.items():
+                    raw = Path(artifact).read_bytes()
+                    if not isinstance(expected, str) or hashlib.sha256(raw).hexdigest() != expected:
+                        raise ValueError('cached LN feature export dependency SHA differs')
+                return cache_key, document
+            except (ValueError, OSError, KeyError, TypeError):
+                return cache_key, {'rows': []}
+
+        keys = list(dict.fromkeys((binding['manifest_path'], binding['manifest_sha256']) for binding in bindings))
+        for key in keys:
+            cache_key, document = cached_document(key)
+            if document is None:
+                pending.append((key, cache_key))
+            else:
+                manifests[key] = document
+
+        def verify_one(item):
+            key, cache_key = item
+            try:
+                document = verify_feature_export(*key)
+                raw_pins = document.get('artifact_sha256') if isinstance(document, dict) else None
+                pins = None
+                if isinstance(raw_pins, dict) and raw_pins:
+                    pins = dict(raw_pins)
+                    pins[cache_key[0]] = key[1]
+                return key, cache_key, document, pins
+            except (ValueError, OSError, KeyError, TypeError):
+                return key, cache_key, {'rows': []}, None
+
+        if pending:
+            with ThreadPoolExecutor(max_workers=min(4, len(pending))) as executor:
+                for key, cache_key, document, pins in executor.map(verify_one, pending):
+                    manifests[key] = document
+                    if pins is not None and _request_cache is not None:
+                        _request_cache[cache_key] = (document, pins)
+
         for binding in bindings:
             key = (binding['manifest_path'], binding['manifest_sha256'])
             try:
-                if key not in manifests:
-                    try:
-                        # A recommendation request can ask for the same export
-                        # once for its liked rows and again for its candidate
-                        # rows.  Keep the expensive verifier result on this
-                        # current operation.  The complete verifier has already
-                        # run before this request-local reuse; no cache state is
-                        # retained for a later request.
-                        export_cache = _request_cache
-                        cache_key = (str(Path(key[0]).resolve()), key[1])
-                        cached = export_cache.get(cache_key) if export_cache is not None else None
-                        if cached is None:
-                            document = verify_feature_export(*key)
-                            raw_pins = document.get('artifact_sha256') if isinstance(document, dict) else None
-                            # An absent/empty pin map is never memoized.  This
-                            # keeps the optimization bounded to exports that
-                            # explicitly expose their authenticated artifacts.
-                            if export_cache is not None and isinstance(raw_pins, dict) and raw_pins:
-                                # The full verifier already authenticated these
-                                # paths. Re-resolving every artifact here adds
-                                # thousands of redundant filesystem operations.
-                                pins = dict(raw_pins)
-                                pins[str(Path(key[0]).resolve())] = key[1]
-                                export_cache[cache_key] = (document, pins)
-                            manifests[key] = document
-                        else:
-                            document, pins = cached
-                            for artifact, expected in pins.items():
-                                raw = Path(artifact).read_bytes()
-                                if not isinstance(expected, str) or hashlib.sha256(raw).hexdigest() != expected:
-                                    raise ValueError('cached LN feature export dependency SHA differs')
-                            manifests[key] = document
-                    except (ValueError, OSError, KeyError, TypeError):
-                        # Retry on the next operation, not for each binding.
-                        manifests[key] = {'rows': []}
                 for row in manifests[key]['rows']:
                     if row.get('entry_id', row.get('series_id')) == binding['entry_id']:
                         if manifests[key].get('version') == 'light-novel-work-archived-label-feature-export-v1':

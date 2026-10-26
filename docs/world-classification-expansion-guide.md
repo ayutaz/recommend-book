@@ -39,3 +39,12 @@ uv run --locked python scripts/run_world_novel_expansion_v1.py check --source-in
 開始するとcreate-onlyの試行予約を保存します。失敗時は予約や原出力を削除して同じコマンドを再送しません。生きているプロセスは同じhandleを確認し、モデル開始前の環境エラーと実モデルの失敗を区別して引き継ぎます。取り込み済みQIDの置き換えも拒否します。
 
 `execution/`、`classification-exports/`、`public-exports/`、`catalogue-imports/`、`window-controls/` に実行・審査・取込の証跡を保存します。最初の20作品はこの経路で採用・実HTTP確認済みです。whole-clean producer補助コードは後続の`d7bc5e0`でcommit・push済みです。その2入力はまだ分類・DB採用していません。
+
+
+## 停止区間からの継続
+
+2026-10-26の54作品の停止では、完了24・失敗8・未開始22を原manifest・実attempt・terminal proofから固定しました。`recover_world_novel_expansion_v1.py` の `seal/check/review/prepare-unstarted` は、完了分の再分類と失敗分の再送をせずに各集合を分離します。完了24は別審査済みですが、通常のterminal importerは原runにpendingがあるため拒否します。この区間へv1の`tail`を再送しても採用できず、部分採用は別契約の実装対象です。
+
+未開始22の分類・別審査はv2の`run-unstarted`で各2並列とし、正常な22限定v4 controlを取得しました。v3の`checkpoint`は原54の失敗、24の採用保留、22の正常controlを別々に認証し、`run-next`で次の28作品へ進めます。以後は正常controlをv2の`run-window`へ渡します。旧v1/v2/v3本体と既存runtimeは、実行中のSHAを保つため編集しません。
+
+資料はsource-index-v6で468の異なるQID・入力hashを確認済みです。準備数には採用・失敗・採用保留も含みます。実行結果と未解決事項は[現在の到達点](current-status.md)を参照してください。

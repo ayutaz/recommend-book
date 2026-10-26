@@ -1,8 +1,12 @@
 # 日本のライトノベル対応の進捗
 
-## 現時点の検証済みスナップショット（2026-10-26）
+## 続く区間の現在値（2026-10-26 20:34 JST）
 
-この節がこの文書の現行値です。短い入口は[現在の到達点](current-status.md)、今回の差分・応答時間・確認範囲は[実行記録](light-novel-delivery-2026-10-26.md)を参照してください。神様のメモ帳（Wikidata Q1345379）の新しいドイツ語Wikipedia revision 224742219を入力し、Sol分類・別審査を通してDBへ1件importしました。実装は`5dd5ffca5cf7dd5ca2f845694be8d60dc99afd27`、[PR #33](https://github.com/ayutaz/recommend-book/pull/33)はdraftで、後続の補助コード`d7bc5e0`はcommit・push済みで、[そのCI](https://github.com/ayutaz/recommend-book/actions/runs/40302731706)は19:02 JST時点で実行中です。両OS CI [run 40298209659](https://github.com/ayutaz/recommend-book/actions/runs/40298209659)はSUCCESSですが、原JUnitの正確なcase数はこの更新で読み直していません。関連494件はpassしています。
+内容特徴は587シリーズ＋個別小説1作品、feature exportは758行です。保存済み中国語の物語節から3シリーズを分類・別審査し、2シリーズに特徴を追加しました。1シリーズは不明のままです。旧755行・書誌・読書状態を保持し、新2作品の実HTTP表示を確認しました。特徴採用率2/3（66.7%）でこの区間の拡大gateはfalseです。全国網羅性や独立精度は未評価です。推薦の独立manifest検証を最大4並列へ変更し、同一DB・条件・公開結果全体一致で65.03秒から51.24秒へ短縮しました（各1回）。
+
+## 前区間の検証済みスナップショット（2026-10-26）
+
+以下は追加3分類より前の記録です。最新値は上の節を参照してください。短い入口は[現在の到達点](current-status.md)、今回の差分・応答時間・確認範囲は[実行記録](light-novel-delivery-2026-10-26.md)を参照してください。神様のメモ帳（Wikidata Q1345379）の新しいドイツ語Wikipedia revision 224742219を入力し、Sol分類・別審査を通してDBへ1件importしました。実装は`5dd5ffca5cf7dd5ca2f845694be8d60dc99afd27`、[PR #33](https://github.com/ayutaz/recommend-book/pull/33)はdraftで、後続の補助コード`d7bc5e0`はcommit・push済みで、[そのCI](https://github.com/ayutaz/recommend-book/actions/runs/40302731706)は19:02 JST時点で実行中です。両OS CI [run 40298209659](https://github.com/ayutaz/recommend-book/actions/runs/40298209659)はSUCCESSですが、原JUnitの正確なcase数はこの更新で読み直していません。関連494件はpassしています。
 
 DBの検証済み件数は、全entry 100,884（ライトノベル確定数ではない）、版候補`edition` 87,278、raw series 2,388（出版社グループへ接続済み170を含み、物語シリーズは2,218）、独立出版社グループ870（出版社グループ合計1,040）、出版社掲載参照10,094、work 254（今回追加した個別小説work 19を含む）、所属5,163、feature export 755、内容特徴は物語シリーズ585＋個別work 1、読書状態0である。件数の異なる単位を合算せず、全entryを作品数とは扱わない。
 
