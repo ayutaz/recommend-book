@@ -1,6 +1,6 @@
 # 世界作品 DB の推薦用読み取り adapter
 
-> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「現行ガイド・仕様」です。手順・契約の再利用前に、現在の状態は[current-status.md](current-status.md)、入力・権利・版の前提は本文で確認してください。
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「現行ガイド・仕様」です。手順・契約の再利用前に、現在の状態は[current-status.md](current-status.md)、次の作業順序は[現行計画 v25](autonomous-next-phase-plan-v25.md)を参照し、入力・権利・版の前提は本文で確認してください。本文のCLI例・数値・測定値は記載した版・namespaceの再現用です。
 
 `recommend_book.recommendation.world.load_world_database(path)` は派生分類 SQLite を読み、`{'rows': [...], 'audit': {...}}` を返します。SQLite URI の `mode=ro&immutable=1` と `query_only=ON` を使用し、`DatasetDB` の constructor・migration・書込みを呼びません。非空 WAL を拒否し、開始終了の DB SHA256 が異なれば結果を返しません。LLM、外部通信、CLI 起動、評価・既読情報の推定はありません。
 

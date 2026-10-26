@@ -1,19 +1,19 @@
 # recommend-book
 
-世界の小説を整理し、読書履歴や好みに合う作品を探すためのデータ基盤です。10万作品を検索でき、資料のジャンルや審査済みの内容特徴がある作品から推薦候補を探せます。2万作品の詳細分類と、日本のライトノベルのシリーズ・各巻・版の検索に対応しています。
+世界の小説を整理し、読書履歴や好みに合う作品を探すためのデータ基盤です。約10万作品を検索でき、資料のジャンルや審査済みの内容特徴から推薦候補を探せます。2万作品以上の詳細分類と、日本のライトノベルのシリーズ・各巻・版の検索に対応しています。
 
 最新の件数・反映状況・未評価事項は[現在の到達点](docs/current-status.md)、各資料の位置付けは[文書一覧](docs/documentation-index.md)を参照してください。
 
 ## 現在使えるもの
 
-世界小説の以下の値は2026年10月24日の実DBで確認しました。ローカルの試作で、最終監査・利用量集計・推薦画面・実HTTPの確認を完了しています。2万分類版の[CI](https://github.com/ayutaz/recommend-book/actions/runs/40093412432)はUbuntu・Windowsとも成功し、[PR #30](https://github.com/ayutaz/recommend-book/pull/30)でmainへ反映済みです。ライトノベル対応の変更は[PR #31](https://github.com/ayutaz/recommend-book/pull/31)で確認できます。
+2026年10月26日確認。書誌件数は10月24日の確定集計を引き継ぎ、詳細分類は新規20作品の採用を反映しています。前区間の[PR #30](https://github.com/ayutaz/recommend-book/pull/30)・[PR #31](https://github.com/ayutaz/recommend-book/pull/31)はmain反映済みです。後続は[PR #33](https://github.com/ayutaz/recommend-book/pull/33)でdraft。実装`5dd5ffc`の[Ubuntu・Windows CI](https://github.com/ayutaz/recommend-book/actions/runs/40298209659)は成功しています。
 
 | 項目 | 状況 |
 |---|---|
 | 小説・ライトノベルの台帳 | 100,370作品を検索可能。異なるWikidata作品IDを基準に収録 |
 | 資料に基づく推薦対象 | 26,081作品。資料に記載されたジャンルを使用 |
-| 詳細AI分類 | 20,000作品を分類・審査して採用。既存1万作品を保持 |
-| 表示可能な詳細特徴 | 18,456作品。根拠不足・保留の特徴は表示しません |
+| 詳細AI分類 | 20,020作品を分類・別審査してDBへ採用 |
+| 表示可能な詳細特徴 | 前区間18,456作品＋今回20作品。根拠不足・保留の特徴は表示しません |
 | 既存の詳細分類 | 872件を従来の試作データに保存。新台帳の件数には加算しません |
 | 読書履歴 | 335評価を自動照合。新台帳への確実な接続は0件。従来の内容接続2件は別に維持 |
 
@@ -35,10 +35,10 @@ Python 3.14と[uv](https://docs.astral.sh/uv/)を使います。この環境の�
 
 ```powershell
 uv sync --locked
-uv run --locked python scripts/serve_scale_catalogue_v1.py --database data/autonomous-next-v3/scale-v1/catalogue.sqlite --light-novels-database data/light-novels-v1/catalogue.sqlite --port 8769
+uv run --locked python scripts/serve_scale_catalogue_v1.py --database data/autonomous-next-v3/scale-v1/catalogue.sqlite --light-novels-database data/light-novels-v1/catalogue.sqlite --port 8770
 ```
 
-ブラウザで [小説の本棚](http://127.0.0.1:8769/) を開きます。今回の確認環境では起動しています。停止後は上のコマンドで再起動できます。収録状況や詳しい絞込み候補は「収録状況と詳しい絞込みを表示」から読み込みます。「対象」で「日本のライトノベル」、「種別」で「シリーズ・作品グループ」を選ぶとシリーズなどの単位で探せます。ライトノベルDBを用意していない環境では、`--light-novels-database`を省略して世界小説だけを開けます。
+ブラウザで [小説の本棚](http://127.0.0.1:8770/) を開きます。既に起動している場合はその画面を使えます。収録状況や詳しい絞込み候補は「収録状況と詳しい絞込みを表示」から読み込みます。「対象」で「日本のライトノベル」、「種別」で「シリーズ・作品グループ」を選ぶとシリーズなどの単位で探せます。ライトノベルDBを用意していない環境では、`--light-novels-database`を省略して世界小説だけを開けます。
 
 取得データ・DB・個人履歴はGit対象外の `data/` に保存します。リポジトリを取得するだけでは推薦用データは揃いません。従来の試作画面は `data/autonomous-next-v3/database/phase17-world-delivery-v1/index.html` にあります。
 
@@ -48,11 +48,11 @@ uv run --locked python scripts/serve_scale_catalogue_v1.py --database data/auton
 
 最新の計画は[v25：日本のライトノベルを広く収録する](docs/autonomous-next-phase-plan-v25.md)、現在地は[ライトノベル対応の進捗](docs/light-novels-progress-v1.md)にまとめています。[2万分類の到達状況](docs/scale-classification-v4.md)は前段階の記録です。新たな不具合や変更がなければ同じ分類・監査・画面確認を繰り返しません。
 
-1. 世界小説の詳細分類を2万から3万へ、利用条件と内容根拠が揃う差分から拡張します。
+1. まず世界小説の詳細分類を21,000作品へ増やし、新規分を検索・推薦へ届けます。その後3万分類へ進みます。
 2. 日本のライトノベルも、検索漏れ・未接続版・新しい内容資料のある差分を追加します。
 3. 各段階の所要時間・採用率・年代や国の偏りを確認し、5万・10万分類へ進みます。
 
-ライトノベル追加と応答時間改善の結果は[実行記録](docs/light-novel-delivery-2026-10-26.md)、今回のアプリコード変更は`cba5a73`として[PR #33](https://github.com/ayutaz/recommend-book/pull/33)でdraftです。Q1345379を好みに加えた限定条件では5件・114.87秒、同じpayloadの限定推薦は別実行で69.52秒から54.38秒でした。各1回の観測で、一般条件の速度保証ではありません。書誌処理は改善しましたが、推薦には長い待ち時間が残ります。一般公開・商用提供は用途条件と公開構成が成立した段階で扱います。
+ライトノベル追加と応答時間改善の結果は[実行記録](docs/light-novel-delivery-2026-10-26.md)、世界小説の実行方法は[差分分類・取り込み手順](docs/world-classification-expansion-guide.md)にまとめています。Q1345379を好みに加えた限定条件では5件・114.87秒、同じ公開結果の限定推薦は別実行で69.52秒から54.38秒でした。各1回の観測で、一般条件の速度保証ではありません。推薦には長い待ち時間が残ります。一般公開・商用提供の運用完了を示す段階ではありません。
 
 既存履歴と確実に結び付く範囲で評価し、追加の試読・採点・履歴入力は依頼しません。
 

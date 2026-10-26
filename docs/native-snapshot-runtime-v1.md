@@ -1,6 +1,6 @@
 # 新規入力用の固定runtimeと実行記録
 
-> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「現行ガイド・仕様」です。手順・契約の再利用前に、現在の状態は[current-status.md](current-status.md)、入力・権利・版の前提は本文で確認してください。
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「現行ガイド・仕様」です。手順・契約の再利用前に、現在の状態は[current-status.md](current-status.md)、次の作業順序は[現行計画 v25](autonomous-next-phase-plan-v25.md)を参照し、入力・権利・版の前提は本文で確認してください。本文のCLI例・数値・測定値は記載した版・namespaceの再現用です。
 
 この処理版は、新規作品の分類・検証・DB採用で実行ファイルの読み取りを共有する。過去のv3検証器や分類proofは変更しない。`prepare_native_snapshot_runtime_v1.py`が元ソースを隔離先へコピーし、置換箇所数を確認した決定的な変換でv4モジュールを生成する。生成元・生成後のbytesと入力・台帳・taxonomy・処理条件を実行前に固定する。
 
@@ -15,7 +15,7 @@
 
 実行ファイルの読取りは**一つのscopeにつき2回**であり、全工程で2回という意味ではない。実際の初回10作品の分類は3scope・12receipt・6読取り・約2.00GBであった。最終採用は別scopeで20receipt・2読取り・約0.667GB。メモリに実行ファイルのbytesを保持するため、I/O削減と引き換えにメモリを使う。全工程の高速化率や最大メモリを、この数字だけから主張しない。
 
-## 最新の実行版（2026-10-16）
+## 記録済みの実行版（2026-10-16）
 
 `data/autonomous-next-v3/preparation/phase8-provenance-runtime-v3/`を使用した。仕様は`provenance-v4`、prompt `4.0-provenance`、専用`classification-provenance-v4.schema.json`。モデル・CLIは`gpt-6.1-sol`・`codex-cli 0.162.1`、分類はbatch5・2並列。最初10件は修正の回帰検証で特徴採用7件、条件成立後の残26件は16件採用、合計23/36件だった。13件の不確実は推薦特徴に使わない。実分類8呼出に審査3呼出を加え計11呼出である。
 

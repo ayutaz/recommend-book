@@ -1,6 +1,6 @@
 # scratch評価器の数値境界
 
-> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「現行ガイド・仕様」です。手順・契約の再利用前に、現在の状態は[current-status.md](current-status.md)、入力・権利・版の前提は本文で確認してください。
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「現行ガイド・仕様」です。手順・契約の再利用前に、現在の状態は[current-status.md](current-status.md)、次の作業順序は[現行計画 v25](autonomous-next-phase-plan-v25.md)を参照し、入力・権利・版の前提は本文で確認してください。本文のCLI例・数値・測定値は記載した版・namespaceの再現用です。
 
 > 本体への採用状況（2026-10-12）：この実装は本体へ適用し、本体の全テストで655 passedを確認した。以下のscratch限定・未適用・fixture限定の記述は隔離開発時点の記録である。実データのキャッシュ移行と実行条件の保存については、[採用記録](relevance-v2-development-verification.md#本体への採用と実データ移行)を参照。
 
@@ -21,7 +21,7 @@ fitするscopeのmodel/prompt_version/taxonomy_version/cli_version/target_langua
 TDDではbool goldの誤受理、空gold/未注釈ラベルの不正prediction見逃し、大整数のOverflowErrorを先に確認した。その後、型・有限性・範囲を共通検査し、gold join前の全predictionへ適用した。合成fixtureは人手goldへ取り込まない。
 
 ```powershell
-Set-Location C:\Users\yuta\Desktop\Private\recommend-book\data\development\relevance-v2
+# リポジトリのルートで実行します。
 uv run --offline pytest tests/test_evaluation.py tests/test_classification_summary.py tests/test_classification_stability.py -q
 ```
 

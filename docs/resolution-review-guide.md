@@ -1,6 +1,6 @@
 # stage 2 名寄せの人手レビュー候補
 
-> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「現行ガイド・仕様」です。手順・契約の再利用前に、現在の状態は[current-status.md](current-status.md)、入力・権利・版の前提は本文で確認してください。
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「現行ガイド・仕様」です。手順・契約の再利用前に、現在の状態は[current-status.md](current-status.md)、次の作業順序は[現行計画 v25](autonomous-next-phase-plan-v25.md)を参照し、入力・権利・版の前提は本文で確認してください。本文のCLI例・数値・測定値は記載した版・namespaceの再現用です。
 
 2026年10月12日、保存済みSourceRecordsとDBのsource_headsを読取専用トランザクションで固定し、**400 pairの未裁定候補**を作成した。作品の名寄せ精度を検証した結果ではない。人手裁定数0、gold数0、precision未計算。現行resolverの出力は`rule_proposal`として保存し、正解とは区別する。
 

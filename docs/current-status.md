@@ -1,14 +1,15 @@
 # 現在の到達点
 
-確認日: 2026-10-26。現在値を確認する入口です。[文書一覧](documentation-index.md)では現行ガイドと過去の計画・実行記録を区別しています。
+確認日: 2026-10-26（件数と稼働状況は18:49 JSTに確認）。現在値を確認する入口です。[文書一覧](documentation-index.md)では現行ガイドと過去の計画・実行記録を区別しています。
 
 ## コードの提供先と稼働状態
 
-- 世界小説の2万分類は[PR #30](https://github.com/ayutaz/recommend-book/pull/30)、ライトノベル対応の統合先は[PR #31](https://github.com/ayutaz/recommend-book/pull/31)です。マージ状態とmainへの反映は各PRで確認できます。
-- 確認対象コードは `8ea2eb6bf5fd1518c3782df278667e660aa1c4d6`。[両OS CI](https://github.com/ayutaz/recommend-book/actions/runs/40286817065)はUbuntu 5,920 passed・7 skipped、Windows 5,921 passed・6 skippedで成功し、結果原本とcheckout treeを確認しました。文書のみの後続変更で同じ全体試験を繰り返しません。
-- 前区間のデータ取得・分類ジョブは終了し、現在は世界小説1,000作品追加に向けた新規資料を収集中です。以下の確定件数には今回の準備中・未取込分を含めません。前区間では[8769番サーバー](http://127.0.0.1:8769/)で追加分を実HTTP・Chrome確認済みです。再起動は[README](../README.md#ローカルで開く)を参照してください。
+- 世界小説2万分類の[PR #30](https://github.com/ayutaz/recommend-book/pull/30)と、前区間のライトノベル対応[PR #31](https://github.com/ayutaz/recommend-book/pull/31)はmain反映済みです。後続は `feat/world-21000-and-ln-runtime` の[PR #33](https://github.com/ayutaz/recommend-book/pull/33)でdraft、main未反映です。
+- 検証済み実装は `5dd5ffca5cf7dd5ca2f845694be8d60dc99afd27`。[両OS CI](https://github.com/ayutaz/recommend-book/actions/runs/40298209659)はUbuntu・WindowsのPython 3.14で成功しました。後続の補助コード`d7bc5e0`はcommit・push済みで、[そのCI](https://github.com/ayutaz/recommend-book/actions/runs/40302731706)は19:02 JST時点で実行中です。文書だけの変更で全体試験を繰り返しません。旧 `8ea2eb6` の試験件数は[前区間の記録](light-novel-delivery-2026-10-26.md)に残しています。
+- 世界小説は追加20作品をDB採用済み、後続54作品の分類処理が最大8並列で動いています。今回の確認用は新コードで起動した[8770番サーバー](http://127.0.0.1:8770/)です。8769番は前区間のコードを読み込んだプロセスです。再起動は[README](../README.md#ローカルで開く)を参照してください。
 - HJの48所属、新規掲載参照1、新規内容分類1シリーズの結果は[今回の実行記録](light-novel-delivery-2026-10-26.md)にまとめています。
-- 世界小説の追加区間では、新規20作品の分類・別審査・出力審査・DB取込を完了し、検索・詳細・特徴を使った推薦を実HTTPで確認しました。実装`5dd5ffc`の[両OS CI](https://github.com/ayutaz/recommend-book/actions/runs/40298209659)は成功しています。新規1,000作品の目標は継続中です。
+- 世界小説の追加区間では、新規20作品の分類・別審査・出力審査・DB取込を完了し、検索・詳細・特徴を使った推薦を実HTTPで確認しました。新規1,000作品の目標は継続中です。
+- 資料の用途審査は計144作品分が成功しています。採用済み20を含み、残りを分類・採用済み作品へ加算しません。このうち新しいwhole-clean producerの2入力は未分類で、補助コードは`d7bc5e0`でcommit・push済みです。CIの確認状態は上記と分けて扱います。
 
 ## 世界小説
 

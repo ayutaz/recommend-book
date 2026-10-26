@@ -1,6 +1,6 @@
 # 分類実行 namespace のオフライン準備
 
-> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「現行ガイド・仕様」です。手順・契約の再利用前に、現在の状態は[current-status.md](current-status.md)、入力・権利・版の前提は本文で確認してください。
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「現行ガイド・仕様」です。手順・契約の再利用前に、現在の状態は[current-status.md](current-status.md)、次の作業順序は[現行計画 v25](autonomous-next-phase-plan-v25.md)を参照し、入力・権利・版の前提は本文で確認してください。本文のCLI例・数値・測定値は記載した版・namespaceの再現用です。
 
 2026-10-16更新: 現行処理は実データの分類・採用に使用済み。`--execution-spec provenance-v4`で実際のprompt/schema/spec registryを固定する。[実行版と境界](native-snapshot-runtime-v1.md)と[実施結果](phase8-quality-evaluation-v1.md)を参照する。以下のscratch・未適用・fixture限定の記述と試験数は初回開発時点の履歴。
 
