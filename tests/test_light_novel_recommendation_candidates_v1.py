@@ -3,6 +3,7 @@ from copy import deepcopy
 import pytest
 
 from test_light_novel_catalogue_v1 import setup_catalogue, edition_bundle, membership_bundle
+from recommend_book.recommendation.scale_site_v1 import public_work
 
 
 @pytest.mark.parametrize('liked_edition', [False, True])
@@ -48,3 +49,11 @@ def test_linked_read_edition_excludes_parent_and_preserves_full_result(membershi
     monkeypatch.setattr(cat,'_rows',full)
     assert cat.recommend_preferences(preferred_features=['genre.fantasy'])==before
     assert before['items']==[]
+
+
+def test_public_series_content_mode_is_preserved_and_unknown_modes_rejected(setup_catalogue):
+    cat,records=setup_catalogue
+    cat.ingest(records)
+    row=cat.work_detail('lns:wd:Q1')
+    assert public_work({**row,'recommendation_mode':'series_content_preferences'})['recommendation_mode']=='series_content_preferences'
+    assert public_work({**row,'recommendation_mode':'untrusted-mode'})['recommendation_mode']=='insufficient_evidence'

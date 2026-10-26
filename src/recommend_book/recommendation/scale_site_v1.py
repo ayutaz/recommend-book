@@ -827,7 +827,8 @@ def public_work(row):
             if isinstance(value, dict) and value.get('axis') in CLASSIFICATION_AXES]
     if 'recommendation_mode' in row:
         result['recommendation_mode'] = row['recommendation_mode'] if row['recommendation_mode'] in (
-            'source_similarity', 'insufficient_evidence', 'llm_similarity', 'preference_recommendation') else 'insufficient_evidence'
+            'source_similarity', 'insufficient_evidence', 'llm_similarity', 'preference_recommendation',
+            'series_content_preferences') else 'insufficient_evidence'
     if 'score' in row:
         result['score'] = _number(row['score'])
     if 'reasons' in row:
