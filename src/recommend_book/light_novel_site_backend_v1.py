@@ -167,6 +167,7 @@ class UnifiedCatalogue:
                 'light_novel_publisher_work_groups': light.get('publisher_work_groups', 0),
                 'light_novel_publisher_bibliographic_records': light.get('publisher_bibliographic_correspondences', 0),
                 'light_novel_featured_series': light['content_feature_series'],
+                'light_novel_featured_works': light.get('content_feature_works', 0),
                 'light_novel_works': light['individual_works'], 'light_novel_editions': light['editions']}
 
     def catalogue_overview(self):

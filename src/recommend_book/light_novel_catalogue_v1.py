@@ -337,12 +337,48 @@ def _safe(value):
     return result
 
 
-def _content_source(source):
+def _content_source(source, *, work_id=None, archive_context=None, fresh_classification=None):
     """Publish permissions only for the source contract the verifier replays."""
     result = _safe(source)
     attribution = source.get('attribution', {})
+    attribution = attribution if isinstance(attribution, dict) else {}
     allowed = (source.get('rights_policy_id') == 'light-novel-series-wikipedia-screened-v1'
                and source.get('license') == 'CC-BY-SA-4.0')
+    if work_id is not None:
+        allowed = False
+        match = re.fullmatch(r'lnw:wd:(Q[1-9][0-9]*)', work_id) if isinstance(work_id, str) else None
+        language, revision = source.get('language'), attribution.get('revision_id')
+        page_id = attribution.get('page_id')
+        obligations = {'attribution', 'mark_changes', 'share_alike', 'third_party_text_screened'}
+        restrictions = source.get('inherited_restrictions')
+        fulfilled = attribution.get('fulfilled_obligations')
+        profile = (match is not None and source.get('kind') == 'synopsis'
+            and source.get('license') == 'CC-BY-SA-4.0'
+            and source.get('license_url') == 'https://creativecommons.org/licenses/by-sa/4.0/'
+            and language in ('en', 'ja') and type(revision) is int and revision > 0
+            and type(page_id) is int and page_id > 0
+            and isinstance(restrictions, (list, tuple)) and all(isinstance(v, str) for v in restrictions)
+            and obligations <= set(restrictions)
+            and isinstance(fulfilled, (list, tuple)) and all(isinstance(v, str) for v in fulfilled)
+            and obligations <= set(fulfilled))
+        if profile:
+            permalink = f'https://{language}.wikipedia.org/w/index.php?oldid={revision}'
+            history = attribution.get('history_url')
+            profile = (source.get('source_url') == permalink and attribution.get('permalink') == permalink
+                and isinstance(history, str)
+                and history.startswith(f'https://{language}.wikipedia.org/w/index.php?title=')
+                and history.endswith('&action=history'))
+        if profile and source.get('rights_policy_id') == 'light-novel-work-wikipedia-screened-v1':
+            allowed = (archive_context is None and fresh_classification is not False
+                and attribution.get('scope') == 'work' and attribution.get('work_id') == work_id)
+        elif profile and source.get('rights_policy_id') == 'wikipedia-screened-prose':
+            proof = attribution.get('identity_proof')
+            allowed = (archive_context == 'historical_mixed_metadata_lead_and_plot'
+                and fresh_classification is False and isinstance(proof, dict)
+                and proof.get('wikidata_work_id') == match[1]
+                and proof.get('pageprops_wikibase_item') == match[1]
+                and proof.get('language') == language and proof.get('page_id') == page_id
+                and proof.get('revision_id') == revision)
     result.update(display_allowed=allowed, quote_allowed=False,
                   evidence_ids=[source['evidence_id']] if isinstance(source.get('evidence_id'), str) else [],
                   revision=attribution.get('revision_id'), permalink=attribution.get('permalink'),
@@ -4828,8 +4864,19 @@ class LightNovelCatalogue:
                 # A stale relation cannot prevent access to independently valid bibliography.
                 continue
 
+    @staticmethod
+    def _work_bridge_witnesses(db):
+        witnesses = []
+        for identity, kind, encoded, pin in db.execute(
+                "SELECT entry_id,kind,record_json,record_sha256 FROM entries WHERE kind IN ('series','work','publisher_group')"):
+            if hashlib.sha256(encoded.encode()).hexdigest() != pin:
+                raise ValueError('current bridge witness metadata SHA differs')
+            witnesses.append({'entry_id': identity, 'entry_kind': kind,
+                'record_sha256': pin, 'record': json.loads(encoded)})
+        return witnesses
+
     def _feature_rows(self, entry_ids=None):
-        from .light_novel_classification_v1 import verify_feature_export
+        from .light_novel_feature_exports_v1 import verify_feature_export
         with self._connect() as db:
             if entry_ids is None:
                 bindings = db.execute('SELECT * FROM features').fetchall()
@@ -4839,6 +4886,7 @@ class LightNovelCatalogue:
                 entry_ids = list(entry_ids)
                 bindings = db.execute('SELECT * FROM features WHERE entry_id IN (' + ','.join('?' for _ in entry_ids) + ')', entry_ids).fetchall()
         manifests, result = {}, {}
+        bridge_witnesses = None
         for binding in bindings:
             key = (binding['manifest_path'], binding['manifest_sha256'])
             try:
@@ -4850,6 +4898,15 @@ class LightNovelCatalogue:
                         manifests[key] = {'rows': []}
                 for row in manifests[key]['rows']:
                     if row.get('entry_id', row.get('series_id')) == binding['entry_id']:
+                        if manifests[key].get('version') == 'light-novel-work-archived-label-feature-export-v1':
+                            from .light_novel_work_archive_bridge_v1 import check_current_target
+                            if bridge_witnesses is None:
+                                with self._connect() as db:
+                                    bridge_witnesses = self._work_bridge_witnesses(db)
+                            target = next((w for w in bridge_witnesses if w['entry_id'] == binding['entry_id']), None)
+                            if target is None:
+                                raise ValueError('current bridge target absent')
+                            check_current_target(row, target['record'], target['record_sha256'], bridge_witnesses)
                         result[binding['entry_id']] = row
                         break
             except (ValueError, OSError, KeyError, TypeError):
@@ -4858,10 +4915,11 @@ class LightNovelCatalogue:
         return result
 
     def import_features(self, manifest_path, expected_sha256):
-        from .light_novel_classification_v1 import verify_feature_export
+        from .light_novel_feature_exports_v1 import verify_feature_export, target_allowed
         document = verify_feature_export(manifest_path, expected_sha256)
         targets = [(row, _entry(row.get('entry_id', row.get('series_id')))) for row in document['rows']]
         identities = sorted({identity for _, identity in targets})
+        bridge = document.get('version') == 'light-novel-work-archived-label-feature-export-v1'
 
         def selected_entries(db):
             selected = {}
@@ -4873,6 +4931,7 @@ class LightNovelCatalogue:
 
         with self._connect() as db:
             stored = selected_entries(db)
+            initial_witnesses = self._work_bridge_witnesses(db) if bridge else None
         cache, known = {}, {}
         for identity, entry in stored.items():
             if hashlib.sha256(entry['record_json'].encode()).hexdigest() != entry['record_sha256']:
@@ -4884,9 +4943,13 @@ class LightNovelCatalogue:
         result = {'imported': 0, 'held': 0}
         plans = []
         for row, entry_id in targets:
-            if entry_id not in known or known[entry_id]['entry_kind'] != 'series' or row.get('scope') != 'series':
+            if entry_id not in known or not target_allowed(document, row, {**known[entry_id], 'record_sha256': stored[entry_id]['record_sha256']}):
                 result['held'] += 1
             else:
+                if bridge:
+                    from .light_novel_work_archive_bridge_v1 import check_current_target
+                    check_current_target(row, json.loads(stored[entry_id]['record_json']),
+                        stored[entry_id]['record_sha256'], initial_witnesses)
                 plans.append(entry_id)
         path = str(Path(manifest_path).resolve())
         with self._connect() as db:
@@ -4897,6 +4960,12 @@ class LightNovelCatalogue:
             if any((current[identity]['kind'], current[identity]['record_sha256']) !=
                    (entry['kind'], entry['record_sha256']) for identity, entry in stored.items()):
                 raise ValueError('feature target metadata changed during import')
+            if bridge:
+                current_witnesses = self._work_bridge_witnesses(db)
+                for row, entry_id in targets:
+                    if entry_id in plans:
+                        check_current_target(row, json.loads(current[entry_id]['record_json']),
+                            current[entry_id]['record_sha256'], current_witnesses)
             for entry_id in plans:
                 db.execute('INSERT OR REPLACE INTO features VALUES(?,?,?)', (entry_id, path, expected_sha256))
                 result['imported'] += 1
@@ -4906,12 +4975,19 @@ class LightNovelCatalogue:
     def _apply_feature(row, feature):
         if not feature or row['entry_kind'] in {'publisher_group', 'publisher_reference'}:
             return
+        feature_scope = 'work' if row['entry_kind'] == 'work' else 'series'
+        if feature_scope == 'work' and (feature.get('scope') != 'work'
+                or feature.get('entity_kind') != 'light_novel_work'
+                or feature.get('work_id') != row['entry_id'] or feature.get('entry_id') != row['entry_id']):
+            return
+        if row['entry_kind'] == 'series' and feature.get('scope') == 'work':
+            return
         public_label_keys = {'label_id', 'label', 'axis', 'decision', 'scope', 'relevance',
             'raw_confidence', 'calibrated_confidence', 'calibration_status', 'calibration_version',
             'evidence', 'missing_reason', 'spoiler'}
         labels = [{k: v for k, v in label.items() if k in public_label_keys}
                   for label in feature.get('labels', feature.get('admitted_labels', []))
-                  if label.get('scope') == 'series' and label.get('decision') == 'present']
+                  if label.get('scope') == feature_scope and label.get('decision') == 'present']
         content_ids = {s.get('evidence_id') for s in feature.get('source_attributions', [])
                        if s.get('kind') in ('synopsis', 'excerpt', 'note')}
         for label in labels:
@@ -4922,10 +4998,17 @@ class LightNovelCatalogue:
         row['native_features'] = row['llm_features'] = labels
         row['llm_held_features'] = [{k: v for k, v in label.items() if k in {'label_id', 'reason', 'axis'}}
                                   for label in feature.get('held_labels', [])]
-        row['content_sources'] = [_content_source(s) for s in feature.get('source_attributions', feature.get('source_attribution', []))]
+        row['content_sources'] = [_content_source(s,
+            work_id=row['entry_id'] if feature_scope == 'work' else None,
+            archive_context=feature.get('archive_context'), fresh_classification=feature.get('fresh_classification'))
+            for s in feature.get('source_attributions', feature.get('source_attribution', []))]
         row['content_features_adopted'] = bool(labels) and feature.get('content_features_adopted') is True
         row['recommendable'] = bool(row['genres'] or labels)
-        row['recommendation_mode'] = 'series_content_preferences' if row['content_features_adopted'] else row['recommendation_mode']
+        row['recommendation_mode'] = (('work_content_preferences' if feature_scope == 'work' else 'series_content_preferences')
+            if row['content_features_adopted'] else row['recommendation_mode'])
+        if (feature_scope == 'work' and feature.get('archive_context') == 'historical_mixed_metadata_lead_and_plot'
+                and feature.get('fresh_classification') is False):
+            row['work_feature_context'] = 'historical_mixed_metadata_lead_and_plot'
         row['classification_axes'] = [{'axis': axis, 'adopted_count': sum(label.get('axis') == axis for label in labels),
             'held_count': sum(label.get('axis', label.get('label_id', '').split('.')[0]) == axis for label in feature.get('held_labels', [])),
             'unknown': not any(label.get('axis') == axis for label in labels)} for axis in AXES]
@@ -5327,7 +5410,7 @@ class LightNovelCatalogue:
                 label_id = label['label_id']
                 features.setdefault(label_id, {**taxonomy.get(label_id, {'label_id': label_id, 'axis': label['axis'], 'label': label.get('label', label_id)}), 'count': 0})['count'] += 1
         return {**self._facets_from_rows(rows), 'features': list(features.values()), 'axes': list(AXES),
-                'classification_scope': 'series', 'calibrated': False}
+                'classification_scope': 'mixed_explicit_units' if any(r['entry_kind'] == 'work' and r['llm_features'] for r in rows) else 'series', 'calibrated': False}
 
     def catalogue_stats(self):
         return self._stats_from_rows(self._rows(), *self._failure_counts())
@@ -5354,6 +5437,7 @@ class LightNovelCatalogue:
         statuses = {s: sum(r['read_status'] == s for r in rows) for s in READ_STATUSES}
         content = sum(r['entry_kind'] == 'series' and r.get('series_identity_basis') != 'publisher_work_group_and_ndl_bibliography'
                       and r['content_features_adopted'] for r in rows)
+        content_works = sum(r['entry_kind'] == 'work' and r['content_features_adopted'] for r in rows)
         source = sum(r['entry_kind'] == 'series' and r.get('series_identity_basis') != 'publisher_work_group_and_ndl_bibliography'
                      and bool(r['genres']) for r in rows)
         return {'works': len(rows), 'searchable_works': len(rows), 'series': counts['series'],
@@ -5369,13 +5453,13 @@ class LightNovelCatalogue:
                 # Each projected row is a unique edition, independent of the
                 # number of publisher references or provider bindings it has.
                 'publisher_bibliographic_correspondences': sum(r.get('publisher_bibliography_matched') is True for r in rows),
-                'content_feature_series': content, 'source_genre_series': source,
+                'content_feature_series': content, 'content_feature_works': content_works, 'source_genre_series': source,
                 'feature_bearing_works': sum(bool(r['genres'] or r['llm_features']) for r in rows),
                 'recommendable_works': sum(r['recommendable'] for r in rows), 'source_genre_works': sum(bool(r['genres']) for r in rows),
-                'llm_works': content, 'strict72_works': 0, 'raw_classified_works': sum(bool(r['llm_features']) for r in rows),
+                'llm_works': content + content_works, 'strict72_works': 0, 'raw_classified_works': sum(bool(r['llm_features']) for r in rows),
                 'personalized': False, 'read_status_counts': statuses, 'ingestion_failures': failures,
                 'ingestion_failure_events': failures, 'unresolved_ingestion_failures': unresolved_failures,
-                'coverage_complete': False, 'human_quality_verified': False, 'classification_scope': 'series'}
+                'coverage_complete': False, 'human_quality_verified': False, 'classification_scope': 'mixed_explicit_units' if content_works else 'series'}
 
     def similar_works(self, entry_id, limit=12, exclude_read=True):
         entry_id = _entry(entry_id)
@@ -5476,13 +5560,16 @@ class LightNovelCatalogue:
                 relevance = label.get('relevance')
                 if relevance is not None:
                     score += weights.get(label['axis'], 0) * float(relevance)
-                reasons.append({'kind': 'series_content_feature' if label.get('evidence_basis') == 'content' else 'series_bibliographic_feature', 'label_id': label_id,
-                                'label': taxonomy.get(label_id, {}).get('label', label_id), 'scope': 'series',
+                reason_scope = 'work' if row['entry_kind'] == 'work' else 'series'
+                reason_kind = (('work_content_feature' if label.get('evidence_basis') == 'content' else 'work_bibliographic_feature')
+                    if reason_scope == 'work' else ('series_content_feature' if label.get('evidence_basis') == 'content' else 'series_bibliographic_feature'))
+                reasons.append({'kind': reason_kind, 'label_id': label_id,
+                                'label': taxonomy.get(label_id, {}).get('label', label_id), 'scope': reason_scope,
                                 'evidence': label.get('evidence', []), 'sources': row['content_sources'], 'calibration_status': 'uncalibrated'})
                 if relevance is None:
                     reasons[-1]['relevance_unknown'] = True
             if reasons:
-                ranked.append({**row, 'score': round(score, 6), 'score_kind': 'uncalibrated_series_similarity', 'reasons': reasons})
+                ranked.append({**row, 'score': round(score, 6), 'score_kind': 'uncalibrated_work_similarity' if row['entry_kind'] == 'work' else 'uncalibrated_series_similarity', 'reasons': reasons})
         ranked.sort(key=lambda r: (-r['score'], r['title'], r['entry_id']))
         chosen, used = [], set()
         for row in ranked:
@@ -5508,7 +5595,9 @@ class LightNovelCatalogue:
             row['feature_insufficiency'] = [{'axis': axis, 'status': 'unknown',
                 'reason': 'requested_avoided_feature_absence_unproved'}
                 for axis in AXES if axis in unknown_axes]
-        return {'mode': 'series_preferences' if chosen else 'insufficient_evidence', 'personalized': False,
-                'items': chosen, 'liked_entry_ids': liked, 'classification_scope': 'series',
-                'explanation': 'シリーズの内容特徴と資料記載ジャンルによる未校正の類似度です。書誌のみと内容根拠付きの理由を区別しています。' if chosen else '利用できる共通特徴が不足しています。',
+        work_scoped = any(r['entry_kind'] == 'work' and r['llm_features'] for r in chosen)
+        result_scope = ('mixed_explicit_units' if any(r['entry_kind'] == 'series' for r in chosen) else 'work') if work_scoped else 'series'
+        return {'mode': ('mixed_explicit_unit_preferences' if result_scope == 'mixed_explicit_units' else 'work_preferences') if work_scoped else ('series_preferences' if chosen else 'insufficient_evidence'), 'personalized': False,
+                'items': chosen, 'liked_entry_ids': liked, 'classification_scope': result_scope,
+                'explanation': ('作品・シリーズの内容特徴と資料記載ジャンルによる未校正の類似度です。対象の単位を区別しています。' if work_scoped else 'シリーズの内容特徴と資料記載ジャンルによる未校正の類似度です。書誌のみと内容根拠付きの理由を区別しています。') if chosen else '利用できる共通特徴が不足しています。',
                 'read_unknown_is_unread': False, 'human_quality_verified': False}

@@ -1742,11 +1742,11 @@ def test_authenticated_series_features_never_become_volume_features(setup_catalo
                'source_attributions': [{'evidence_id': 'e1', 'kind': 'synopsis',
                    'source_url': 'https://ja.wikipedia.org/w/index.php?oldid=1', 'license': 'CC-BY-SA-4.0',
                    'raw_path': '/private/source', 'attribution': {'revision_id': 1, 'raw_path': '/private/source'}}]}
-    import recommend_book.light_novel_classification_v1 as verifier
+    import recommend_book.light_novel_feature_exports_v1 as verifier
     calls = []
     def verify(path, sha):
         calls.append((path, sha))
-        return {'rows': [feature]}
+        return {'version': 'light-novel-series-feature-export-v1', 'rows': [feature]}
     monkeypatch.setattr(verifier, 'verify_feature_export', verify)
     assert cat.import_features(tmp_path / 'manifest.json', 'a' * 64)['imported'] == 1
     assert cat.work_detail('lns:wd:Q1')['llm_features'][0]['evidence_basis'] == 'content'
@@ -1959,13 +1959,14 @@ def test_scoped_feature_import_authenticates_absent_targets_native_chain_before_
 def test_scoped_feature_import_holds_authenticated_nonseries_and_wrong_scope_headers(
         setup_catalogue, ecobalt_source_group_bundle, monkeypatch, tmp_path):
     # Header routing boundary only; real native-chain replay is exercised above.
-    import recommend_book.light_novel_classification_v1 as native
+    import recommend_book.light_novel_feature_exports_v1 as native
     cat, records = setup_catalogue
     cat.ingest(records)
     _, _, path, sha, _ = ecobalt_source_group_bundle
     group = next(iter(cat.import_ecobalt_source_groups(path, sha)['reference_entries'].values()))
     leaf = next(iter(cat.import_ecobalt_publisher_references(path, sha)['reference_entries'].values()))
-    document = {'rows': [{'entry_id': identity, 'scope': 'series'} for identity in [group, leaf, 'lnw:wd:Q3']]
+    document = {'version': 'light-novel-series-feature-export-v1',
+                'rows': [{'entry_id': identity, 'scope': 'series'} for identity in [group, leaf, 'lnw:wd:Q3']]
                        + [{'entry_id': 'lns:wd:Q1', 'scope': 'work'}]}
     monkeypatch.setattr(native, 'verify_feature_export', lambda *args: document)
     assert cat.import_features(tmp_path / 'header-routing.json', 'a'*64) == {'imported': 0, 'held': 4}
@@ -2502,13 +2503,14 @@ def test_official_series_can_have_one_unnumbered_ndl_book(publisher_ndl_bundle):
 
 
 def test_detail_and_search_do_not_verify_unrelated_native_manifests(setup_catalogue, tmp_path, monkeypatch):
-    import recommend_book.light_novel_classification_v1 as native
+    import recommend_book.light_novel_feature_exports_v1 as native
     cat, records = setup_catalogue
     cat.ingest(records)
     calls = []
     def verify(path, sha):
         calls.append((str(path), sha))
-        return {'rows': [{'entry_id': 'lns:wd:Q1', 'scope': 'series', 'labels': [], 'admitted_labels': []}]}
+        return {'version': 'light-novel-series-feature-export-v1',
+                'rows': [{'entry_id': 'lns:wd:Q1', 'scope': 'series', 'labels': [], 'admitted_labels': []}]}
     monkeypatch.setattr(native, 'verify_feature_export', verify)
     cat.import_features(tmp_path / 'manifest.json', 'a' * 64)
     calls.clear()
@@ -4235,7 +4237,7 @@ def test_explicit_subseries_p179_deduplicates_recommendations_without_copying_fe
 
 
 def test_failed_feature_manifest_is_verified_once_per_operation(setup_catalogue, monkeypatch, tmp_path):
-    from recommend_book import light_novel_classification_v1 as verifier
+    from recommend_book import light_novel_feature_exports_v1 as verifier
     cat, records = setup_catalogue
     cat.ingest(records)
     path, sha = str(tmp_path / 'changed-native.json'), 'f' * 64

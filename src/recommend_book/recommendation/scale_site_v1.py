@@ -24,7 +24,7 @@ _STAT_KEYS = ('works', 'searchable_works', 'feature_bearing_works', 'recommendab
               'content_history_links', 'bibliographic_history_links',
               'light_novel_series', 'light_novel_publisher_work_groups', 'light_novel_publisher_bibliographic_records',
               'light_novel_publisher_references',
-              'light_novel_featured_series', 'light_novel_works', 'light_novel_editions')
+              'light_novel_featured_series', 'light_novel_featured_works', 'light_novel_works', 'light_novel_editions')
 
 
 def _text(value):
@@ -183,6 +183,9 @@ def _annotate_recommendation_reasons(item, payload):
             reason.update(direction='context', detail='刊行年代が近い')
         elif kind == 'same_author':
             reason.update(direction='context', detail='著者が共通')
+        elif kind in ('work_content_feature', 'work_bibliographic_feature'):
+            reason.update(direction='prefer' if reason.get('label_id') in preferred else 'context',
+                detail='指定した特徴と一致' if reason.get('label_id') in preferred else '基準作品との共通点')
         elif kind == 'series_content_feature':
             detail = ('基準シリーズと内容特徴が共通。関連度は未確認のため、得点には加算していません。'
                       if reason.get('relevance_unknown') is True else '基準シリーズと内容特徴が共通')
@@ -876,7 +879,9 @@ def public_work(row):
     if 'recommendation_mode' in row:
         result['recommendation_mode'] = row['recommendation_mode'] if row['recommendation_mode'] in (
             'source_similarity', 'insufficient_evidence', 'llm_similarity', 'preference_recommendation',
-            'series_content_preferences') else 'insufficient_evidence'
+            'series_content_preferences', 'work_content_preferences') else 'insufficient_evidence'
+    if row.get('entry_kind') == 'work' and row.get('work_feature_context') == 'historical_mixed_metadata_lead_and_plot':
+        result['work_feature_context'] = 'historical_mixed_metadata_lead_and_plot'
     if 'score' in row:
         result['score'] = _number(row['score'])
     if 'reasons' in row:
@@ -891,6 +896,7 @@ def public_work(row):
             detail = ('避けたい特徴に一致' if direction == 'avoid' else
                       '重視した特徴に一致' if direction == 'prefer' else
                       '基準シリーズと内容特徴が共通' if kind == 'series_content_feature' else
+                      '基準作品と内容特徴が共通' if kind == 'work_content_feature' else
                       '資料記載ジャンルによる補完' if kind == 'fallback_source' else
                       '詳細特徴が不足しています' if kind == 'feature_unavailable' else '')
             reason = {'kind': kind, 'shared': _reason_terms(value.get('shared')),
@@ -909,6 +915,9 @@ def public_work(row):
                 candidate = value.get(key)
                 if isinstance(candidate, (int, float)) and not isinstance(candidate, bool) and math.isfinite(candidate):
                     reason[key] = candidate
+            if (row.get('entry_kind') == 'work' and kind in ('work_content_feature', 'work_bibliographic_feature')
+                    and value.get('scope') == 'work'):
+                reason['scope'] = 'work'
             if value.get('source_url'):
                 reason['source_url'] = _link(value.get('source_url'))
             if value.get('source_locator'):
@@ -997,6 +1006,7 @@ async function showDetail(identifier){
   if(row.publication_label)body.append(node('p','書誌に記載されたシリーズ・レーベル：'+row.publication_label,'muted'));
   if(['publisher_series_and_ndl_bibliography','publisher_work_group_and_ndl_bibliography'].includes(row.series_identity_basis)&&row.series_assertion_source_url){const group=row.series_identity_basis==='publisher_work_group_and_ndl_bibliography',mnovels=row.publisher_work_group_kind==='futaba_mnovels_grouping';const p=node('p',group?'作品グループの対応根拠：':'シリーズの同定根拠：'),a=node('a',mnovels?'出版社の掲載一覧':group?'出版社の作品ページ':'出版社のシリーズページ');a.href=row.series_assertion_source_url;a.target='_blank';a.rel='noopener noreferrer';p.append(a);body.append(p,node('p',mnovels?'保存したＭノベルス／Ｍノベルスｆ一覧内の出版社作品グループです。各巻の著者と書誌は個別資料に基づきます。原作品・物語シリーズの同一性は未確認です。':group?'作品名・著者・収録一覧は出版社の明示情報、各巻の書誌は国立国会図書館の情報に基づきます。原作品・物語シリーズの同一性は未確認です。':row.series_title_source==='publisher_explicit_group'?'シリーズ名と著者は出版社の明示情報、各巻の書誌は国立国会図書館の情報に基づきます。':'書名・著者などの表示は国立国会図書館の書誌情報に基づきます。','muted'));}
   if(row.publisher_work_group_kind==='futaba_mnovels_grouping'){if(Number.isInteger(row.source_frame_member_count)&&Number.isInteger(row.verified_bibliographic_member_count))body.append(node('p','保存一覧内の掲載参照 '+row.source_frame_member_count+'件に対し、対応を確認した書誌 '+row.verified_bibliographic_member_count+'件を表示しています。','muted'));body.append(node('p','全媒体・全期間の収録範囲は未確認です。','muted'));}
+  if(row.work_feature_context==='historical_mixed_metadata_lead_and_plot')body.append(node('p','既存分類のあらすじ根拠を再検証した特徴です。元の入力には書誌・記事冒頭も含まれます。','muted'));
   if(row.relation_resolution==='original_work_and_story_series_unresolved')body.append(node('p','原作・物語シリーズとの対応は未確認です。','muted'));
   if(row.relation_resolution==='edition_series_membership_verified')body.append(node('p','物語シリーズへの所属を出典で確認済みです。版と原作品は別の項目として扱います。','muted'));
   if(row.membership_source){const source=row.membership_source,p=node('p','シリーズ所属の照合資料：');for(const [url,label]of [[source.source_url,source.source_kind==='publisher_official_series'?'出版社の公式シリーズページ':'Wikipediaの参照版'],[source.history_url,'寄稿者の履歴'],[source.license_url,source.license]]){if(!url||!label)continue;const a=node('a',label);a.href=url;a.target='_blank';a.rel='noopener noreferrer';p.append(a,node('span',' ・ '));}body.append(p,node('p',source.attribution,'muted'),node('p','明示された書誌情報を抽出し、NDL書誌と照合しています。内容分類の根拠とは別に扱います。','muted'));}
@@ -1034,13 +1044,13 @@ async function showDetail(identifier){
   const data=await api(entryPath(identifier)+'/similar?exclude_read='+($('exclude-read').checked?'1':'0'));
   if(!data.items.length)similar.append(node('p','根拠のある類似候補はまだありません。'));
   for(const item of data.items){const div=node('div',undefined,'similar-row'),button=node('button',item.title);button.addEventListener('click',()=>showDetail(entryKey(item)));div.append(button,node('p',entryLabel(item)+' / '+describe(item),'muted'));
-   const names={genre:'資料記載のジャンル',source_genre:'資料記載のジャンル',language:'原言語',same_language:'原言語',year:'刊行年代',publication_period:'刊行年代',author:'著者',same_author:'著者',region:'地域',llm_feature:'LLM分類',native_feature_match:'内容分類',series_content_feature:'シリーズの内容分類'};
+   const names={genre:'資料記載のジャンル',source_genre:'資料記載のジャンル',language:'原言語',same_language:'原言語',year:'刊行年代',publication_period:'刊行年代',author:'著者',same_author:'著者',region:'地域',llm_feature:'LLM分類',native_feature_match:'内容分類',series_content_feature:'シリーズの内容分類',work_content_feature:'各巻・単独作品の内容分類',work_bibliographic_feature:'各巻・単独作品の書誌分類'};
    for(const reason of item.reasons||[]){const shared=(reason.shared||[]).map(x=>{let label=typeof x==='string'?x:x.label;if(reason.kind==='same_language')return languageName(label);if(reason.kind==='publication_period')return label+'年';if(reason.kind==='same_author')return (item.authors||[]).find(a=>a.qid===label)?.name||'共通する著者';return label;}).join('・');div.append(node('p',(names[reason.kind]||'資料の共通点')+'：'+shared));}
    if(item.score!==undefined&&item.score!==null)div.append(node('p','類似度 '+Number(item.score).toFixed(3)+'（暫定・確率ではありません）','muted'));similar.append(div);
   }
  }catch(e){body.replaceChildren(node('p',e.message));}
 }
-async function stats(data){try{data=data||await api('/api/stats');const labels=[['works','世界小説'],['light_novel_series','ラノベのシリーズ'],['light_novel_publisher_work_groups','出版社の作品グループ'],['light_novel_publisher_bibliographic_records','出版社と対応した書誌'],['light_novel_publisher_references','出版社の掲載書誌参照'],['light_novel_featured_series','ラノベの内容特徴あり'],['light_novel_works','ラノベの各巻・単独作品'],['light_novel_editions','関連する版・書誌候補'],['searchable_works','検索可能'],['feature_bearing_works','推薦特徴あり'],['source_genre_works','資料ジャンルあり'],['eligible_classified_works','AI処理済み'],['llm_works','LLM特徴あり'],['personal_score_works','個人スコアあり'],['held_works','表示保留'],['content_history_links','履歴の内容接続'],['bibliographic_history_links','履歴の書誌接続']];$('stats').replaceChildren(...labels.map(([key,label])=>{const c=node('div',undefined,'stat');c.append(node('strong',data[key]===undefined?'未集計':Number(data[key]).toLocaleString()),node('span',label));return c;}));}catch(e){$('message').textContent=e.message;}}
+async function stats(data){try{data=data||await api('/api/stats');const labels=[['works','世界小説'],['light_novel_series','ラノベのシリーズ'],['light_novel_publisher_work_groups','出版社の作品グループ'],['light_novel_publisher_bibliographic_records','出版社と対応した書誌'],['light_novel_publisher_references','出版社の掲載書誌参照'],['light_novel_featured_series','ラノベの内容特徴あり'],['light_novel_featured_works','ラノベの各巻・単独作品の内容特徴あり'],['light_novel_works','ラノベの各巻・単独作品'],['light_novel_editions','関連する版・書誌候補'],['searchable_works','検索可能'],['feature_bearing_works','推薦特徴あり'],['source_genre_works','資料ジャンルあり'],['eligible_classified_works','AI処理済み'],['llm_works','LLM特徴あり'],['personal_score_works','個人スコアあり'],['held_works','表示保留'],['content_history_links','履歴の内容接続'],['bibliographic_history_links','履歴の書誌接続']];$('stats').replaceChildren(...labels.map(([key,label])=>{const c=node('div',undefined,'stat');c.append(node('strong',data[key]===undefined?'未集計':Number(data[key]).toLocaleString()),node('span',label));return c;}));}catch(e){$('message').textContent=e.message;}}
 async function facets(data){try{data=data||await api('/api/facets');const previous={};for(const id of ['genre','preference-genre','language','preference-language']){const select=$(id);previous[id]=select.value;select.replaceChildren(select.options[0]);}for(const item of data.genres||[]){for(const id of ['genre','preference-genre']){const option=node('option',item.label+' ('+item.count.toLocaleString()+')');option.value=item.qid;$(id).append(option);}}for(const item of data.languages||[]){for(const id of ['language','preference-language']){const option=node('option',(languageName(item.value)||'不明')+' ('+item.count.toLocaleString()+')');option.value=item.value;$(id).append(option);}}for(const [id,value] of Object.entries(previous))if([...$(id).options].some(option=>option.value===value))$(id).value=value;}catch(e){$('message').textContent=e.message;}}
 function renderPreferenceFacets(data){state.preferenceFacets=data.axes||{};const parent=$('preference-facets');parent.replaceChildren();if(data.coverage_note)parent.append(node('p',data.coverage_note,'muted'));for(const axis of ['theme','structure','protagonist','atmosphere']){const group=node('fieldset',undefined,'facet-group');group.append(node('h3',axisNames[axis]));const options=node('div',undefined,'facet-options');for(const item of state.preferenceFacets[axis]||[]){if(!item.label_id&&!item.qid)continue;const id=item.label_id||item.qid,label=node('label',undefined,'facet-option');const prefer=document.createElement('input');prefer.type='checkbox';prefer.value=id;prefer.dataset.axis=axis;prefer.dataset.direction='prefer';prefer.setAttribute('aria-label',axisNames[axis]+' '+(item.label||id)+'を重視');const avoid=document.createElement('input');avoid.type='checkbox';avoid.value=id;avoid.dataset.axis=axis;avoid.dataset.direction='avoid';avoid.setAttribute('aria-label',axisNames[axis]+' '+(item.label||id)+'を避ける');prefer.addEventListener('change',()=>{if(prefer.checked)avoid.checked=false;});avoid.addEventListener('change',()=>{if(avoid.checked)prefer.checked=false;});label.append(prefer,node('span',(item.label||id)+'を重視'),avoid,node('span','避ける'));options.append(label);}if(!options.childElementCount)options.append(node('span','この軸の選択肢はありません。','muted'));group.append(options);parent.append(group);}const weights=$('axis-weights');weights.replaceChildren(node('strong','分類軸の重み'));for(const axis of Object.keys(axisNames)){const label=node('label',undefined,'axis-weight');const input=document.createElement('input');input.type='range';input.min='0';input.max='2';input.step='.25';input.value='1';input.dataset.axis=axis;const output=node('output','1.00');input.addEventListener('input',()=>{output.textContent=Number(input.value).toFixed(2);});label.append(node('span',axisNames[axis]),input,output);weights.append(label);}}
 async function preferenceFacets(data){try{data=data||await api('/api/preference-facets');await facets(data);renderPreferenceFacets(data);}catch(e){$('preference-message').textContent=e.message;await facets();}}
