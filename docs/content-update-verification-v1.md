@@ -1,5 +1,7 @@
 # 内容更新・中断再開・利用撤回の結合検証 v1
 
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「現行ガイド・仕様」です。手順・契約の再利用前に、現在の状態は[current-status.md](current-status.md)、入力・権利・版の前提は本文で確認してください。
+
 2026-10-15。`feat/update-validation-and-evaluation-handoff` 上で、既存の本番処理を変更せず、小さな合成データで実行した。既存のメタデータ更新検証を補完する。
 
 実装は `src/recommend_book/content_update_verification.py`、実行入口は `scripts/verify_content_updates.py`、回帰テストは `tests/test_content_update_resume_integration.py`。

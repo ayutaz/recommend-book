@@ -1,5 +1,7 @@
 # 分類実行 namespace のオフライン準備
 
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「現行ガイド・仕様」です。手順・契約の再利用前に、現在の状態は[current-status.md](current-status.md)、入力・権利・版の前提は本文で確認してください。
+
 2026-10-16更新: 現行処理は実データの分類・採用に使用済み。`--execution-spec provenance-v4`で実際のprompt/schema/spec registryを固定する。[実行版と境界](native-snapshot-runtime-v1.md)と[実施結果](phase8-quality-evaluation-v1.md)を参照する。以下のscratch・未適用・fixture限定の記述と試験数は初回開発時点の履歴。
 
 > 本体への採用状況（2026-10-12）：この実装は本体へ適用し、本体の全テストで655 passedを確認した。以下のscratch限定・未適用・fixture限定の記述は隔離開発時点の記録である。実データのキャッシュ移行と実行条件の保存については、[採用記録](relevance-v2-development-verification.md#本体への採用と実データ移行)を参照。

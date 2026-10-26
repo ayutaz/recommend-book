@@ -1,5 +1,7 @@
 # freeze v2 の人手評価準備と実DB監査
 
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「履歴・結果・計画・スナップショット」です。本文の件数・計画・実行状態と、本文内の「現在」「最新」「実行中」は記録日時のものとして扱い、現在の状態は[current-status.md](current-status.md)を参照してください。
+
 旧400作品packには原言語の偏りがあったため、新しい評価設計とblind packは [evaluation-balanced-v1.md](evaluation-balanced-v1.md) に記録した。この文書の400-review・pilot20-reviewは初回生成の比較記録として保持する。実DB監査の結果は同じfreeze v2についての記録である。
 
 2026年10月12日。入力は `data/poc-frozen-v2/work-inputs.jsonl` の異なる2,000作品である。分類結果未完了のため、レビューpackはモデル判定を含めないblind版として生成した。人手goldは0件、実人手時間は未計測であり、分類精度・校正・品質完了を主張しない。

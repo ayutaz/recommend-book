@@ -1,5 +1,7 @@
 # 固定400作品のblind AI silver審査
 
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「履歴・結果・計画・スナップショット」です。本文の件数・計画・実行状態と、本文内の「現在」「最新」「実行中」は記録日時のものとして扱い、現在の状態は[current-status.md](current-status.md)を参照してください。
+
 固定契約は `config/autonomous-evaluation-v1.json`、開始前の原物SHAは `data/autonomous-poc-v1/baseline-manifest.json`。本工程は `ai_silver` であり、人手注釈・curated gold・本人評価を生成しない。同じモデルの共通誤りがあり、判定一致率は正解率ではない。既存human review packへ書き戻さない。
 
 ## 入力とblindness

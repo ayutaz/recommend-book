@@ -1,5 +1,7 @@
 # 推薦 engine の数式と候補条件
 
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「現行ガイド・仕様」です。手順・契約の再利用前に、現在の状態は[current-status.md](current-status.md)、入力・権利・版の前提は本文で確認してください。
+
 `src/recommend_book/recommendation/engine.py` は、domain adapter が用意した特徴と読書記録をローカルで比較する。HTTP、外部 LLM、Codex CLI、DB 書き込みは使わない。世界作品と narou の特徴対応・外部 ID 対応は adapter の担当であり、engine はタイトルや記憶から作品・嗜好を補完しない。
 
 ```python

@@ -1,5 +1,7 @@
 # 10万作品・1万分類と好み指定推薦の完了結果
 
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「履歴・結果・計画・スナップショット」です。本文の件数・計画・実行状態と、本文内の「現在」「最新」「実行中」は記録日時のものとして扱い、現在の状態は[current-status.md](current-status.md)を参照してください。
+
 更新: 2026-10-22。[計画v19](autonomous-next-phase-plan-v19.md)の1〜3は完了し、[PR #28](https://github.com/ayutaz/recommend-book/pull/28)でmainへ反映した。次の計画は[v20](autonomous-next-phase-plan-v20.md)で、追加の実行はまだ始めていない。[前段階の結果](scale-catalogue-v2.md)と固定済みv19は履歴として保持する。
 
 ## 完了した範囲

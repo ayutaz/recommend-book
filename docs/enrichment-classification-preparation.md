@@ -1,5 +1,7 @@
 # Open Library 補強後の変更作品だけを分類する入力準備
 
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「履歴・結果・計画・スナップショット」です。本文の件数・計画・実行状態と、本文内の「現在」「最新」「実行中」は記録日時のものとして扱い、現在の状態は[current-status.md](current-status.md)を参照してください。
+
 2026-10-13。`scripts/prepare_enrichment_classification.py` は旧2020件と補強後2020件を比較し、変更した WorkInput だけを新 namespace に保存する。準備は完了したが、この作業では実 Sol・Codex CLI・Web を起動していない。分類実行と旧結果への overlay は root と database 担当の別工程である。
 
 ## API と変更判定

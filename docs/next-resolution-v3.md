@@ -1,5 +1,7 @@
 # 次段階 v3: 保存済み書誌原物による同定根拠監査
 
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「履歴・結果・計画・スナップショット」です。本文の件数・計画・実行状態と、本文内の「現在」「最新」「実行中」は記録日時のものとして扱い、現在の状態は[current-status.md](current-status.md)を参照してください。
+
 2026-10-13。`scripts/audit_next_resolution.py` を Windows native / uv offline で実行した。新結果は `data/autonomous-next-v3/resolution/v2/`。実行 session 17041 の終了コード 0 を自身の handle から観測した。旧 DB、AI run、426 件 aggregate、入力、旧 v1 結果は変更していない。本人の追加評価・人手入力を完了条件にしていない。
 
 ## 全件結果と意味

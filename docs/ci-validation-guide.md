@@ -1,5 +1,13 @@
 # CI 検証ガイド
 
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「現行ガイド・仕様」です。手順・契約の再利用前に、現在の状態は[current-status.md](current-status.md)、入力・権利・版の前提は本文で確認してください。
+
+## 現行実装の確認（2026-10-26）
+
+ライトノベル実装 `bf6f558049c1d0ee9322739ca7080d7b277ac4f8` の[run 40274477382](https://github.com/ayutaz/recommend-book/actions/runs/40274477382)はUbuntu・Windowsとも成功しています。今回、当該runのJUnit件数は再取得していません。`.github/workflows/tests.yml` ではPython 3.14のfixture試験とJUnit artifactの保存を実装済みです。
+
+下の2026-10-25節は導入前後の履歴です。「次の確定実装から」は当時の予定であり、未実装の残作業ではありません。過去runの未証明・失敗を後続runの成功で書き換えません。文書だけの変更ではリンク・差分・固定文書の保持を確認し、全体試験を再実行しません。
+
 ## ライトノベル実装の試験証拠（2026-10-25）
 
 最新の実装と収録状況は[ライトノベル対応の進捗](light-novels-progress-v1.md)を参照する。`c6d105b`の[run 40113726963](https://github.com/ayutaz/recommend-book/actions/runs/40113726963)は両OSの結論がsuccessだが、Windowsのログはセットアップのみで、step情報もセットアップ中のままになっている。Ubuntuの2,868 passed・7 skippedはログで確認したが、Windowsのfixture実行は未証明として扱う。

@@ -1,5 +1,7 @@
 # 保存済み20 works / 74 labels・3 pairsの局所scope診断
 
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「履歴・結果・計画・スナップショット」です。本文の件数・計画・実行状態と、本文内の「現在」「最新」「実行中」は記録日時のものとして扱い、現在の状態は[current-status.md](current-status.md)を参照してください。
+
 2026-10-15。固定packetから実際の診断処理を実行した。**分類20 works / 74 labels、同定3 pairsを全件確認し、実質的な採用可能修正は0、全件heldを維持した。** これは準備だけの`notrun`から、保存済み構造化資料の監査完了への進捗である。新しい意味判定、同定承認、独立した品質評価の完了を意味しない。
 
 採用出力は`data/autonomous-next-v3/evaluation/phase6-bounded-scope-repair-v1/`。`report.json`に23 casesの結果、`scope-quarantine-overlay.json`に、held workに属する74 labelsと3 pairsの継承・merge禁止案を追加保存した。**overlayを既存display/rankingへ適用しておらず、productionの採用挙動は変更していない。** nativeのpresent/unknown、旧finding、missing axes、旧DB・raw・ledgerも変更していない。work単位のcontainmentから個別labelが誤りだとは推論しない。labelごとの旧assessmentをnew statusにも保持する実装であり、今回の選択74件は元observationでもすべてheldだった。新しい内容ラベルや修正済みsource mappingではない。

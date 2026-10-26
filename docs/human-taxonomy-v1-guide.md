@@ -1,5 +1,7 @@
 # taxonomy v1 人手レビュー用日本語ガイド
 
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「現行ガイド・仕様」です。手順・契約の再利用前に、現在の状態は[current-status.md](current-status.md)、入力・権利・版の前提は本文で確認してください。
+
 この文書の日本語はレビューを助ける補助訳・説明であり、ラベルの意味やholdoutの判定基準を変更しない。正本は[`config/taxonomy.json`](../config/taxonomy.json)の英語原定義である。ラベルIDは変更せず、そのまま注釈に使用する。
 
 - 固定taxonomy SHA256: `688f8e1a0921bcbafabbbf54d99b9039bce8c525ea7e7147bdb01821b449084e`

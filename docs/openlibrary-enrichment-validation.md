@@ -1,5 +1,7 @@
 # 完全ダンプ候補からの書誌補充
 
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「履歴・結果・計画・スナップショット」です。本文の件数・計画・実行状態と、本文内の「現在」「最新」「実行中」は記録日時のものとして扱い、現在の状態は[current-status.md](current-status.md)を参照してください。
+
 2026-10-13。`scripts/enrich_openlibrary_dataset.py` は取得済みの Open Library 候補を検証し、既存 DB の読み取り専用 backup を新しい namespace に作って補充する。元 `data/poc-combined-v1/dataset.sqlite`、旧分類入力・結果、frozen snapshot を更新しない。取得、WDQS 再試行、LLM 分類、実人手確認は行わない。
 
 ## 入力と採用条件

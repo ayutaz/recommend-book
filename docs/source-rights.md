@@ -1,5 +1,7 @@
 # ソース・項目・用途別の利用条件
 
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「現行ガイド・仕様」です。手順・契約の再利用前に、現在の状態は[current-status.md](current-status.md)、入力・権利・版の前提は本文で確認してください。
+
 確認日: 2026年10月12日。実行時の台帳は `config/sources.json`、パッケージ内の同一コピーは `src/recommend_book/ingestion/sources.json`。判定は `rights.py` が用途ごとに行う。
 
 ## 判定と対象範囲

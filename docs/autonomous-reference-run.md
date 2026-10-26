@@ -1,5 +1,7 @@
 # 外部専門家参照 benchmark B の実行記録
 
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「履歴・結果・計画・スナップショット」です。本文の件数・計画・実行状態と、本文内の「現在」「最新」「実行中」は記録日時のものとして扱い、現在の状態は[current-status.md](current-status.md)を参照してください。
+
 対象は `config/autonomous-evaluation-v1.json` の B。ユーザーの追加注釈作業は0件。既存 core、taxonomy、rights config、DB、固定180参照を変更せず、新namespace `data/autonomous-poc-v1/reference/` で実行する。確認日は2026-10-13。
 
 ## 入力成立と対象範囲

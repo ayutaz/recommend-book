@@ -1,5 +1,7 @@
 # 分類差分の推薦用 overlay
 
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「現行ガイド・仕様」です。手順・契約の再利用前に、現在の状態は[current-status.md](current-status.md)、入力・権利・版の前提は本文で確認してください。
+
 `apply_classification_overlay` は、旧分類済み SQLite の推薦行へ、更新した書誌 SQLite に対応する新分類結果を読み取り専用で適用する。返却値は `{'rows': [...], 'audit': {...}}`。SQLite は `mode=ro&immutable=1` で読み、DB・入力・分類結果を書き換えず、新 DB に分類テーブルを作らない。LLM の追加起動も行わない。
 
 初版作成時は実差分分類 session `25985` が進行中で、実 overlay 適用は0回だった。2026-10-13に268件の実分類終了（exit0）とactual overlay独立照合、推薦v3生成を確認した。[実行記録](enrichment-classification-run-record.md)に実測件数・終了proof・CLI表記の事後訂正を記録する。以下は処理の契約であり、人手品質確認を示さない。

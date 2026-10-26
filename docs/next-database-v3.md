@@ -1,5 +1,7 @@
 # v3 の作品単位DBと用途別入力
 
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「履歴・結果・計画・スナップショット」です。本文の件数・計画・実行状態と、本文内の「現在」「最新」「実行中」は記録日時のものとして扱い、現在の状態は[current-status.md](current-status.md)を参照してください。
+
 2026-10-20案内: 最新の統合表示と補助DBは[phase15報告](phase15-bounded-poc-and-delivery-v1.md)、今後の書誌・版対応の補完は[実行計画v16](autonomous-next-phase-plan-v16.md)を参照する。以下の基準版・件数は各作成時点の固定記録であり、現在の表示候補数ではない。
 
 2026-10-15現在: 以下の基準版・用途投影・取込仕様と過去の点検値は各スナップショットの記録である。後続の[正式主DB](../data/autonomous-next-v3/database/final-delivery-main-v1/classified-database/dataset.sqlite)は2,005候補・特徴778。補助SQLiteから構成した[最新表示](../data/autonomous-next-v3/database/phase3-personal-poc-with-declared-genres-v2/verification.json)は1,989候補・特徴1,004で、主DBを上書きしていない。履歴との確定関係10件と、内容接続2/335を区別する。下記の旧照合0件を現在の全経路の接続数とは扱わない。集計と未達は[実施報告](autonomous-next-delivery-report-v3.md)を参照する。

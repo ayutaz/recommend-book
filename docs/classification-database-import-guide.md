@@ -1,5 +1,7 @@
 # 分類結果を派生 SQLite に保存する
 
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「現行ガイド・仕様」です。手順・契約の再利用前に、現在の状態は[current-status.md](current-status.md)、入力・権利・版の前提は本文で確認してください。
+
 `scripts/import_classification_database.py` は、停止済み run の分類結果を、元の書誌 DB の SQLite backup に追加するローカル処理です。LLM・Web・Codex CLI の探索、版照会、起動は行いません。元 DB、入力、run、prepared execution context、migration manifest、terminal proof は読み取り専用です。既存出力や入力ディレクトリ配下への出力は拒否します。
 
 初回の実装検証は合成fixtureでした。現在は固定runtimeとworld用採用経路を通じて実36作品へ適用済みです（[実施記録](phase8-quality-evaluation-v1.md)）。以下の汎用importerのschema 3契約と、world用next DB 3.2の採用経路は区別します。元 DB は schema 3、checkpoint 済みである必要があり、非空 WAL があれば拒否します。

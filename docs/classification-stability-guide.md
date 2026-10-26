@@ -1,5 +1,7 @@
 # 同一凍結入力に対する分類runのオフライン安定性比較
 
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「現行ガイド・仕様」です。手順・契約の再利用前に、現在の状態は[current-status.md](current-status.md)、入力・権利・版の前提は本文で確認してください。
+
 `scripts/compare_classification_stability.py` は、明示した完了済みrunだけを読み、同じ作品・expression・入力・分類設定に対する出力の変動を観測する。通信、追加LLM呼び出し、再分類、人手annotationの作成は行わない。分類の正解率、意味の正しさ、quoteの妥当性、人手gold、確率校正はこの比較から求めない。
 
 ## 入力と機械的照合

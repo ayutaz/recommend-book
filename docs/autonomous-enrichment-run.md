@@ -1,5 +1,7 @@
 # 自動資料補充の実行と制約
 
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「履歴・結果・計画・スナップショット」です。本文の件数・計画・実行状態と、本文内の「現在」「最新」「実行中」は記録日時のものとして扱い、現在の状態は[current-status.md](current-status.md)を参照してください。
+
 確認日: 2026-10-13。共通仕様は `config/autonomous-evaluation-v1.json`、基準は `data/autonomous-poc-v1/baseline-manifest.json`。本レーンは取得・許諾・作品同定・入力提案の生成までを実施する。LLM分類は実行せず、人手gold・人手確認済みとは表示しない。
 
 ## 固定対象と実行結果
