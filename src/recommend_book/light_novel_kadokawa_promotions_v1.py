@@ -12,6 +12,32 @@ PROMOTION = re.compile(r'https://promo\.kadokawa\.co\.jp/(?:fantasiabunko|dengek
 PRODUCT_HOSTS = {'promo.kadokawa.co.jp','www.kadokawa.co.jp','kadokawa.co.jp','fantasiabunko.jp','dengekibunko.jp'}
 
 
+def _redirect_bridge(entry, root):
+    old=entry['wikidata_source_url'];final=entry['official_series_url']
+    match=re.fullmatch(r'https://(dengekibunko|fantasiabunko)\.jp/((?:special|sp)/[A-Za-z0-9_-]+/)',old)
+    if not match or final!='https://promo.kadokawa.co.jp/'+match[1]+'/'+match[2]:
+        raise ValueError('direct novel relocation URL scope differs')
+    pin=entry['redirect_receipt'];path=Path(pin['path']).resolve()
+    if not path.is_relative_to(root):raise ValueError('redirect receipt escapes source bundle')
+    receipt=json.loads(_read(path,pin['sha256'],MAX_METADATA_BYTES))
+    artifact=receipt['artifact'];response=receipt['response'];raw_path=Path(artifact['path']).resolve()
+    if (receipt.get('requested_url')!=old or receipt.get('final_url')!=old
+            or receipt.get('http_status') not in (301,302) or receipt.get('status')!='failed'
+            or receipt.get('attempts')!=1 or receipt.get('automatic_redirects') is not False
+            or artifact.get('source_url')!=old or response.get('url')!=old
+            or response.get('status')!=receipt['http_status']
+            or response.get('headers',{}).get('location')!=final
+            or not raw_path.is_relative_to(root)):
+        raise ValueError('direct novel relocation receipt differs')
+    raw=_read(raw_path,artifact['sha256'],MAX_SOURCE_BYTES)
+    if artifact.get('size')!=len(raw):raise ValueError('redirect source size differs')
+    return {'wikidata_source_url':old,'official_series_url':final,
+            'receipt_path':str(path),'receipt_sha256':pin['sha256'],
+            'raw_path':str(raw_path),'raw_sha256':artifact['sha256'],
+            'http_status':receipt['http_status'],'location':final,
+            'attempts':1,'automatic_redirects':False}
+
+
 def book_links(document,source_url,title):
     from .light_novel_catalogue_v1 import normalize_search
     if not PROMOTION.fullmatch(source_url):
@@ -48,7 +74,8 @@ def book_links(document,source_url,title):
 def verify_promotions(manifest_path,expected_sha256):
     path=Path(manifest_path).resolve()
     manifest=json.loads(_read(path,expected_sha256,MAX_METADATA_BYTES))
-    if manifest.get('version')!='light-novel-kadokawa-series-promotions-v1':
+    version=manifest.get('version')
+    if version not in {'light-novel-kadokawa-series-promotions-v1','light-novel-kadokawa-series-promotions-v2'}:
         raise ValueError('novel promotion manifest version differs')
     entries=manifest['series']
     if not 1<=len(entries)<=100:
@@ -72,4 +99,7 @@ def verify_promotions(manifest_path,expected_sha256):
         links=book_links(_decode(raw,response['content_type']),url,entry['title'])
         result[identity]={'series_entry_id':identity,'title':entry['title'],'source_url':url,
             'raw_sha256':artifact['sha256'],'books':links,'prose_ai_input_allowed':False}
+        if version=='light-novel-kadokawa-series-promotions-v2':
+            result[identity].update(wikidata_source_url=entry['wikidata_source_url'],
+                                   redirect_evidence=_redirect_bridge(entry,path.parent))
     return result
