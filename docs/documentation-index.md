@@ -1,12 +1,12 @@
-# Documentation index
+# 文書一覧
 
 更新日: 2026-10-26。これはリポジトリ内のMarkdownを、再利用する現行ガイド、最新状態を反映した更新済み記録、記録日を基準に読む履歴、固定保存するピン留め原本に分ける台帳です。本文の件数・実行結果・計画は無断で現在値へ置き換えず、現在のプロジェクト状態は [current-status.md](current-status.md) を参照してください。
 
-## 監査時点の状態
+## 現行の入口
 
-- 実行中のデータ取得・分類ジョブはありません。
-- 検証済み実装の基準は `feat/japanese-light-novels-v1` の `8ea2eb6`（統合先PR #31。マージ状態はPR参照）です。後続の文書コミットでブランチ先頭が変わっても、このSHAは実装確認の基準として扱います。世界側20,000分類のPR #30は `main` へ反映済みです。
-- 最新ライトノベル台帳の観測値は、story series 2,218、content series 584、content work 1、memberships 5,163、references 10,094、entries 100,884です。混在する対象種別を含むスナップショットであり、独立した作品数・品質合格数・利用許諾済み件数ではありません。
+- [現在の到達点](current-status.md)：DB件数、採用・準備・実行中の区別、検証済みコードとCI、未評価事項。
+- [現行計画v25](autonomous-next-phase-plan-v25.md)：21,000分類を直近の完了単位とし、その後3万・5万・10万へ進む順序。
+- [世界小説の差分分類・取り込み](world-classification-expansion-guide.md)：実装 `5dd5ffc` の実行入口。両OS CI成功、提供先PR #33はdraftです。旧PR #30・#31はmain反映済みです。
 - API・ソースの初期調査は候補整理の履歴です。利用開始時は提供元の一次資料、項目、用途、規約、料金、認証、レート制限を再確認してください。初期調査は現在の採用・利用許諾を示しません。
 
 監査分類は「現行ガイド・仕様」「更新済み現行記録」「履歴・結果・計画・スナップショット」「ピン留め原本」の4区分です。初期API・ソース調査は履歴区分の「利用確認待ち」サブセット、ライトノベルの最新資料は更新済み現行記録のサブセットとして数え、全tracked文書をいずれかへ割り当てています。
@@ -48,6 +48,7 @@
 - [source-rights.md](source-rights.md)
 - [usage-guard-v3.md](usage-guard-v3.md)
 - [world-recommendation-adapter.md](world-recommendation-adapter.md)
+- [world-classification-expansion-guide.md](world-classification-expansion-guide.md)
 
 ## 履歴・結果・計画・スナップショット
 
@@ -163,7 +164,7 @@
 
 ## 更新済み現行記録
 
-2026-10-26時点の最新作業状態を示す資料です。検証済み実装の基準は冒頭の `8ea2eb6` とし、ライトノベルの最新数値・残作業は以下の資料と [current-status.md](current-status.md) を参照します。
+2026-10-26時点の現行案内と、その根拠となる実行記録です。記録本文の過去区間の数値は保持し、最新値と提供状況は [current-status.md](current-status.md) を参照します。
 
 - [autonomous-next-phase-plan-v25.md](autonomous-next-phase-plan-v25.md)
 - [light-novel-expansion-five-stages-2026-10-26.md](light-novel-expansion-five-stages-2026-10-26.md)
@@ -178,4 +179,4 @@ README/CLAUDEは現行ガイド・開発規約の入口として分類します�
 - [README.md](../README.md)：利用者向け概要と確認済みの入口。
 - [CLAUDE.md](../CLAUDE.md)：開発時の作業規約と現在の制約。
 
-監査対象は既存の tracked Markdown 134件（README/CLAUDEを含む）に、この index と `current-status.md`、今回の実行記録を加えた137件です。初期API・ソース調査は履歴の「利用確認待ち」、v25・ライトノベル進捗・5段階記録・current-statusは「更新済み現行記録」として扱い、全資料を現行ガイド・更新済み現行記録・履歴・ピン留めのいずれかへ分類しています。
+対象はREADME/CLAUDEを含む138件のMarkdownです。全資料を現行ガイド・更新済み現行記録・履歴・ピン留めのいずれかへ分類しています。初期API・ソース調査9件は履歴の「利用確認待ち」です。文書更新では、固定3文書のバイト列を保持し、データの再取得・再分類や全体試験を繰り返しません。

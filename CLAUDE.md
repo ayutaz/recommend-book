@@ -7,6 +7,7 @@
 - [現在の到達点](docs/current-status.md)：確認日付きの件数、Git・CI・稼働状態、未評価事項。
 - [現行計画v25](docs/autonomous-next-phase-plan-v25.md)：不足の補完と拡張の順序。
 - [README](README.md)：起動・利用方法。
+- [差分分類・取り込み手順](docs/world-classification-expansion-guide.md)：現行の世界小説バッチの入口。
 - [文書一覧](docs/documentation-index.md)：現行ガイド、過去の記録、固定文書の区別。
 
 現在値は到達点と進捗へ集約します。古い計画の「実行中」「次」は記録当時の状態です。文書更新だけを理由に取得・分類・全件監査を起動しません。

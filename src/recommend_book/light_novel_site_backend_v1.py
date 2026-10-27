@@ -197,7 +197,11 @@ class UnifiedCatalogue:
         if any(_light_id(q) for q in qids) or any(not _light_id(q) for q in entries):
             raise ValueError('reference kind differs')
         liked_world = [self.world.work_detail(q) for q in qids]
-        liked_light = [self.light_novels.work_detail(e) for e in entries]
+        # A light-novel-only request delegates the liked-entry validation and
+        # source projection to the LN recommender itself.  Prefetching detail
+        # here would authenticate the same entry and feature export twice.
+        liked_light = ([] if family == 'light_novel' and not qids else
+                       [self.light_novels.work_detail(e) for e in entries])
         if any(r is None for r in [*liked_world, *liked_light]):
             raise ValueError('liked catalogue entry is absent')
         excluded_world = set(qids)

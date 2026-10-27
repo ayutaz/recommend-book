@@ -1,6 +1,6 @@
 # 分類差分の推薦用 overlay
 
-> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「現行ガイド・仕様」です。手順・契約の再利用前に、現在の状態は[current-status.md](current-status.md)、入力・権利・版の前提は本文で確認してください。
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「現行ガイド・仕様」です。手順・契約の再利用前に、現在の状態は[current-status.md](current-status.md)、次の作業順序は[現行計画 v25](autonomous-next-phase-plan-v25.md)を参照し、入力・権利・版の前提は本文で確認してください。本文のCLI例・数値・測定値は記載した版・namespaceの再現用です。
 
 `apply_classification_overlay` は、旧分類済み SQLite の推薦行へ、更新した書誌 SQLite に対応する新分類結果を読み取り専用で適用する。返却値は `{'rows': [...], 'audit': {...}}`。SQLite は `mode=ro&immutable=1` で読み、DB・入力・分類結果を書き換えず、新 DB に分類テーブルを作らない。LLM の追加起動も行わない。
 
@@ -102,6 +102,6 @@ root pipeline は overlay が SQL 検証した `old_to_new_canonical` だけを�
 
 synthetic fixture で overlay 29 件、world adapter 21 件、派生 DB importer 47 件の合計 **97 件が成功**した。exit code 1・17・-1 の拒否は RED を確認してから修正した。全入力差分、SQL crosswalk、immutable source 保持、raw copy、durable result、末尾変更、unknown による旧 feature 除去、world projection との一致を確認済み。これは実 268 分類の完了確認や推薦品質評価ではない。
 
-root の SQL overlay＋実 ranker の結合 fixture を含む pipeline 関連15件も成功した。旧IDだけの既読・未読・不明の履歴、旧新aliasの競合、異なる実評価の非合成、HTML出力中のsource変更検出と生成stagingだけの削除を検証した。native provenance保持とCLI表記差fixtureを含む2026-10-13のローカル本体テストは **973 passed / 48.56秒**。GitHub hosted CIは未実行。
+root の SQL overlay＋実 ranker の結合 fixture を含む pipeline 関連15件も成功した。旧IDだけの既読・未読・不明の履歴、旧新aliasの競合、異なる実評価の非合成、HTML出力中のsource変更検出と生成stagingだけの削除を検証した。native provenance保持とCLI表記差fixtureを含む2026-10-13のローカル本体テストは **973 passed / 48.56秒**。GitHub hosted CIは2026-10-13時点で未実行だった。
 
 2026-10-13の実適用では、root がlive runの終了コード0を観測し、事後訂正scopeを明記したterminal proofを作成した後、実overlay独立照合と推薦v3生成を行った。実SQLの全97変更IDを使うsynthetic履歴対応、評価の順位・指標不変、全source/output SHAを確認した。旧DB・prepared namespace・旧推薦出力は保持する。実本人履歴と人手品質は未検証であり、[実行記録](enrichment-classification-run-record.md)へ引き継ぐ。

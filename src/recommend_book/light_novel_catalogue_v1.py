@@ -4947,6 +4947,7 @@ class LightNovelCatalogue:
 
     def _feature_rows(self, entry_ids=None, *, _request_cache=None):
         from .light_novel_feature_exports_v1 import verify_feature_export
+        from concurrent.futures import ThreadPoolExecutor
         with self._connect() as db:
             if entry_ids is None:
                 bindings = db.execute('SELECT * FROM features').fetchall()
@@ -4957,44 +4958,55 @@ class LightNovelCatalogue:
                 bindings = db.execute('SELECT * FROM features WHERE entry_id IN (' + ','.join('?' for _ in entry_ids) + ')', entry_ids).fetchall()
         manifests, result = {}, {}
         bridge_witnesses = None
+        pending = []
+
+        def cached_document(key):
+            export_cache = _request_cache
+            cache_key = (str(Path(key[0]).resolve()), key[1])
+            cached = export_cache.get(cache_key) if export_cache is not None else None
+            if cached is None:
+                return cache_key, None
+            try:
+                document, pins = cached
+                for artifact, expected in pins.items():
+                    raw = Path(artifact).read_bytes()
+                    if not isinstance(expected, str) or hashlib.sha256(raw).hexdigest() != expected:
+                        raise ValueError('cached LN feature export dependency SHA differs')
+                return cache_key, document
+            except (ValueError, OSError, KeyError, TypeError):
+                return cache_key, {'rows': []}
+
+        keys = list(dict.fromkeys((binding['manifest_path'], binding['manifest_sha256']) for binding in bindings))
+        for key in keys:
+            cache_key, document = cached_document(key)
+            if document is None:
+                pending.append((key, cache_key))
+            else:
+                manifests[key] = document
+
+        def verify_one(item):
+            key, cache_key = item
+            try:
+                document = verify_feature_export(*key)
+                raw_pins = document.get('artifact_sha256') if isinstance(document, dict) else None
+                pins = None
+                if isinstance(raw_pins, dict) and raw_pins:
+                    pins = dict(raw_pins)
+                    pins[cache_key[0]] = key[1]
+                return key, cache_key, document, pins
+            except (ValueError, OSError, KeyError, TypeError):
+                return key, cache_key, {'rows': []}, None
+
+        if pending:
+            with ThreadPoolExecutor(max_workers=min(4, len(pending))) as executor:
+                for key, cache_key, document, pins in executor.map(verify_one, pending):
+                    manifests[key] = document
+                    if pins is not None and _request_cache is not None:
+                        _request_cache[cache_key] = (document, pins)
+
         for binding in bindings:
             key = (binding['manifest_path'], binding['manifest_sha256'])
             try:
-                if key not in manifests:
-                    try:
-                        # A recommendation request can ask for the same export
-                        # once for its liked rows and again for its candidate
-                        # rows.  Keep the expensive verifier result on this
-                        # current operation.  The complete verifier has already
-                        # run before this request-local reuse; no cache state is
-                        # retained for a later request.
-                        export_cache = _request_cache
-                        cache_key = (str(Path(key[0]).resolve()), key[1])
-                        cached = export_cache.get(cache_key) if export_cache is not None else None
-                        if cached is None:
-                            document = verify_feature_export(*key)
-                            raw_pins = document.get('artifact_sha256') if isinstance(document, dict) else None
-                            # An absent/empty pin map is never memoized.  This
-                            # keeps the optimization bounded to exports that
-                            # explicitly expose their authenticated artifacts.
-                            if export_cache is not None and isinstance(raw_pins, dict) and raw_pins:
-                                # The full verifier already authenticated these
-                                # paths. Re-resolving every artifact here adds
-                                # thousands of redundant filesystem operations.
-                                pins = dict(raw_pins)
-                                pins[str(Path(key[0]).resolve())] = key[1]
-                                export_cache[cache_key] = (document, pins)
-                            manifests[key] = document
-                        else:
-                            document, pins = cached
-                            for artifact, expected in pins.items():
-                                raw = Path(artifact).read_bytes()
-                                if not isinstance(expected, str) or hashlib.sha256(raw).hexdigest() != expected:
-                                    raise ValueError('cached LN feature export dependency SHA differs')
-                            manifests[key] = document
-                    except (ValueError, OSError, KeyError, TypeError):
-                        # Retry on the next operation, not for each binding.
-                        manifests[key] = {'rows': []}
                 for row in manifests[key]['rows']:
                     if row.get('entry_id', row.get('series_id')) == binding['entry_id']:
                         if manifests[key].get('version') == 'light-novel-work-archived-label-feature-export-v1':
@@ -5229,8 +5241,101 @@ class LightNovelCatalogue:
             pending.extend(added)
         return selected
 
+    @staticmethod
+    def _recommendation_prefilter_ids(records, stored, genre, liked_entry_ids,
+                                      membership_pairs=()):
+        """Return a conservative source-projection set for an explicit genre.
+
+        Stored record bytes have already passed their SHA checks before this
+        helper runs.  Their admitted structured genre fields are only used as
+        a candidate superset; every returned record still goes through the
+        ordinary raw-backed projector and the public genre filter remains the
+        final authority.  Unknown contracts stay selected so an unrecognised
+        source cannot be silently treated as a non-match.
+        """
+        wikidata_schemas = {
+            'light-novel-metadata-v1', 'light-novel-metadata-v2',
+            'light-novel-metadata-v3', 'light-novel-work-metadata-v3',
+        }
+        selected = set(liked_entry_ids or ())
+        selected.update(row['entry_id'] for row in stored if row['status'] == 'read')
+        stored_kinds = {row['entry_id']: row['kind'] for row in stored}
+        for identity, record in records.items():
+            stored_kind = stored_kinds.get(identity)
+            if stored_kind not in {'series', 'work'}:
+                continue
+            record_kind = record.get('kind')
+            if record_kind is not None and record_kind != stored_kind:
+                # The typed database row is authoritative for the projection
+                # category.  A mismatching future/malformed record remains in
+                # the authenticated set rather than being guessed away.
+                selected.add(identity)
+                continue
+            if record_kind is None and (
+                    record.get('schema_version') in wikidata_schemas
+                    and record.get('source') == 'wikidata'):
+                # A recognized Wikidata contract without its typed kind is
+                # malformed and must remain fail-closed for source replay.
+                selected.add(identity)
+                continue
+            kind = stored_kind
+            schema = record.get('schema_version')
+            if schema == 'light-novel-ndl-series-v1' and record.get('source') == 'ndl':
+                # This contract has no source genre projection.  It can still
+                # be reached through a selected family or membership below.
+                continue
+            if schema in wikidata_schemas and record.get('source') == 'wikidata':
+                genres = record.get('genres')
+                if not isinstance(genres, list):
+                    selected.add(identity)
+                    continue
+                if any(not isinstance(item, dict) or not isinstance(item.get('id'), str)
+                       for item in genres):
+                    selected.add(identity)
+                    continue
+                if any(isinstance(item, dict) and item.get('id') == genre
+                       for item in genres):
+                    selected.add(identity)
+                continue
+            # Publisher/source-group and future contracts are not safe to
+            # classify from an assumed metadata shape.  Keep them in the
+            # authenticated projection set conservatively.
+            selected.add(identity)
+
+        qid_to_identity = {
+            record.get('id'): identity
+            for identity, record in records.items()
+            if isinstance(record.get('id'), str)
+            and re.fullmatch(r'Q[1-9][0-9]*', record['id'])
+        }
+        edges = {identity: set() for identity in records}
+        for identity, record in records.items():
+            for relation in ('P179', 'P527'):
+                values = record.get('relations', {}).get(relation, [])
+                if not isinstance(values, list):
+                    continue
+                for qid in values:
+                    other = qid_to_identity.get(qid)
+                    if other is not None:
+                        edges[identity].add(other)
+                        edges[other].add(identity)
+        for edition_id, series_id in membership_pairs:
+            if edition_id in edges and series_id in edges:
+                edges[edition_id].add(series_id)
+                edges[series_id].add(edition_id)
+
+        pending = list(selected & records.keys())
+        selected &= set(records)
+        while pending:
+            identity = pending.pop()
+            for other in edges[identity] - selected:
+                selected.add(other)
+                pending.append(other)
+        return selected
+
     def _rows(self, *, include_features=True, feature_entry_ids=None, _cache=None,
-              candidate_query=None, detail_entry_id=None, recommendation_liked_ids=None):
+              candidate_query=None, detail_entry_id=None, recommendation_liked_ids=None,
+              recommendation_genre=None):
         cache = {} if _cache is None else _cache
         with self._connect() as db:
             statement = 'SELECT e.*, r.status FROM entries e LEFT JOIN read_status r USING(entry_id)'
@@ -5250,6 +5355,9 @@ class LightNovelCatalogue:
                 parameters = (liked_json, liked_json)
             stored = db.execute(statement, parameters).fetchall()
             has_features = db.execute('SELECT count(*) FROM features').fetchone()[0]
+            membership_pairs = (db.execute(
+                'SELECT edition_id,series_id FROM edition_series_memberships').fetchall()
+                if recommendation_genre else ())
         records = {}
         for entry in stored:
             if hashlib.sha256(entry['record_json'].encode()).hexdigest() != entry['record_sha256']:
@@ -5257,6 +5365,11 @@ class LightNovelCatalogue:
             records[entry['entry_id']] = json.loads(entry['record_json'])
         cache[('reference_all_stored',)] = stored
         cache[('reference_all_records',)] = records
+        if recommendation_genre:
+            selected = self._recommendation_prefilter_ids(
+                records, stored, recommendation_genre, recommendation_liked_ids,
+                membership_pairs)
+            stored = [entry for entry in stored if entry['entry_id'] in selected]
         confirmation_titles = self._saved_confirmation_search_titles(stored, records, cache) if (
             normalize_search(candidate_query or '') and detail_entry_id is None) else None
         candidate_ids = self._candidate_ids(records, query=candidate_query, entry_id=detail_entry_id,
@@ -5629,7 +5742,8 @@ class LightNovelCatalogue:
         weights = _weights(axis_weights)
         liked = [_entry(x) for x in _normalise_list(liked_entry_ids, 'liked_entry_ids')]
         feature_request_cache = {}
-        rows = self._rows(include_features=False, recommendation_liked_ids=liked)
+        rows = self._rows(include_features=False, recommendation_liked_ids=liked,
+                          recommendation_genre=genre if genre else None)
         indexed = {r['entry_id']: r for r in rows}
         if any(key not in indexed for key in liked):
             raise ValueError('liked light-novel entry is absent')

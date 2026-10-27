@@ -16,7 +16,7 @@ def main():
     parser.add_argument("--source-sha256", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--reservations", type=Path, required=True)
-    parser.add_argument("--concurrency", type=int, choices=(4, 8), default=4)
+    parser.add_argument("--concurrency", type=int, choices=(1, 2, 4, 8), default=4)
     parser.add_argument("--timeout", type=int, default=900)
     parser.add_argument("--executable")
     parser.add_argument("--continuation-manifest", type=Path)

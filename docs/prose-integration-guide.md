@@ -1,6 +1,6 @@
 # 原文 PoC の独立 DB 統合
 
-> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「現行ガイド・仕様」です。手順・契約の再利用前に、現在の状態は[current-status.md](current-status.md)、入力・権利・版の前提は本文で確認してください。
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「現行ガイド・仕様」です。手順・契約の再利用前に、現在の状態は[current-status.md](current-status.md)、次の作業順序は[現行計画 v25](autonomous-next-phase-plan-v25.md)を参照し、入力・権利・版の前提は本文で確認してください。本文のCLI例・数値・測定値は記載した版・namespaceの再現用です。
 
 2026-10-12 に、保存済み Wikisource 20 作品・40 抜粋と、`wikidata-resolution-v1` の identity-map / SourceRecord / raw API 応答をオフラインで照合した。出力は `data/prose-poc/database-integrated-v1/dataset.sqlite`。本処理は追加取得、追加 LLM 分類、main / frozen DB の更新を行わない。
 

@@ -30,6 +30,8 @@ CLASSIFICATION_AXES = ('genre', 'theme', 'structure', 'protagonist', 'style', 'a
 NATIVE_EXPORT_VERSIONS = {'scale-native-classification-export-v1',
                           'scale-content-native-classification-export-v2',
                           'scale-content-native-classification-export-v3'}
+PARTIAL_REVIEWED_EXPORT_VERSION = 'world-novel-partial-reviewed-export-v1'
+PARTIAL_REVIEWED_SCOPE = 24
 _NATIVE_PIN_WORKERS = 4
 _CLI_ARCHIVE_ROOT = Path(__file__).resolve().parents[2] / 'data/autonomous-next-v3/reference/cli-artifacts'
 
@@ -599,6 +601,21 @@ class ScaleCatalogue:
         if key not in verified.manifests:
             self._check_native_pin(*key, verified)
             document = self._payload(*key)
+            if document.get('version') == PARTIAL_REVIEWED_EXPORT_VERSION:
+                artifacts = document.get('artifact_sha256')
+                projection = document.get('verified_projection')
+                pins = projection.get('coordinator_chain_pins') if isinstance(projection, dict) else None
+                if not isinstance(artifacts, dict) or not artifacts:
+                    raise ValueError('partial reviewed export artifact pins are absent')
+                if not isinstance(pins, list) or not pins:
+                    raise ValueError('partial reviewed export coordinator pins are absent')
+                for pin in pins:
+                    if not isinstance(pin, dict) or artifacts.get(pin.get('path')) != pin.get('sha256'):
+                        raise ValueError('partial reviewed export coordinator pin is not bound')
+                self._check_native_pins_parallel(
+                    [{'path': path, 'sha256': sha} for path, sha in artifacts.items()], verified)
+                verified.manifests[key] = document
+                return document
             if document.get('version') not in NATIVE_EXPORT_VERSIONS or not isinstance(document.get('artifact_sha256'), dict):
                 raise ValueError('unsupported native classification export')
             for artifact in coordinator_chain_pins(document):
@@ -652,6 +669,10 @@ class ScaleCatalogue:
         if not expected_sha256 or _sha(raw) != expected_sha256:
             raise ValueError('Classification export manifest SHA differs')
         version = json.loads(raw).get('version')
+        if version == PARTIAL_REVIEWED_EXPORT_VERSION:
+            from .world_novel_partial_publication_v1 import verify_partial_reviewed_export
+            document = verify_partial_reviewed_export(json.loads(raw))
+            return self._import_partial_reviewed(document, manifest_path, expected_sha256)
         if version == 'scale-native-classification-export-v1':
             from .scale_classification_v1 import verify_catalogue_classification
         elif version == 'scale-content-native-classification-export-v2':
@@ -699,6 +720,88 @@ class ScaleCatalogue:
                     if previous and previous['qid'] != qid:
                         raise ValueError('native crosswalk conflicts with existing identity')
                     db.execute('INSERT OR IGNORE INTO crosswalk VALUES(?,?,?)', (old_id, qid, _json(proof)))
+        return result
+
+    def _import_partial_reviewed(self, document, manifest_path, expected_sha256):
+        """Import the separately reviewed 24-row projection without source writes."""
+        from .classification.validation import load_taxonomy
+
+        if document.get('version') != PARTIAL_REVIEWED_EXPORT_VERSION:
+            raise ValueError('partial reviewed export version differs')
+        if document.get('state') != 'partial_reviewed_projection':
+            raise ValueError('partial reviewed export state differs')
+        if document.get('public_db_adoption_allowed') is not True:
+            raise ValueError('partial reviewed export is not explicitly public')
+        if document.get('source_run_gate_passed') is not False or document.get('source_run_terminal') is not False:
+            raise ValueError('partial reviewed export promoted the source gate')
+        projection = document.get('verified_projection')
+        if not isinstance(projection, dict) or projection.get('publishable') is not True:
+            raise ValueError('partial reviewed projection is not publishable')
+        pins = projection.get('coordinator_chain_pins')
+        artifacts = document.get('artifact_sha256')
+        if not isinstance(pins, list) or not pins:
+            raise ValueError('partial reviewed export coordinator pins are absent')
+        if not isinstance(artifacts, dict) or not artifacts:
+            raise ValueError('partial reviewed export artifact pins are absent')
+        for pin in pins:
+            if not isinstance(pin, dict) or artifacts.get(pin.get('path')) != pin.get('sha256'):
+                raise ValueError('partial reviewed export coordinator pin is not bound')
+        rows = projection.get('rows')
+        if not isinstance(rows, list) or len(rows) != PARTIAL_REVIEWED_SCOPE:
+            raise ValueError('partial reviewed export must contain exactly 24 rows')
+        label_axes = {label['label_id']: label['axis'] for label in load_taxonomy()['labels']}
+        qids = []
+        for row in rows:
+            if not isinstance(row, dict):
+                raise ValueError('partial reviewed projection row must be an object')
+            qid = _qid(row.get('qid'))
+            if row.get('work_id') != 'wd:' + qid:
+                raise ValueError('partial reviewed projection work identity differs')
+            labels = row.get('admitted_labels')
+            if not isinstance(labels, list):
+                raise ValueError('partial reviewed projection labels are absent')
+            if any(not isinstance(label, dict) or label.get('decision') != 'present'
+                   or label.get('scope') != 'work'
+                   or label.get('label_id') not in label_axes
+                   or label.get('axis') != label_axes.get(label.get('label_id'))
+                   for label in labels):
+                raise ValueError('partial reviewed projection contains unadmitted labels')
+            if qid in qids:
+                raise ValueError('partial reviewed projection contains duplicate QID')
+            qids.append(qid)
+
+        manifest_path = str(Path(manifest_path).resolve())
+        result = {'raw_classified': 0, 'adopted': 0, 'failed': 0, 'unchanged': 0, 'failures': []}
+        native_verified = _NativeOperation()
+        with self._connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            existing = db.execute(
+                'SELECT qid FROM native_classifications WHERE qid IN (' + ','.join('?' for _ in qids) + ')', qids
+            ).fetchall()
+            if existing:
+                raise ValueError('partial reviewed export cannot overwrite existing native classification')
+            missing = [qid for qid in qids
+                       if db.execute('SELECT 1 FROM works WHERE qid=?', (qid,)).fetchone() is None]
+            if missing:
+                raise ValueError('partial reviewed export work is absent from catalogue: ' + ','.join(missing))
+            for row in rows:
+                qid = row['qid']
+                proof_artifacts = [{'path': manifest_path, 'sha256': expected_sha256}]
+                proof_artifacts.extend({'path': path, 'sha256': sha} for path, sha in artifacts.items())
+                proof = {'artifacts': proof_artifacts,
+                         'source_attributions': row.get('source_attributions', []),
+                         'partial_reviewed_export_sha256': expected_sha256,
+                         'coordinator_chain_pins': pins}
+                self._native_proofs(
+                    {'manifest_path': manifest_path, 'manifest_sha256': expected_sha256,
+                     'provenance_json': _json(proof), 'qid': qid,
+                     'labels_json': _json(row['admitted_labels'])},
+                    verified=native_verified)
+                db.execute('INSERT INTO native_classifications VALUES(?,?,?,?,?)',
+                           (qid, manifest_path, expected_sha256,
+                            _json(row['admitted_labels']), _json(proof)))
+                result['raw_classified'] += 1
+                result['adopted'] += bool(_display_native_labels(row['admitted_labels'])[0])
         return result
 
     def catalogue_facets(self):

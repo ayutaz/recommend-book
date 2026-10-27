@@ -2,7 +2,9 @@
 
 > **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「現行ガイド・仕様」です。手順・契約の再利用前に、現在の状態は[current-status.md](current-status.md)、入力・権利・版の前提は本文で確認してください。
 
-確認日: 2026年10月12日。実行時の台帳は `config/sources.json`、パッケージ内の同一コピーは `src/recommend_book/ingestion/sources.json`。判定は `rights.py` が用途ごとに行う。
+更新案内: 2026年10月26日。実行時の台帳は `config/sources.json`、パッケージ内のコピーは `src/recommend_book/ingestion/sources.json`。`rights.py` と `UsageGuard` が用途別のポリシー、原資料、公式条件の保存証跡を検証します。以下の一次資料の調査・少量PoCは2026年10月12日時点の記録であり、今回Web規約を再照合した結果ではありません。
+
+現在の世界小説の差分処理は[取り込み手順](world-classification-expansion-guide.md)を参照してください。入力の取得・保存・外部LLM・表示の審査と、分類結果の出力審査を分けています。特定の入力の成功を、提供元の全データやToCサービス全体の許可へ広げません。無料資料と既存Codexだけを使用し、購入・外注・有料APIへ自動で切り替えません。
 
 ## 判定と対象範囲
 

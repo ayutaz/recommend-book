@@ -1,6 +1,6 @@
 # 完了済み分類runの観測
 
-> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「現行ガイド・仕様」です。手順・契約の再利用前に、現在の状態は[current-status.md](current-status.md)、入力・権利・版の前提は本文で確認してください。
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「現行ガイド・仕様」です。手順・契約の再利用前に、現在の状態は[current-status.md](current-status.md)、次の作業順序は[現行計画 v25](autonomous-next-phase-plan-v25.md)を参照し、入力・権利・版の前提は本文で確認してください。本文のCLI例・数値・測定値は記載した版・namespaceの再現用です。
 
 `scripts/summarize_classification_run.py` は固定WorkInputと完了済みrunを読取り専用で再照合し、JSON・HTMLへ観測結果を出力する。人手goldを受け取る機能は持たず、意味の正しさ・precision/recall/F1・summary忠実性・関連度精度・校正・ECE/Brierは常にnull、人手gold件数0を記録する。これは実行結果の構造と判断範囲の観測であり、人手精度評価ではない。
 
@@ -10,7 +10,7 @@
 uv run python scripts/summarize_classification_run.py --inputs data/poc-frozen-v2/pilot100.jsonl --run data/benchmarks/poc-frozen-v2/benchmark-v1/concurrency-2 --freeze-manifest data/poc-frozen-v2/manifest.json --output data/evaluation/poc-frozen-v2/classification-observation-concurrency-2-v2
 ```
 
-既存出力directoryを上書きしないため、再実行時は新しい出力名を指定する。全2,000作品runが完了した場合も、`--inputs data/poc-frozen-v2/work-inputs.jsonl` と対応するrunを指定して同じ処理を使える。未完了・中断・失敗を含むrunは拒否する。今回読み込んだrunは完了済み2並列だけであり、4/8並列の未完了ファイルを読んだり変更したりしていない。追加LLM実行、DB・runner・prompt・モデル・freeze・review packの変更は行わない。
+既存出力directoryを上書きしないため、再実行時は新しい出力名を指定する。旧2,000作品runを観測する場合も、`--inputs data/poc-frozen-v2/work-inputs.jsonl` と対応するrunを指定して同じ処理を使える。未完了・中断・失敗を含むrunは拒否する。今回読み込んだrunは完了済み2並列だけであり、4/8並列の未完了ファイルを読んだり変更したりしていない。追加LLM実行、DB・runner・prompt・モデル・freeze・review packの変更は行わない。
 
 ## 再照合とprovenance
 

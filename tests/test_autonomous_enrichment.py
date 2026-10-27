@@ -40,6 +40,25 @@ def test_section_deny_is_not_converted_to_partial_permission(tmp_path):
     assert all(ledger[0]['usage_permitted'][usage] for usage in USAGES)
 
 
+def test_zh_story_aliases_are_screened_and_quoted_sections_are_held(tmp_path):
+    work, page, artifact = fixture(
+        tmp_path,
+        '== 劇情 ==\nAn orphan returns home and discovers a hidden door.\n\n'
+        '== 情節概述 ==\nA second clean plot paragraph.\n\n'
+        '== 概要 ==\nA quoted section says "protected passage".')
+    raw = json.loads(Path(work.raw_path).read_bytes())
+    raw['entities']['Q1']['sitelinks']['zhwiki'] = {'title': 'A novel'}
+    Path(work.raw_path).write_text(json.dumps(raw), encoding='utf-8')
+    work = work.model_copy(update={'raw_sha256': hashlib.sha256(Path(work.raw_path).read_bytes()).hexdigest()})
+    page['title'] = 'A novel'
+    artifact.source_url = 'https://zh.wikipedia.org/w/api.php'
+    evidence, _, outcomes = wikipedia_evidence(work, 'v1', 'w1', page, artifact, 'zh', set(), set(), 'test')
+    assert [item.kind for item in evidence] == ['synopsis', 'synopsis']
+    assert outcomes['劇情']['status'] == 'accepted'
+    assert outcomes['情節概述']['status'] == 'accepted'
+    assert outcomes['概要']['reason'] == 'section_contains_rejected_paragraphs'
+
+
 def test_raw_identity_and_exact_page_are_required(tmp_path):
     work, page, artifact = fixture(tmp_path, 'This novel follows the journey of a family.')
     page['pageprops']['wikibase_item'] = 'Q99'

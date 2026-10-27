@@ -663,8 +663,8 @@ per exact series. This is provisional internal AI review, not human gold or qual
 def run_window(inputs, output, *, source_manifest, source_sha256, reservations,
                concurrency=4, timeout=900, executable=None, continuation_manifest=None, continuation_sha256=None):
     """One bounded window: classification one/CLI, complete review <=five/CLI."""
-    if concurrency not in (4, 8) or type(timeout) is not int or not 1 <= timeout <= 900:
-        raise ValueError("Series route requires four/eight slots and timeout <=900s")
+    if type(concurrency) is not int or concurrency not in (1, 2, 4, 8) or type(timeout) is not int or not 1 <= timeout <= 900:
+        raise ValueError("Series route requires one/two/four/eight slots and timeout <=900s")
     if not 1 <= len(inputs) <= 100:
         raise ValueError("Series route requires one to one hundred exact inputs")
     admission = validate_source_admission(inputs, source_manifest, source_sha256)

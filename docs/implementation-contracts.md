@@ -2,7 +2,9 @@
 
 > **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「現行ガイド・仕様」です。手順・契約の再利用前に、現在の状態は[current-status.md](current-status.md)、入力・権利・版の前提は本文で確認してください。
 
-2026年10月12日。ステージ1〜4を並列実装するための共通契約。
+2026年10月26日案内: 以下は2026年10月12日に定義した基礎APIと初期担当分担の契約です。現行の差分分類は[世界小説の分類・取り込み手順](world-classification-expansion-guide.md)、到達件数と未完了事項は[current-status.md](current-status.md)を参照してください。基礎APIの既定並列度と、現行バッチの最大8並列・1作品単位の設定は別です。
+
+初期担当分担の「commit/pushは担当外」は子エージェントの分担です。統合担当Codexは必要な検証、文書更新、commit・pushを実施します。利用者の追加採点、外注、購入、有料APIを必須工程にしません。
 
 共通モデルは `src/recommend_book/models.py` のPydanticモデルを使う。各担当は共通モデルの変更を統合担当へ提案し、担当範囲のモジュール・テストを編集する。Python 3.14、uv、pytest、httpx、jsonschema、pydanticを使う。依存管理は統合担当が行う。
 

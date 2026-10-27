@@ -4,16 +4,16 @@
 
 ## 現行実装の確認（2026-10-26）
 
-ライトノベル実装 `8ea2eb6bf5fd1518c3782df278667e660aa1c4d6` の[run 40286817065](https://github.com/ayutaz/recommend-book/actions/runs/40286817065)はPython 3.14のUbuntu・Windowsで成功しています。両OSのJUnit原本を取得し、次を確認しました。
+ライトノベル実装 `5dd5ffca5cf7dd5ca2f845694be8d60dc99afd27` の[run 40298209659](https://github.com/ayutaz/recommend-book/actions/runs/40298209659)はPython 3.14のUbuntu・WindowsでSUCCESSです。PR #33はdraftで、後続の補助コード`d7bc5e0`はcommit・push済みで、[そのCI](https://github.com/ayutaz/recommend-book/actions/runs/40302731706)は19:02 JST時点で実行中です。GitHubのrun状態は確認済みですが、今回の文書更新では原JUnitの正確なcase数を読み直していません。旧runの5,920／5,921を新runの数へ流用しません。
 
 | OS | fixture試験 | pytest実時間 |
 |---|---|---:|
-| Ubuntu | 5,920 passed・7 skipped、failure/error 0 | 170.983秒 |
-| Windows | 5,921 passed・6 skipped、failure/error 0 | 757.972秒 |
+| Ubuntu | SUCCESS（case数は今回未再取得） | — |
+| Windows | SUCCESS（case数は今回未再取得） | — |
 
-新規キャッシュ12試験とHJ関連111試験を含みます。artifact名のcheckout SHA `bd0b95b503eb08a1ac092ada21126b5b81fbbb83` はPRの試験用merge commitで、その全treeが実装8ea2eb6と一致しています。以後の文書差分はコード・試験・依存・workflowを変えず、同じ全体試験を追加しません。
+新規キャッシュ12試験とHJ関連111試験を含む前runのcase内訳は履歴として保持します。最新runの原JUnit数、対象merge checkout、個別artifactの照合はrootのCI確認で必要に応じて追記します。以後の文書差分はコード・試験・依存・workflowを変えず、同じ全体試験を追加しません。
 
-先行44cd4d6のrun 40283996816はUbuntu成功・Windows取消のため両OS成功には数えません。さらに前のbf6f558のrun 40274477382は当時の成功記録です。最新実装の確認へ代用しません。
+先行44cd4d6のrun 40283996816はUbuntu成功・Windows取消のため両OS成功には数えません。さらに前のbf6f558のrun 40274477382、8ea2eb6のrun 40286817065は当時の成功記録です。最新実装5dd5ffcaの確認へcase数やtreeを代用しません。
 
 下の2026-10-25節は導入前後の履歴です。「次の確定実装から」は当時の予定であり、未実装の残作業ではありません。過去runの未証明・失敗を後続runの成功で書き換えません。文書だけの変更ではリンク・差分・固定文書の保持を確認し、全体試験を再実行しません。
 

@@ -52,6 +52,32 @@ def test_new_recipe_selects_complete_clean_paragraph_and_preserves_old_rejection
         UsageGuard(tmp_path / 'unused.json')._wikipedia(forged_old, [record], [])
 
 
+def test_guard_skips_missing_pages_in_batched_wikipedia_response(tmp_path):
+    record, page, artifact, ev, _, _ = plot_evidence(tmp_path)
+    missing = {'ns': 0, 'title': 'Unavailable article', 'missing': True}
+    Path(artifact.path).write_text(
+        json.dumps({'query': {'pages': [missing, page]}}), encoding='utf8'
+    )
+    digest = hashlib.sha256(Path(artifact.path).read_bytes()).hexdigest()
+    artifact.sha256 = digest
+    ev.attribution['raw_sha256'] = digest
+
+    UsageGuard(tmp_path / 'unused.json')._wikipedia(ev, [record], [])
+
+
+def test_guard_rejects_non_unique_page_identity_in_batched_response(tmp_path):
+    record, page, artifact, ev, _, _ = plot_evidence(tmp_path)
+    Path(artifact.path).write_text(
+        json.dumps({'query': {'pages': [page, dict(page)]}}), encoding='utf8'
+    )
+    digest = hashlib.sha256(Path(artifact.path).read_bytes()).hexdigest()
+    artifact.sha256 = digest
+    ev.attribution['raw_sha256'] = digest
+
+    with pytest.raises(ValueError, match='not uniquely bound'):
+        UsageGuard(tmp_path / 'unused.json')._wikipedia(ev, [record], [])
+
+
 @pytest.mark.parametrize('notice', ['CC-notice', 'Source attribution', 'copyvio', 'copyrighted', 'EB1911', 'Imported text'])
 def test_article_level_notice_blocks_even_when_outside_selected_section(tmp_path, notice):
     record, page, artifact = fixture(tmp_path, MIXED + '\n\n== References ==\n{{' + notice + '|source}}')

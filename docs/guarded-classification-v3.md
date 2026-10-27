@@ -1,6 +1,6 @@
 # v3 分類の固定入力と実行証拠
 
-> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「現行ガイド・仕様」です。手順・契約の再利用前に、現在の状態は[current-status.md](current-status.md)、入力・権利・版の前提は本文で確認してください。
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「現行ガイド・仕様」です。手順・契約の再利用前に、現在の状態は[current-status.md](current-status.md)、次の作業順序は[現行計画 v25](autonomous-next-phase-plan-v25.md)を参照し、入力・権利・版の前提は本文で確認してください。本文のCLI例・数値・測定値は記載した版・namespaceの再現用です。
 
 2026-10-16追記: 新規のworld分類には`provenance-v4`（prompt `4.0-provenance`、専用schema）を追加した。共有rawだけで記事の取り違えとせず、記事・版・選択本文の対応を確認し、根拠不足はunknownを保つ。旧v3契約・結果は維持する。[実際の固定runtime](native-snapshot-runtime-v1.md)と[36作品の実施記録](phase8-quality-evaluation-v1.md)を参照し、以下の旧仕様例を新しい実行へ無条件に流用しない。
 

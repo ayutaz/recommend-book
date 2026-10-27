@@ -1,6 +1,6 @@
 # 評価と人手レビューの実行手順
 
-> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「現行ガイド・仕様」です。手順・契約の再利用前に、現在の状態は[current-status.md](current-status.md)、入力・権利・版の前提は本文で確認してください。
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「現行ガイド・仕様」です。手順・契約の再利用前に、現在の状態は[current-status.md](current-status.md)、次の作業順序は[現行計画 v25](autonomous-next-phase-plan-v25.md)を参照し、入力・権利・版の前提は本文で確認してください。本文のCLI例・数値・測定値は記載した版・namespaceの再現用です。
 
 2026-10-13追記: 以下は人手注釈を利用する場合の既存機能・手順である。ユーザー工数0で進める現在の工程は[自動完了計画 v2](autonomous-completion-plan-v2.md)に従い、担当が外部の既存注釈と別namespaceのAI silverを処理する。ユーザーによるフォーム入力・exportは必須ではない。旧human packにAI注釈を取り込まない。
 

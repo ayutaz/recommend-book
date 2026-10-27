@@ -1,6 +1,6 @@
 # なろう個人推薦参照 adapter v1
 
-> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「現行ガイド・仕様」です。手順・契約の再利用前に、現在の状態は[current-status.md](current-status.md)、入力・権利・版の前提は本文で確認してください。
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「現行ガイド・仕様」です。手順・契約の再利用前に、現在の状態は[current-status.md](current-status.md)、次の作業順序は[現行計画 v25](autonomous-next-phase-plan-v25.md)を参照し、入力・権利・版の前提は本文で確認してください。本文のCLI例・数値・測定値は記載した版・namespaceの再現用です。
 
 `src/recommend_book/recommendation/narou.py` の `load_narou_reference(database, annotations, *, bridge=None)` は、保存済み SQLite とあらすじ annotation を read-only で読み、共通推薦 row と aggregate audit を返す。ネットワーク、分類 CLI、元 repository の実行・変更、commit は行わない。
 

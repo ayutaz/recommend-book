@@ -1,6 +1,6 @@
 # Combined 2020 の新規本番入力
 
-> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「現行ガイド・仕様」です。手順・契約の再利用前に、現在の状態は[current-status.md](current-status.md)、入力・権利・版の前提は本文で確認してください。
+> **文書の適用範囲（2026-10-26）**: 本書は[文書台帳](documentation-index.md)の「現行ガイド・仕様」です。手順・契約の再利用前に、現在の状態は[current-status.md](current-status.md)、次の作業順序は[現行計画 v25](autonomous-next-phase-plan-v25.md)を参照し、入力・権利・版の前提は本文で確認してください。本文のCLI例・数値・測定値は記載した版・namespaceの再現用です。
 
 2026-10-12、`data/production-inputs/poc-combined-v1-v1/ordered-inputs.jsonl` を新規生成した。これは入力準備のみ。実行中の本番 1k、元2k入力、`data/runs`、共通モデル/runner/prompt/schema/taxonomy/sources/jobs を変更せず、stage2・LLM・Web は起動していない。
 
